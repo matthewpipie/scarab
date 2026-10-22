@@ -218,6 +218,7 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     init_cache_strategy(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
 
   cache->tag_incl_offset = FALSE;
+  cache->repl_miss_by_report = FALSE;
 }
 
 /**************************************************************************************/
@@ -1303,6 +1304,11 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
 
   DEBUG(0, "%s, %d: Insert Strategy\n", cache->name, cache->repl_policy);
 
+  // A cache inserts only after a lookup missed, so the insert stands for that miss unless the
+  // cache's owner reports misses itself (repl_miss_by_report).
+  if (!cache->repl_miss_by_report && repl_policy_func_table[policy].update_miss)
+    repl_policy_func_table[policy].update_miss(cache, proc_id, set, NULL);
+
   // update_evict -> action_repl -> update_insert
   // External func also directly call it
   new_line = repl_policy_func_table[policy].update_evict(cache, proc_id, set, &repl_index, NULL, FALSE);
@@ -1368,6 +1374,26 @@ Cache_Entry* cache_evict_strategy(Cache* cache, uns8 proc_id, uns set, uns* way)
   /* True flag indicates it is called in the external eviction */
   new_line = repl_policy_func_table[policy].update_evict(cache, proc_id, set, way, NULL, TRUE);
   return new_line;
+}
+
+/*
+  cache_report_miss
+  -- call sub internal func: update_miss
+  -- called by the owner of a cache with repl_miss_by_report set, once per lookup that missed
+*/
+void cache_report_miss(Cache* cache, uns8 proc_id, Addr addr) {
+  Addr tag, tag_full, line_addr;
+  uns set;
+  int policy;
+
+  if (cache->repl_policy < REPL_VOID)
+    return;
+  policy = cache_get_policy_index(cache->repl_policy);
+  if (policy == -1 || !repl_policy_func_table[policy].update_miss)
+    return;
+
+  set = cache_index(cache, addr, &tag, &tag_full, &line_addr);
+  repl_policy_func_table[policy].update_miss(cache, proc_id, set, NULL);
 }
 
 /**************************************************************************************/
@@ -1492,15 +1518,22 @@ Cache_Entry* nru_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, voi
   int ii;
   Flag found = FALSE;
 
+  /* A free way is taken before any valid line, and taking one ages nothing. (Folding this into
+     the search below as "invalid or distant" in one pass let a distant valid line in a lower way
+     beat a free way; with lines inserted at the distant value -- NRU, BRRIP, SHiP -- a set then
+     filled only as its lines were reused.) */
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (!cache->entries[set][ii].valid) {
+      *way = ii;
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
   while (!found) {
     // eviction: search the distant line whose RRPV == 1
     for (ii = 0; ii < cache->assoc; ii++) {
       Cache_Entry* entry = &cache->entries[set][ii];
-      if (!entry->valid) {
-        *way = ii;
-        found = TRUE;
-        break;
-      }
       if (entry->reference_val == NRU_DISTANT_VAL) {
         *way = ii;
         found = TRUE;
@@ -1540,15 +1573,22 @@ Cache_Entry* srrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, v
   int ii;
   Flag found = FALSE;
 
+  /* A free way is taken before any valid line, and taking one ages nothing. (Folding this into
+     the search below as "invalid or distant" in one pass let a distant valid line in a lower way
+     beat a free way; with lines inserted at the distant value -- NRU, BRRIP, SHiP -- a set then
+     filled only as its lines were reused.) */
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (!cache->entries[set][ii].valid) {
+      *way = ii;
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
   while (!found) {
     // eviction: search the distant line whose RRPV == 2^M - 1
     for (ii = 0; ii < cache->assoc; ii++) {
       Cache_Entry* entry = &cache->entries[set][ii];
-      if (!entry->valid) {
-        *way = ii;
-        found = TRUE;
-        break;
-      }
       if (entry->reference_val == RRIP_DISTANT_VAL) {
         *way = ii;
         found = TRUE;
@@ -1613,82 +1653,128 @@ void brrip_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg
 }
 
 /**************************************************************************************/
-/* DRRIP */
-const static int DRRIP_DEDICATED_BIMODAL = 1;
-const static int DRRIP_DEDICATED_STATIC = 2;
+/* DRRIP -- Jaleel, Theobald, Steely & Emer, "High Performance Cache Replacement Using
+ * Re-Reference Interval Prediction (RRIP)", ISCA 2010, Sec. 4: set dueling between SRRIP and
+ * BRRIP.
+ *
+ *  - --drrip_leader_sets sets always insert with SRRIP and as many always insert with BRRIP.
+ *    Every other set (a follower) inserts with whichever of the two is currently missing less.
+ *  - PSEL, a --drrip_psel_bits saturating counter, starts at its midpoint. A miss in an SRRIP
+ *    leader increments it and a miss in a BRRIP leader decrements it, so PSEL's top bit set
+ *    means SRRIP's leaders have been missing more, and followers then insert with BRRIP.
+ *  - Misses reach PSEL only through update_miss: from each insert, or from the cache's owner via
+ *    cache_report_miss() when it sets repl_miss_by_report (cache_lib.h). Nothing is counted in
+ *    update_evict, which also runs for get_next_repl_line's peek at the victim and again every
+ *    time a refused fill is retried.
+ *  - SRRIP inserts at the long re-reference interval (RRIP_DISTANT_VAL - 1). BRRIP inserts at
+ *    the distant interval (RRIP_DISTANT_VAL), except that with probability
+ *    2^-(--drrip_bimodal_throttle_log2) a fill goes in at the long interval instead (the paper's
+ *    bimodal throttle, 1/32). The draw comes from a per-cache generator with a fixed seed, so a
+ *    run is deterministic and no other user of rand() is disturbed.
+ *  - Hits promote to RRPV 0 (nru_update_hit); the victim search is srrip_update_evict.
+ *
+ * RRPVs use the SRRIP range here, 0..RRIP_DISTANT_VAL, so DRRIP's SRRIP mode places lines
+ * exactly as REPL_SRRIP does.
+ *
+ * Leader sets are spread with the paper's constituency scheme over the S sets an index can
+ * reach (set_mask + 1; a set count that is not a power of two leaves the top sets unindexed):
+ * the S sets are divided into L = min(--drrip_leader_sets, S / 2) equal constituencies of
+ * C = S / L sets, and constituency k holds one SRRIP leader at offset k mod C and one BRRIP
+ * leader at offset (k + C/2) mod C. C >= 2, so the two never coincide. */
+#define DRRIP_FOLLOWER 0
+#define DRRIP_LEADER_SRRIP 1
+#define DRRIP_LEADER_BRRIP 2
+#define DRRIP_RNG_SEED 0xD1B54A32D192ED03ULL
+
+typedef struct Drrip_State_struct {
+  uns8* role; /* per set: DRRIP_FOLLOWER or the policy it leads */
+  uns psel;
+  uns psel_max;
+  uns64 rng;
+} Drrip_State;
 
 void drrip_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
                        Repl_Policy repl_policy);
 void drrip_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg);
-Cache_Entry* drrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external);
+void drrip_update_miss(Cache* cache, uns8 proc_id, uns set, void* arg);
+
+static inline Drrip_State* drrip_state(Cache* cache) {
+  return (Drrip_State*)cache->predictor;
+}
 
 void drrip_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
                        Repl_Policy repl_policy) {
-  int ii;
-  int shift_dedicated = 0;
-  uns num_sets = cache_size / line_size / assoc;
+  Drrip_State* s;
+  uns sets = cache->set_mask + 1;
+  uns leaders, constituency, k;
 
-  brrip_action_init(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
+  general_action_init(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
+  ASSERTM(0, sets >= 2, "%s: REPL_DRRIP needs at least 2 sets for set dueling (got %u)\n", name, sets);
+  ASSERTM(0, DRRIP_LEADER_SETS >= 1, "--drrip_leader_sets must be at least 1\n");
+  ASSERTM(0, DRRIP_PSEL_BITS >= 1 && DRRIP_PSEL_BITS <= 30, "--drrip_psel_bits must be in [1, 30] (got %u)\n",
+          DRRIP_PSEL_BITS);
+  ASSERTM(0, DRRIP_BIMODAL_THROTTLE_LOG2 <= 31, "--drrip_bimodal_throttle_log2 must be at most 31 (got %u)\n",
+          DRRIP_BIMODAL_THROTTLE_LOG2);
 
-  // init sample
-  cache->miss_count = (Counter*)malloc(sizeof(Counter) * num_sets);
-  for (ii = 0; ii < num_sets; ii++)
-    cache->miss_count[ii] = 0;
-
-  // init dedicated
-  cache->dedicated_policy_set = (uns*)malloc(sizeof(uns) * num_sets);
-  for (ii = 0; ii < num_sets; ii++) {
-    cache->dedicated_policy_set[ii] = 0;  // for dueling
+  s = (Drrip_State*)calloc(1, sizeof(Drrip_State));
+  s->role = (uns8*)calloc(cache->num_sets, sizeof(uns8));
+  leaders = MIN2(DRRIP_LEADER_SETS, sets / 2);
+  constituency = sets / leaders;
+  for (k = 0; k < leaders; k++) {
+    s->role[k * constituency + k % constituency] = DRRIP_LEADER_SRRIP;
+    s->role[k * constituency + (k + constituency / 2) % constituency] = DRRIP_LEADER_BRRIP;
   }
-  for (ii = 0; ii + 4 <= num_sets; ii = ii + 4) {
-    cache->dedicated_policy_set[ii + shift_dedicated % 4] = DRRIP_DEDICATED_BIMODAL;
-    cache->dedicated_policy_set[ii + (shift_dedicated + 1) % 4] = DRRIP_DEDICATED_STATIC;
-    shift_dedicated = (shift_dedicated + 1) % 4;
+  s->psel_max = (1u << DRRIP_PSEL_BITS) - 1;
+  s->psel = 1u << (DRRIP_PSEL_BITS - 1);
+  s->rng = DRRIP_RNG_SEED;
+  cache->predictor = s;
+}
+
+void drrip_update_miss(Cache* cache, uns8 proc_id, uns set, void* arg) {
+  Drrip_State* s = drrip_state(cache);
+
+  if (s->role[set] == DRRIP_LEADER_SRRIP) {
+    if (s->psel < s->psel_max)
+      s->psel++;
+  } else if (s->role[set] == DRRIP_LEADER_BRRIP) {
+    if (s->psel > 0)
+      s->psel--;
   }
 }
 
 void drrip_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg) {
-  int ii;
-  Counter miss_in_brrip = 0;
-  Counter miss_in_srrip = 0;
-  Flag psel;
+  Drrip_State* s = drrip_state(cache);
+  Flag use_brrip;
 
-  // dedicated set
-  if (cache->dedicated_policy_set[set]) {
-    if (cache->dedicated_policy_set[set] == DRRIP_DEDICATED_BIMODAL)
-      brrip_update_insert(cache, proc_id, set, way, arg);
-    else
-      srrip_update_insert(cache, proc_id, set, way, arg);
-
-    DEBUG(0, "DRRIP insert dedicated: 0x%x, %d\n\n", set, cache->dedicated_policy_set[set]);
-    return;
+  switch (s->role[set]) {
+    case DRRIP_LEADER_SRRIP:
+      use_brrip = FALSE;
+      break;
+    case DRRIP_LEADER_BRRIP:
+      use_brrip = TRUE;
+      break;
+    default:
+      /* The top bit of PSEL: SRRIP's leaders have missed more. */
+      use_brrip = (s->psel >> (DRRIP_PSEL_BITS - 1)) & 1 ? TRUE : FALSE;
+      break;
   }
 
-  // set dueling
-  for (ii = 0; ii < cache->num_sets; ii++) {
-    if (!cache->dedicated_policy_set[ii])
-      continue;
-    // sampling
-    if (cache->dedicated_policy_set[ii] == DRRIP_DEDICATED_BIMODAL)
-      miss_in_brrip += cache->miss_count[ii];
-    else
-      miss_in_srrip += cache->miss_count[ii];
+  if (use_brrip) {
+    uns64 draw;
+    s->rng ^= s->rng << 13;
+    s->rng ^= s->rng >> 7;
+    s->rng ^= s->rng << 17;
+    draw = s->rng >> 32;
+    /* Long interval with probability 2^-throttle, else distant. */
+    cache->entries[set][way].reference_val =
+        (draw & (((uns64)1 << DRRIP_BIMODAL_THROTTLE_LOG2) - 1)) == 0 ? RRIP_DISTANT_VAL - 1 : RRIP_DISTANT_VAL;
+  } else {
+    cache->entries[set][way].reference_val = RRIP_DISTANT_VAL - 1;
   }
-  psel = miss_in_brrip < miss_in_srrip ? TRUE : FALSE;
 
-  // do insertion
-  if (psel)
-    brrip_update_insert(cache, proc_id, set, way, arg);
-  else
-    srrip_update_insert(cache, proc_id, set, way, arg);
-
-  DEBUG(0, "DRRIP insert dueling: 0x%x, %d, 0x%llx, 0x%llx\n\n", set, psel, miss_in_brrip, miss_in_srrip);
-}
-
-Cache_Entry* drrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
-  cache->miss_count[set]++;
-  DEBUG(0, "DRRIP evict count: 0x%x, 0x%llx\n", set, cache->miss_count[set]);
-  return srrip_update_evict(cache, proc_id, set, way, arg, if_external);
+  DEBUG(0, "DRRIP insert: set 0x%x role %u psel %u brrip %d rrpv %d\n", set, s->role[set], s->psel, use_brrip,
+        cache->entries[set][way].reference_val);
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
 }
 
 /**************************************************************************************/
@@ -1765,8 +1851,9 @@ Cache_Entry* ship_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
   if (if_external)
     return line;
 
-  // prediction update
-  if (!line->outcome) {
+  // prediction update: train on the evicted block if it was never reused. A free (invalid) way
+  // held no block, so there is nothing to learn from it.
+  if (line->valid && !line->outcome) {
     cache->entries[set][*way].outcome = TRUE;
     struct ship_shct* cache_shct = (struct ship_shct*)cache->predictor;
     Counter* cache_shct_entry = (Counter*)hash_table_access(
@@ -1786,13 +1873,13 @@ Cache_Entry* ship_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
 
 // clang-format off
 struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
-  { REPL_LRU_REF, general_action_init,  general_action_repl,  lru_update_hit,     lru_update_insert,    lru_update_evict    },
-  { REPL_NRU,     general_action_init,  general_action_repl,  nru_update_hit,     nru_update_insert,    nru_update_evict    },
-  { REPL_SRRIP,   general_action_init,  general_action_repl,  nru_update_hit,     srrip_update_insert,  srrip_update_evict  },
-  { REPL_BRRIP,   brrip_action_init,    general_action_repl,  nru_update_hit,     brrip_update_insert,  srrip_update_evict  },
-  { REPL_DRRIP,   drrip_action_init,    general_action_repl,  nru_update_hit,     drrip_update_insert,  drrip_update_evict  },
-  { REPL_SHIP,    ship_action_init,     general_action_repl,  ship_update_hit,    ship_update_insert,   ship_update_evict   },
-  { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL                },
+  { REPL_LRU_REF, general_action_init,  general_action_repl,  lru_update_hit,     lru_update_insert,    lru_update_evict,   NULL              },
+  { REPL_NRU,     general_action_init,  general_action_repl,  nru_update_hit,     nru_update_insert,    nru_update_evict,   NULL              },
+  { REPL_SRRIP,   general_action_init,  general_action_repl,  nru_update_hit,     srrip_update_insert,  srrip_update_evict, NULL              },
+  { REPL_BRRIP,   brrip_action_init,    general_action_repl,  nru_update_hit,     brrip_update_insert,  srrip_update_evict, NULL              },
+  { REPL_DRRIP,   drrip_action_init,    general_action_repl,  nru_update_hit,     drrip_update_insert,  srrip_update_evict, drrip_update_miss },
+  { REPL_SHIP,    ship_action_init,     general_action_repl,  ship_update_hit,    ship_update_insert,   ship_update_evict,  NULL              },
+  { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL,               NULL              },
 };
 // clang-format on
 
