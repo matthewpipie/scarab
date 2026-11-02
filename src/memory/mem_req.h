@@ -160,6 +160,9 @@ struct Mem_Req_struct {
                                                 controller */
   Counter window_num;                        /* Window number, used for DCache miss MLP estimate */
   uns longest_chain;                         /* Used for dcache miss MLP estimate */
+  Counter fe_window_cycles;                  /* REPL_MLP: cycles this icache miss has been outstanding */
+  Counter fe_bound_cycles;                   /* REPL_MLP: subset of fe_window_cycles the frontend was
+                                                 stalled specifically on this miss */
   Counter unique_num;                        /* unique num that allocated this request - for icache
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */

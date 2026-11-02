@@ -105,6 +105,11 @@ void topdown_fetch_update(uns proc_id, Flag off_path, Flag backend_stall, int co
                           Topdown_Fe_Bubble fe_reason) {
   INC_STAT_EVENT(proc_id, TOPDOWN_TOTAL_SLOTS, TOPDOWN_WIDTH);
 
+  // REPL_MLP: accumulate every in-flight load's window/mem-bound cycles unconditionally, since
+  // td_window_cycles is a denominator that must advance every cycle a load is in flight, not just
+  // on a backend-stall cycle.
+  lsq_tag_inflight_loads(backend_stall);
+
   if (off_path) {
     // off_path is stamped at fetch from bp.c's recovery-point classification (icache_stage.c:971), so
     // it covers uopc-served wrong-path too. Credit on-path ops served before the flip to retiring; the

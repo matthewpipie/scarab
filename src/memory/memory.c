@@ -2426,6 +2426,9 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->shadow_row_hit = FALSE;
   new_req->destination = DEST_NONE;
 
+  new_req->fe_window_cycles = 0;
+  new_req->fe_bound_cycles = 0;
+
   if (op) {
     ASSERT(new_req->proc_id, new_req->proc_id == op->proc_id);
 
@@ -2849,6 +2852,39 @@ static inline void l1_miss_is_satisfied(Mem_Req* req) {
     mark_ops_as_l1_miss_satisfied(req);
 }
 
+/* REPL_MLP: classify the fill req is about to cause into `cache` as data-bound or
+   instruction-bound, and stage the resulting flat boost for the cache_insert[_replpos] call that
+   follows. No-ops (stages 0) when `cache` isn't running REPL_MLP, which is the common case and
+   costs one comparison.
+
+   Data side: the demanding load's td_mem_cycles/td_window_cycles, accumulated every cycle of its
+   dispatch->done window by lsq_tag_inflight_loads (topdown.c). No off-path gate -- an off-path
+   load is tracked and classified exactly like an on-path one.
+
+   Instruction side: req->fe_bound_cycles/fe_window_cycles, accumulated every cycle the icache
+   miss was outstanding (icache_stage.c). mem_req_is_type (the coalesced-type bitmask), not
+   req->type ==, so a late instruction prefetch a demand fetch merged into is classified
+   identically to a demand fetch -- the baseline prefetch-merge inclusion. */
+static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
+  if (cache->repl_policy != REPL_MLP)
+    return;
+
+  float boost = 0.0;
+  if (req->op_count) {
+    Op* demand_op = *((Op**)list_start_head_traversal(&req->op_ptrs));
+    if (demand_op->td_window_cycles) {
+      double frac = (double)demand_op->td_mem_cycles / (double)demand_op->td_window_cycles;
+      if (frac > (double)MLP_LIN_DATA_THRESH)
+        boost = MLP_LIN_DATA_LAMBDA;
+    }
+  } else if (mem_req_is_type(req, MRT_IFETCH) && req->fe_window_cycles) {
+    double frac = (double)req->fe_bound_cycles / (double)req->fe_window_cycles;
+    if (frac > (double)MLP_LIN_INSTR_THRESH)
+      boost = MLP_LIN_INSTR_LAMBDA;
+  }
+  cache_set_next_fill_mlp_boost(boost);
+}
+
 Flag l1_fill_line(Mem_Req* req) {
   if (!fill_inserts_at_l1(req)) {
     STAT_EVENT(req->proc_id, EXCL_FILL_SKIPPED_LLC);
@@ -3058,6 +3094,8 @@ Flag l1_fill_line(Mem_Req* req) {
       data_ctr->count = data_ctr->count + 1;
     }
   }
+
+  mlp_stage_fill_boost(&L1(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3372,6 +3410,8 @@ Flag mlc_fill_line(Mem_Req* req) {
         STAT_EVENT(repl_proc_id, CORE_PREF_MLC_DEMAND_LATENCY300);
     }
   }
+
+  mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers

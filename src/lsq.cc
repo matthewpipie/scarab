@@ -331,3 +331,19 @@ int lsq_get_in_flight_load_num() {
 
   return in_flight_num;
 }
+
+/* REPL_MLP: accumulate every in-flight load's window/mem-bound cycle counters, once per cycle.
+   No off-path gate -- off-path loads are tracked identically, same as every other in-flight load. */
+void lsq_tag_inflight_loads(Flag mem_bound_cycle) {
+  if (!LSQ_ENABLE)
+    return;
+
+  const auto& load_entries = lsq_unit->get_queue(MEM_LD)->get_entries();
+  for (const auto& entry : load_entries) {
+    if (entry.op->state >= OS_IN_RS) {
+      entry.op->td_window_cycles++;
+      if (mem_bound_cycle)
+        entry.op->td_mem_cycles++;
+    }
+  }
+}
