@@ -163,6 +163,10 @@ struct Mem_Req_struct {
   Counter fe_window_cycles;                  /* REPL_MLP: cycles this icache miss has been outstanding */
   Counter fe_bound_cycles;                   /* REPL_MLP: subset of fe_window_cycles the frontend was
                                                  stalled specifically on this miss */
+  Counter ld_window_cycles;                  /* REPL_MLP: cycles any op waiting on this request has been
+                                                 in flight, summed across every op merged into it */
+  Counter ld_bound_cycles;                   /* REPL_MLP: subset of ld_window_cycles the core was
+                                                 backend/memory-bound */
   Counter unique_num;                        /* unique num that allocated this request - for icache
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */

@@ -2428,6 +2428,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
 
   new_req->fe_window_cycles = 0;
   new_req->fe_bound_cycles = 0;
+  new_req->ld_window_cycles = 0;
+  new_req->ld_bound_cycles = 0;
 
   if (op) {
     ASSERT(new_req->proc_id, new_req->proc_id == op->proc_id);
@@ -2857,30 +2859,47 @@ static inline void l1_miss_is_satisfied(Mem_Req* req) {
    follows. No-ops (stages 0) when `cache` isn't running REPL_MLP, which is the common case and
    costs one comparison.
 
-   Data side: the demanding load's td_mem_cycles/td_window_cycles, accumulated every cycle of its
-   dispatch->done window by lsq_tag_inflight_loads (topdown.c). No off-path gate -- an off-path
-   load is tracked and classified exactly like an on-path one.
+   Data side: req->ld_bound_cycles/ld_window_cycles, accumulated every cycle any op merged into
+   this request was in flight by lsq_tag_inflight_loads (lsq.cc), via op->req rather than the op
+   itself -- so a flushed op's contribution up to the point it was flushed still counts here, and
+   there's no op_ptrs walk that could read a pool-recycled op's unrelated state. No off-path gate --
+   an off-path load is tracked and classified exactly like an on-path one.
 
    Instruction side: req->fe_bound_cycles/fe_window_cycles, accumulated every cycle the icache
    miss was outstanding (icache_stage.c). mem_req_is_type (the coalesced-type bitmask), not
    req->type ==, so a late instruction prefetch a demand fetch merged into is classified
-   identically to a demand fetch -- the baseline prefetch-merge inclusion. */
+   identically to a demand fetch -- the baseline prefetch-merge inclusion.
+
+   Marked-load/fetch/merge stats: a "merge" is a request more than one op or type coalesced into --
+   req->op_count > 1 on the data side (multiple loads sharing the miss), popcount32(req->types) > 1
+   on the instruction side (e.g. a demand fetch merged into a request that started as a prefetch). */
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
   if (cache->repl_policy != REPL_MLP)
     return;
 
   float boost = 0.0;
   if (req->op_count) {
-    Op* demand_op = *((Op**)list_start_head_traversal(&req->op_ptrs));
-    if (demand_op->td_window_cycles) {
-      double frac = (double)demand_op->td_mem_cycles / (double)demand_op->td_window_cycles;
+    if (req->ld_window_cycles) {
+      double frac = (double)req->ld_bound_cycles / (double)req->ld_window_cycles;
       if (frac > (double)MLP_LIN_DATA_THRESH)
         boost = MLP_LIN_DATA_LAMBDA;
     }
-  } else if (mem_req_is_type(req, MRT_IFETCH) && req->fe_window_cycles) {
-    double frac = (double)req->fe_bound_cycles / (double)req->fe_window_cycles;
-    if (frac > (double)MLP_LIN_INSTR_THRESH)
-      boost = MLP_LIN_INSTR_LAMBDA;
+    if (boost > 0.0) {
+      STAT_EVENT(req->proc_id, MLP_MARKED_LOAD);
+      if (req->op_count > 1)
+        STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
+    }
+  } else if (mem_req_is_type(req, MRT_IFETCH)) {
+    if (req->fe_window_cycles) {
+      double frac = (double)req->fe_bound_cycles / (double)req->fe_window_cycles;
+      if (frac > (double)MLP_LIN_INSTR_THRESH)
+        boost = MLP_LIN_INSTR_LAMBDA;
+    }
+    if (boost > 0.0) {
+      STAT_EVENT(req->proc_id, MLP_MARKED_FETCH);
+      if (popcount32(req->types) > 1)
+        STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
+    }
   }
   cache_set_next_fill_mlp_boost(boost);
 }

@@ -194,11 +194,6 @@ struct Op_struct {
   Op_Cycles cycles;  // all per-op pipeline cycle counters (access via op_get/op_set_<name>_cycle)
   // }}}
 
-  // {{{ REPL_MLP boundness tracking (data side)
-  Counter td_window_cycles;  // cycles this load has been in flight (dispatched, not yet done)
-  Counter td_mem_cycles;     // subset of td_window_cycles where the core was backend/memory-bound
-  // }}}
-
   // {{{ path and fetch info
   Flag off_path;                // is the op on the correct path of the program? - oracle information
   Flag conf_off_path;           // is the op on the correct path of the program? - confidence information

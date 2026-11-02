@@ -43,6 +43,7 @@ extern "C" {
 #include "bp/bp.h"
 
 #include "exec_ports.h"
+#include "memory/mem_req.h"
 #include "node_stage.h"
 }
 
@@ -332,18 +333,25 @@ int lsq_get_in_flight_load_num() {
   return in_flight_num;
 }
 
-/* REPL_MLP: accumulate every in-flight load's window/mem-bound cycle counters, once per cycle.
-   No off-path gate -- off-path loads are tracked identically, same as every other in-flight load. */
+/* REPL_MLP: accumulate every in-flight load's window/bound cycles onto its Mem_Req (not the op),
+   once per cycle. No off-path gate -- off-path loads are tracked identically, same as every other
+   in-flight load. Writing through op->req rather than the op itself means a load's contribution
+   survives the load being flushed: op->req is only set once the load has actually merged into an
+   outstanding request (memory.c), and the request isn't freed while any op still depends on it, so
+   the counters on req are always safe to touch and never read back stale/reused op state at fill
+   time (see mlp_stage_fill_boost in memory.c). A request fed by several merged loads accumulates
+   faster, but the bound/window ratio -- what fill time actually reads -- stays representative since
+   mem_bound_cycle is the same core-wide flag for every one of them. */
 void lsq_tag_inflight_loads(Flag mem_bound_cycle) {
   if (!LSQ_ENABLE)
     return;
 
   const auto& load_entries = lsq_unit->get_queue(MEM_LD)->get_entries();
   for (const auto& entry : load_entries) {
-    if (entry.op->state >= OS_IN_RS) {
-      entry.op->td_window_cycles++;
+    if (entry.op->state >= OS_IN_RS && entry.op->req) {
+      entry.op->req->ld_window_cycles++;
       if (mem_bound_cycle)
-        entry.op->td_mem_cycles++;
+        entry.op->req->ld_bound_cycles++;
     }
   }
 }
