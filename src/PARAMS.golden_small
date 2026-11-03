@@ -149,21 +149,19 @@
 ### Mid-level cache
 
 # Enable use of a midlevel cache between i/d and L1
-# client 1.25 MiB (1310720 bytes) per core, 8-way, 15 cycles
-# server 2 MiB (2097152 bytes) per core, 8-way, 16 cycles
+# 2 MiB (2097152 bytes) = 2048 sets x 16 ways x 64 B
 --mlc_present                   1
 --mlc_size                      2097152
---mlc_assoc                     8
+--mlc_assoc                     16
 --mlc_cycles                    11  # L2 load-use 16 = AGEN(1) + dcache 4 + 11
 
 
 ### LLC
-# 3 MiB per core, 16-way. Modelled as 12-way: Scarab needs a power-of-two set count, and
-# 3 MiB / 64 B / 16 ways is 3072 sets, while 12 ways gives 4096.
---l1_size                       3145728
+# 1.875 MiB (1966080 bytes) = 2048 sets x 15 ways x 64 B, exclusive of the L2 (see below)
+--l1_size                       1966080
 --l1_banks                      8
 --l1_cycles		                66          # L3 load-use 86 = L2 16 + 4 transfer/fill + 66
---l1_assoc                      12
+--l1_assoc                      15
 --l1_line_size                  64
 --l1_interleave_factor          64
 
@@ -218,15 +216,17 @@
 --mem_priority_wb            5
 --mem_priority_wb_nodirty    5
 
---bus_width_in_bytes            8
+--bus_width_in_bytes            4   # one 32-bit DDR5 subchannel; must match the ramulator2_config
 
 # DRAM: Ramulator 2 with a config built into scarab (src/ramulator2/<name>.yaml). The ramulator_*
-# organization and tCK below must match it.
+# organization and tCK below must match it (values from src/ramulator2/<name>.params).
+# DDR5-4800, 16 Gb x8 chips, 1 rank. A Ramulator 2 DDR5 channel is one 32-bit subchannel, so this
+# is half a DIMM: 4800 MT/s x 4 B = 19.2 GB/s peak.
 --dram_backend			ramulator2
---ramulator2_config		DDR4_2400R_8Gb_x8_1ch
+--ramulator2_config		DDR5_4800AN_16Gb_x8_1ch
 --ramulator_channels		1
 --ramulator_ranks		1
---ramulator_bankgroups		4
+--ramulator_bankgroups		8
 --ramulator_banks		4
 --ramulator_chip_width		8
 --ramulator_rows		65536
@@ -234,7 +234,7 @@
 --ramulator_scheduling_policy	FRFCFS		
 --ramulator_readq_entries	32
 --ramulator_writeq_entries	32
---ramulator_tCK			833333
+--ramulator_tCK			416667
 --dram_tech_in_nm		32
 
 ## Other
