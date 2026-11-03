@@ -1,0 +1,261 @@
+# File         : PARAMS.golden_small
+# Date         : 11/02/26
+# Description  : Golden Cove-based small configuration (derived from PARAMS.golden_cove)
+# Author       : Surim Oh <soh31@ucsc.edu>
+#
+# Based on documentation found here:
+# https://en.wikipedia.org/wiki/Golden_Cove
+# https://en.wikichip.org/wiki/intel/microarchitectures/golden_cove
+# https://www.anandtech.com/show/16881/a-deep-dive-into-intels-alder-lake-microarchitectures/3
+
+## Simulation Parameters
+--mode                          full
+--model                         cmp
+--sim_limit                     none
+
+## Core Parameters
+
+# Femptoseconds, 3.2GHz, used for energy estimates.
+--chip_cycle_time               312500
+
+
+### Fetch Stage
+--fetch_off_path_ops            1
+
+#### ICache
+--icache_size                   32768
+--icache_assoc                  8
+--icache_line_size              64
+
+### Uop Cache
+# inclusive w/ L1i
+--uop_cache_enable              1
+--uop_cache_width               8
+--uop_cache_lines               512      # 8 x 512 = 4096 uops in total (~4K)
+--uop_cache_assoc               8
+--iprf_on_uop_cache_hit         1
+
+### Branch Predictor
+--cfs_per_cycle                 6                         # Number of branches that can be predicted in a single cycle
+--bp_update_at_retire           0                         # Update the BP at retire. If false, update at the end of exec.
+--update_bp_off_path            1                         # Allow off path ops to update branch predictor state (e.g., ops when they complete exec stage).
+--bp_mech                       tage64k
+
+
+#### BTB
+
+# TODO
+# multi-level BTB
+# 128 entry L0 BTB
+# 6144 entry L1 BTB
+# 12888 entry L2 BTB
+# ~2 entry Return Stack
+# roughly 2x8192 for now
+# BTB model to use.
+--btb_mech                      generic
+--btb_entries                   12288
+--btb_assoc                     3                         # 4096 sets; entries / assoc must be a power of two
+--btb_main_latency              3
+--btb_l0_present                1
+--btb_l0_entries                128
+--btb_l0_assoc                  4
+--btb_l0_latency                1
+--btb_l1_present                1
+--btb_l1_entries                6144
+--btb_l1_assoc                  3                         # 2048 sets
+--btb_l1_latency                2
+
+# Allow the BTB to be updated by off path ops.
+--btb_off_path_writes           1
+
+# NT branches are not inserted in BTB, but do not trigger resteer
+# since we continue without a control flow change
+--perfect_nt_btb                0  # deprecated, effectively always true.
+
+#### CRS
+
+# Enable return stack
+--enable_crs                    1
+--crs_entries                   128
+--crs_realistic                 1
+
+### iBP
+--enable_ibp                    1                         # Enable the indirect branch predictor
+--ibtb_mech                     tc_tagged
+                                                          # iBTB Model. tc_tagless, tc_tagged, tc_hybrid.
+--ibtb_off_path_writes          1                         # Allow off path ops to update the ibtb.
+--tc_entries                    4096
+--tc_assoc                      4
+
+### Decode Stage
+--decode_width                  6
+--decode_cycles                 5
+
+### Instruction Decode Queue
+--dispatch_width                6
+--idq_size                      144
+
+### Map Stage
+--rename_width                  6
+--map_cycles                    5
+
+# register renaming table
+--reg_renaming_scheme               1
+--reg_table_integer_physical_size   280
+--reg_table_vector_physical_size    332
+
+### Issue Stage
+--rs_fill_width                 0
+# rs_sizes ~205 in total, and they are split into three different reservation stations (RS1, RS2, RS3) where each has 97, 70, 38 entries respectively
+# original architecture
+# RS1 connected to port 0,1,5,6,10
+# RS2 connected to port 2,3,11
+# RS3 connected to port 7,8,4,9
+# scarab does not split ST AGU port and ST port, merge them
+# adjusted architecture to scarab ST AGU (port 4 and 9 removed. rs_size reduced to 186 from 205)
+# RS1 connected to port 0,1,4,5,8
+# RS2 connected to port 2,3,9
+# RS3 connected to port 6,7 (port 4,9 removed, entries reduced to 19 from 38)
+--rs_sizes                      97 70 19
+--rs_connections                b0100110011 b1000001100 b0011000000
+--fu_types                      b00100100111111100111001001111110010010011111110011100100111111 b10010000110111100011111001110111001000011011110001111100111011 b00000001000000001000000010000010000000100000000100000001000001 b00000001000000001000000010000010000000100000000100000001000001 b00000000110111100011011001110110000000011011110001101100111011 b01001000000000000111001001111110100100000000000011100100111111 b00000010000000010000000100000010000001000000001000000010000001 b00000010000000010000000100000010000001000000001000000010000001 b00000000000000000011001001110110000000000000000001100100111011 b00000001000000001000000010000010000000100000000100000001000001
+
+### Exec Stage
+
+### DCache
+--dcache_size 	 	        49152
+--dcache_read_ports             1
+--dcache_write_ports            1
+--dcache_banks                  8
+--dcache_assoc		            12
+--dcache_line_size              64
+--dcache_cycles                 4
+
+### Reorder/Retire Stage
+
+# Max number of instructions to be retired per cycle.
+--node_ret_width                8
+--node_table_size               512
+
+# Do not keep stores in RSVs on cache misses; TODO: confirm what this knob does
+--stores_do_not_block_window    1
+
+# TODO: confirm what this knob does
+--prefs_do_not_block_window     1
+
+
+## Uncore
+
+### Mid-level cache
+
+# Enable use of a midlevel cache between i/d and L1
+# client 1.25 MiB (1310720 bytes) per core, 8-way, 15 cycles
+# server 2 MiB (2097152 bytes) per core, 8-way, 16 cycles
+--mlc_present                   1
+--mlc_size                      2097152
+--mlc_assoc                     8
+--mlc_cycles                    11  # L2 load-use 16 = AGEN(1) + dcache 4 + 11
+
+
+### LLC
+# 3 MiB per core, 16-way. Modelled as 12-way: Scarab needs a power-of-two set count, and
+# 3 MiB / 64 B / 16 ways is 3072 sets, while 12 ways gives 4096.
+--l1_size                       3145728
+--l1_banks                      8
+--l1_cycles		                66          # L3 load-use 86 = L2 16 + 4 transfer/fill + 66
+--l1_assoc                      12
+--l1_line_size                  64
+--l1_interleave_factor          64
+
+### Cache hierarchy policy
+# Non-inclusive LLC, modelled as exclusive: a fill inserts only at the level the
+# request targets and a victim moves down instead of being duplicated. Intel
+# states no inclusion property from Skylake-SP onward because guaranteeing one
+# would mean probing every core's L1 and L2 on each LLC insertion; the intent is
+# a victim-filled LLC, which is what this models. The residue that cannot be
+# guaranteed away is counted as EXCL_FILL_DUP_L0_LLC (4.4% of LLC prefetch fills).
+--exclusive_caches              1
+
+
+### prefetcher
+# Kept same as Kaby Lake
+--pref_framework_on             1
+# Data prefetchers disabled: a pref_num_* of 0 turns off prefetchers trained at that level
+# (instruction prefetchers such as FDIP are configured separately). To enable one, set
+# both its count and its list, e.g.
+#   --pref_num_mlc_prefetchers      1
+#   --pref_mlc_prefetchers          TYPE_STREAM,DEST_MLC
+--pref_num_dcache_prefetchers   0
+--pref_num_mlc_prefetchers      0
+--pref_num_l1_prefetchers       0
+--pref_train_on_pref_misses     0
+--pref_oracle_train             0
+
+--stream_length                 16
+--stream_prefetch_n             2
+--stream_start_dis              1
+--stream_train_num              4
+
+--pref_throttlefb_on=0
+--pref_acc_thresh_1=0.75
+--pref_acc_thresh_2=0.4
+--pref_acc_thresh_3=0.4
+--pref_timely_thresh=0.01
+--pref_polpf_thresh=0.005
+--pref_update_interval=8192
+
+--promote_to_higher_priority_mem_req_type 1
+
+### Memory
+# Kept same as Kaby Lake
+--addr_translation		random
+
+--mem_priority_ifetch        0
+--mem_priority_dfetch        1
+--mem_priority_dstore        2
+--mem_priority_iprf          3
+--mem_priority_dprf          4
+--mem_priority_wb            5
+--mem_priority_wb_nodirty    5
+
+--bus_width_in_bytes            8
+
+# DRAM: Ramulator 2 with a config built into scarab (src/ramulator2/<name>.yaml). The ramulator_*
+# organization and tCK below must match it.
+--dram_backend			ramulator2
+--ramulator2_config		DDR4_2400R_8Gb_x8_1ch
+--ramulator_channels		1
+--ramulator_ranks		1
+--ramulator_bankgroups		4
+--ramulator_banks		4
+--ramulator_chip_width		8
+--ramulator_rows		65536
+--ramulator_cols		1024
+--ramulator_scheduling_policy	FRFCFS		
+--ramulator_readq_entries	32
+--ramulator_writeq_entries	32
+--ramulator_tCK			833333
+--dram_tech_in_nm		32
+
+## Other
+
+
+### Debug
+--debug_inst_start              0
+--debug_inst_stop              -1
+--debug_cycle_start             0
+--debug_cycle_stop             -1
+
+
+## Stats and Params
+--dump_params                   1
+--dump_stats                    1
+--dump_trace                    0
+
+####################################
+--set_off_path_confirmed        1
+
+--order_beyond_bus              1
+
+--mem_ooo_stores                1
+--mem_obey_store_dep            1
