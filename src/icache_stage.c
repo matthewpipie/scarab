@@ -52,6 +52,7 @@
 #include "libs/list_lib.h"
 #include "libs/port_lib.h"
 #include "memory/memory.h"
+#include "memory/mshr.h"
 #include "prefetcher/D_JOLT.h"
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
@@ -891,6 +892,25 @@ void execute_coupled_FSM() {
   else if (break_fetch == BREAK_ICACHE_MISS_REQ_SUCCESS || break_fetch == BREAK_ICACHE_MISS_REQ_FAILURE ||
            break_fetch == BREAK_ICACHE_WAIT_FOR_MISS)
     topdown_fe_reason = TD_FE_ICACHE_MISS;  // both uop cache and icache missed
+
+  /* REPL_MLP: fe_window_cycles counts every cycle this line's request is outstanding, regardless
+     of this cycle's fe_reason -- it's the denominator and must advance whether or not the stall is
+     this miss's fault. fe_bound_cycles only counts the subset where it is. No off-path gate and no
+     gate on whether the line's own request started as a prefetch: mshr_line_first returns
+     whichever request is resident for the line, demand or merged-into prefetch alike, and the
+     fill-time check in memory.c is on req->types, not req->type, so a merge is picked up
+     identically either way. */
+  Mshr* ifetch_mshr = mem_core_file(ic->proc_id, MRT_IFETCH);
+  Mshr_Line* ifetch_line = mshr_line(ifetch_mshr, ic->line_addr);
+  if (ifetch_line) {
+    Mem_Req* ifetch_req = mshr_line_first(ifetch_line);
+    if (ifetch_req) {
+      ifetch_req->fe_window_cycles++;
+      if (topdown_fe_reason == TD_FE_ICACHE_MISS)
+        ifetch_req->fe_bound_cycles++;
+    }
+  }
+
   topdown_fetch_update(ic->proc_id, ic->off_path, topdown_backend_stall, cur_data->op_count,
                        ic->topdown_on_path_fetched, topdown_fe_reason);
 }

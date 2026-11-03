@@ -93,6 +93,10 @@ typedef struct Cache_Entry_struct {
 
   uns8 reference_val; /* for re-reference replacement policy */
   Flag outcome;       /* for replacement policy */
+
+  float mlp_boost; /* REPL_MLP: eviction-priority boost staged at fill (mlp_lin_data_lambda or
+                       mlp_lin_instr_lambda if the filling load/fetch cleared its boundness
+                       threshold, else 0) */
 } Cache_Entry;
 
 // DO NOT CHANGE THIS ORDER
@@ -205,6 +209,10 @@ uns ext_cache_index(Cache*, Addr, Addr*, Addr*);
 Addr get_cache_line_addr(Cache*, Addr);
 uns cache_get_invalid_line_count(Cache* cache, Addr addr);
 void update_repl_resteer_policy(Cache*, Addr);
+
+/* REPL_MLP: stage the boost the NEXT cache_insert_replpos call should stamp on the new line.
+   Call right before a fill-time cache_insert on a cache running REPL_MLP; reset to 0 after. */
+void cache_set_next_fill_mlp_boost(float boost);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);

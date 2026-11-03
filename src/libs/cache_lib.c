@@ -53,6 +53,14 @@
 
 #define DEBUG(proc_id, args...) _DEBUG(proc_id, DEBUG_CACHE_LIB, ##args)
 
+/* REPL_MLP: staged by memory.c right before a fill-time cache_insert on a cache running
+   REPL_MLP, consumed by cache_insert_replpos when it stamps the new Cache_Entry. */
+static float g_next_fill_mlp_boost = 0.0;
+
+void cache_set_next_fill_mlp_boost(float boost) {
+  g_next_fill_mlp_boost = boost;
+}
+
 /**************************************************************************************/
 /* Static Prototypes */
 
@@ -362,6 +370,8 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   new_line->base = *line_addr;
   new_line->last_access_time = sim_time;  // FIXME: this fixes valgrind warnings in update_prf_
   new_line->pref = isPrefetch;
+  new_line->mlp_boost = g_next_fill_mlp_boost;
+  g_next_fill_mlp_boost = 0.0;
 
   new_line->pw_start_addr = addr;  // only means anything for uop cache
 
@@ -626,6 +636,38 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
       return &cache->entries[set][lru_ind];
     }
 
+    case REPL_MLP: {
+      /* Evict argmin(Recency + mlp_boost). Recency is the LRU stack position (0 = LRU), computed
+         as a rank -- how many resident lines are older -- rather than compared via raw
+         last_access_time, since mlp_boost (in stack positions) has to be added to something on
+         the same scale. An invalid way wins outright, same as every other case. */
+      uns best_ind = 0;
+      double best_val = 0.0;
+      Flag have_best = FALSE;
+      for (ii = 0; ii < cache->assoc; ii++) {
+        Cache_Entry* entry = &cache->entries[set][ii];
+        if (!entry->valid) {
+          *way = ii;
+          return entry;
+        }
+        uns rank = 0;
+        int jj;
+        for (jj = 0; jj < cache->assoc; jj++) {
+          Cache_Entry* other = &cache->entries[set][jj];
+          if (other->valid && other->last_access_time < entry->last_access_time)
+            rank++;
+        }
+        double val = (double)rank + (double)entry->mlp_boost;
+        if (!have_best || val < best_val) {
+          best_val = val;
+          best_ind = ii;
+          have_best = TRUE;
+        }
+      }
+      *way = best_ind;
+      return &cache->entries[set][best_ind];
+    } break;
+
     default:
       ASSERT(0, FALSE);
   }
@@ -677,6 +719,10 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
     case REPL_SHADOW_IDEAL:
     case REPL_TRUE_LRU:
     case REPL_PARTITION:
+    /* REPL_MLP derives its Recency term from this same LRU stack -- without this case,
+       last_access_time would never advance on a hit and every line would rank equally,
+       leaving mlp_boost to decide the victim alone. */
+    case REPL_MLP:
       cur_entry->last_access_time = sim_time;
       break;
     case REPL_RANDOM: {

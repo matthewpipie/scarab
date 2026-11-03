@@ -149,6 +149,17 @@ DEF_PARAM(pw_priority_list_filepath, PW_PRIORITY_LIST_FILEPATH, char*, string, "
 DEF_PARAM(num_priority_pws, NUM_PRIORITY_PWS, uns, uns, 10,)
 DEF_PARAM(prioritize_pws_after_first_sticky_until_backend_stall, PRIORITIZE_PWS_AFTER_FIRST_STICKY_UNTIL_BACKEND_STALL, Flag, Flag, FALSE,)
 DEF_PARAM(no_repl_after_queue_size, NO_REPL_AFTER_QUEUE_SIZE, uns, uns, 0,)
+
+/* REPL_MLP (--mlc_cache_repl_policy 9 / --l1_cache_repl_policy 9): evict
+   argmin(Recency + boost), Recency the LRU stack position (0 = LRU). A line filled by a load or
+   instruction fetch classified data-bound / instruction-bound (its stall-cycles-over-window-cycles
+   fraction cleared its own threshold) gets a flat boost of mlp_lin_data_lambda /
+   mlp_lin_instr_lambda; everything else gets 0, so both at their 0.0 default reproduces plain LRU. */
+DEF_PARAM(mlp_lin_data_lambda, MLP_LIN_DATA_LAMBDA, float, float, 0.0, )
+DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
+DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.5, )
+DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
+
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
 DEF_PARAM(  fdip_uc_size                   , FDIP_UC_SIZE                    , uns    , uns     , 0                      ,       )

@@ -43,6 +43,7 @@ extern "C" {
 #include "bp/bp.h"
 
 #include "exec_ports.h"
+#include "memory/mem_req.h"
 #include "node_stage.h"
 }
 
@@ -330,4 +331,34 @@ int lsq_get_in_flight_load_num() {
   }
 
   return in_flight_num;
+}
+
+/* REPL_MLP: accumulate every in-flight load's window/bound cycles onto its Mem_Req (not the op),
+   once per cycle. No off-path gate -- off-path loads are tracked identically, same as every other
+   in-flight load. Writing through op->req rather than the op itself means a load's contribution
+   survives the load being flushed (op->req is only set once the load has merged into an
+   outstanding request, memory.c).
+
+   op->req is never cleared, though: once the request fills it is freed and its slot is reused by
+   an unrelated request, while the load can sit in the LSQ (OS_DONE) until it retires. So only tag
+   loads still waiting on their data. dcache_fill_line sets done_cycle on every live op it wakes
+   before the request is freed, and done_cycle is write-once, so done_cycle == MAX_CTR means
+   op->req is still the request this load is waiting on. The L1/MLC fills that read these counters
+   (mlp_stage_fill_boost) happen before the dcache fill, so no cycle they would read is dropped.
+
+   A request fed by several merged loads accumulates faster, but the bound/window ratio -- what fill
+   time actually reads -- stays representative since mem_bound_cycle is the same core-wide flag for
+   every one of them. */
+void lsq_tag_inflight_loads(Flag mem_bound_cycle) {
+  if (!LSQ_ENABLE)
+    return;
+
+  const auto& load_entries = lsq_unit->get_queue(MEM_LD)->get_entries();
+  for (const auto& entry : load_entries) {
+    if (entry.op->state >= OS_IN_RS && entry.op->req && op_get_done_cycle(entry.op) == MAX_CTR) {
+      entry.op->req->ld_window_cycles++;
+      if (mem_bound_cycle)
+        entry.op->req->ld_bound_cycles++;
+    }
+  }
 }
