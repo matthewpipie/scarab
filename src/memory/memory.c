@@ -708,6 +708,13 @@ static inline Flag mem_req_type_is_inst(Mem_Req_Type type) {
          type == MRT_FDIPPRFOFF || type == MRT_FDIPPRFALT;
 }
 
+/* Whether the MLC is exclusive of the first-level cache a request of this type is bound
+   for: the icache for an instruction type, the dcache otherwise. A writeback counts as
+   data, which changes nothing: the MLC inserts a writeback either way. */
+static inline Flag mem_exclusive_mlc_for(Mem_Req_Type type) {
+  return mem_req_type_is_inst(type) ? mem_exclusive_mlc_icache() : mem_exclusive_mlc_dcache();
+}
+
 /* The file a miss below the core enters: the icache's or the dcache's, each waiting at
    the MLC; with no MLC both go to the LLC's. */
 Mshr* mem_core_file(uns8 proc_id, Mem_Req_Type type) {
@@ -1015,7 +1022,7 @@ static inline Flag fill_inserts_at_l1(Mem_Req* req) {
 }
 
 static inline Flag fill_inserts_at_mlc(Mem_Req* req) {
-  if (!mem_exclusive_mlc())
+  if (!mem_exclusive_mlc_for(req->type))
     return TRUE;
   Flag at_mlc = req->destination == DEST_MLC;
   if (at_mlc && !fill_req_is_wb(req))
@@ -1024,10 +1031,11 @@ static inline Flag fill_inserts_at_mlc(Mem_Req* req) {
 }
 
 /* A demand carries DEST_NONE rather than DEST_DCACHE, so the dcache is not named by
-   destination -- it is whatever no lower level claimed. Only an exclusive MLC can claim
-   a core-bound line away from it. */
+   destination -- it is whatever no lower level claimed. Only an MLC exclusive of the
+   request's side can claim a core-bound line away from it. (An icache-bound request is
+   checked here too: done_func is its fill as well.) */
 static inline Flag fill_inserts_at_dcache(Mem_Req* req) {
-  if (!mem_exclusive_mlc())
+  if (!mem_exclusive_mlc_for(req->type))
     return req->done_func != NULL;
   Flag at_dcache = req->destination != DEST_L1 && req->destination != DEST_MLC;
   if (at_dcache && !fill_req_is_wb(req))
@@ -1183,7 +1191,7 @@ Flag mem_process_mlc_hit_access(Mem_Req* req, Addr* line_addr, MLC_Data* data, i
       data->dirty |= (req->type == MRT_WB);
       /* Above the MLC: NONE (demand), DCACHE or ICACHE take the line away. */
       if (req->destination < DEST_MLC && req->type != MRT_WB && req->type != MRT_WB_NODIRTY)
-        mem_invalidate_on_promote(req, &MLC(req->proc_id)->cache, mem_exclusive_mlc(), data->dirty,
+        mem_invalidate_on_promote(req, &MLC(req->proc_id)->cache, mem_exclusive_mlc_for(req->type), data->dirty,
                                   EXCL_PROMOTE_INVAL_MLC);
     }
 
@@ -1868,9 +1876,9 @@ void mem_complete_bus_in_access(Mem_Req* req, Counter priority) {
         "size:%d  state: %s\n",
         Mem_Req_Type_str(req->type), hexstr64s(req->addr), req->size, mem_req_state_names[req->state]);
 
-  /* With every level exclusive, exactly one keeps the line, which is what the
-     destination is for. */
-  ASSERT(req->proc_id, !(mem_exclusive_mlc() && mem_exclusive_l1()) || fill_req_is_wb(req) ||
+  /* With every level exclusive (on this request's side), exactly one keeps the line,
+     which is what the destination is for. */
+  ASSERT(req->proc_id, !(mem_exclusive_mlc_for(req->type) && mem_exclusive_l1()) || fill_req_is_wb(req) ||
                            fill_inserts_at_l1(req) + fill_inserts_at_mlc(req) + fill_inserts_at_dcache(req) == 1);
 
   /* A read's data, or DRAM's acknowledgement of an LLC writeback: the line left the
