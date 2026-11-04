@@ -1042,15 +1042,15 @@ static inline void icache_process_ops(Stage_Data* cur_data, Flag fetched_from_uo
 
 /**************************************************************************************/
 /* icache_demote_victim: */
-/* Exclusive hierarchy: the line this fill is about to evict moves down a level, as a
-   writeback, instead of vanishing. Without this, instruction lines -- which skip the MLC and
-   LLC on fill (see mlc_fill_line/l1_fill_line) -- have no backing store at all. */
+/* MLC exclusive of the icache: the line this fill is about to evict moves down a level, as
+   a writeback, instead of vanishing. Without this, instruction lines -- which skip such an
+   MLC on fill (see mlc_fill_line) -- have no backing store below the icache. */
 
 static inline void icache_demote_victim(Addr fill_addr) {
   Addr repl_line_addr;
   Flag repl_line_valid;
 
-  if (!EXCLUSIVE_CACHES)
+  if (!mem_exclusive_mlc_icache())
     return;
 
   get_next_repl_line(&ic->icache, ic->proc_id, fill_addr, &repl_line_addr, &repl_line_valid);

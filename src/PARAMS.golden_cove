@@ -168,13 +168,15 @@
 --l1_interleave_factor          64
 
 ### Cache hierarchy policy
-# Non-inclusive LLC, modelled as exclusive: a fill inserts only at the level the
-# request targets and a victim moves down instead of being duplicated. Intel
-# states no inclusion property from Skylake-SP onward because guaranteeing one
-# would mean probing every core's L1 and L2 on each LLC insertion; the intent is
-# a victim-filled LLC, which is what this models. The residue that cannot be
-# guaranteed away is counted as EXCL_FILL_DUP_L0_LLC (4.4% of LLC prefetch fills).
---exclusive_caches              1
+# Non-inclusive LLC over a non-inclusive L2, modelled as a victim-filled L1 (LLC) under
+# an MLC that is filled on demand. Intel's server LLC has been non-inclusive since
+# Skylake-SP, with lines from memory going into the L2 and the L3 kept as "overflow
+# cache" for L2 victims (Hot Chips 2017); the client side followed in Tiger Lake ("50%
+# LLC size increase to non-inclusive", "larger non-inclusive, 1.25MB MLC", Hot Chips
+# 2020). Exclusive_mlc stays off: the L2 is not a victim cache of the L1 caches. With no
+# back-invalidation, an MLC victim demoted into the L1 can still sit in the dcache;
+# EXCL_FILL_DUP_L0_LLC counts that residue.
+--exclusive_l1                  1
 
 
 ### prefetcher
