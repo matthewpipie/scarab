@@ -351,6 +351,24 @@ DEF_STAT(  MLP_MARKED_LOAD		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_FETCH		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_MERGE		           , COUNT  , NO_RATIO  )
 
+// Request stall cost (stats only), summed over requests by the level that served them; each
+// family is laid out MLC, LLC, MEM. COST_ROB: cycles nothing retired because the ROB head was
+// a load waiting on the request. COST_FE: cycles the backend got no ops while the on-path
+// icache waited on it. BOUND_LD / BOUND_FE: REPL_MLP's ld_bound_cycles / fe_bound_cycles,
+// summed the same way for comparison.
+DEF_STAT(  REQ_COST_ROB_MLC                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_COST_ROB_LLC                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_COST_ROB_MEM                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_COST_FE_MLC                 , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_COST_FE_LLC                 , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_COST_FE_MEM                 , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_BOUND_LD_MLC                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_BOUND_LD_LLC                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_BOUND_LD_MEM                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_BOUND_FE_MLC                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_BOUND_FE_LLC                , COUNT  , NO_RATIO  )
+DEF_STAT(  REQ_BOUND_FE_MEM                , COUNT  , NO_RATIO  )
+
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
 
