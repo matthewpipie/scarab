@@ -59,6 +59,7 @@
 #include "cache_part.h"
 #include "cmp_model.h"
 #include "icache_stage.h"
+#include "lacs.h"
 #include "mem_req.h"
 #include "op.h"
 #include "statistics.h"
@@ -715,6 +716,12 @@ static inline Flag mem_exclusive_mlc_for(Mem_Req_Type type) {
   return mem_req_type_is_inst(type) ? mem_exclusive_mlc_icache() : mem_exclusive_mlc_dcache();
 }
 
+/* REPL_LACS: the cache a slot names for this core -- MLC()/L1() are this file's own
+   macros, not visible to memory/lacs.c. */
+Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot) {
+  return (slot == LACS_SLOT_MLC) ? &MLC(proc_id)->cache : &L1(proc_id)->cache;
+}
+
 /* The file a miss below the core enters: the icache's or the dcache's, each waiting at
    the MLC; with no MLC both go to the LLC's. */
 Mshr* mem_core_file(uns8 proc_id, Mem_Req_Type type) {
@@ -1317,6 +1324,7 @@ static Flag mem_process_l1_miss_access(Mem_Req* req, Addr* line_addr, L1_Data* d
   /* Mark the request as L1_miss */
   req->l1_miss = TRUE;
   req->l1_miss_cycle = cycle_count;
+  lacs_note_miss(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
 
   return TRUE;
 }
@@ -1360,6 +1368,7 @@ static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data*
   /* Mark the request as MLC_miss */
   req->mlc_miss = TRUE;
   req->mlc_miss_cycle = cycle_count;
+  lacs_note_miss(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
 
   if ((req->type == MRT_WB) || (req->type == MRT_WB_NODIRTY)) {
     // if the request is a write back request then the processor just insert the
@@ -2133,6 +2142,16 @@ static void mem_merge_at_level(Mshr* level, Mem_Req* req) {
                              fetcher->prefetcher_id);
     }
     fetcher->demand_match_prefetch = TRUE;
+    switch (level->file) {
+      case MSHR_MLC:
+        lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(fetcher->proc_id)->cache, fetcher, req->type);
+        break;
+      case MSHR_L1:
+        lacs_note_demand_merge(LACS_SLOT_L1, &L1(fetcher->proc_id)->cache, fetcher, req->type);
+        break;
+      default:
+        break; /* icache/dcache MSHR: below any level LACS tracks */
+    }
   }
   fetcher->priority = MIN2(fetcher->priority, req->priority);
   mshr_add(level, req);
@@ -2230,6 +2249,18 @@ Flag mem_adjust_matching_request(Mem_Req* req, Mem_Req_Type type, Addr addr, uns
 
       pref_ul1_pref_hit_late(req->proc_id, req->addr, req->loadPC, req->global_hist, req->prefetcher_id);
       req->demand_match_prefetch = TRUE;
+      switch (req->state) {
+        case MRS_MLC_NEW:
+        case MRS_MLC_WAIT:
+          lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req, type);
+          break;
+        case MRS_L1_NEW:
+        case MRS_L1_WAIT:
+          lacs_note_demand_merge(LACS_SLOT_L1, &L1(req->proc_id)->cache, req, type);
+          break;
+        default:
+          break; /* below any level LACS tracks */
+      }
       req->type = type;  // type promotion
       req->done_func = done_func;
       // if (DRAM_SCHED == DRAM_SCHED_FAIR_QUEUING_2LEVEL) {
@@ -2419,6 +2450,14 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->l1_miss = FALSE;
   new_req->l1_miss_satisfied = FALSE;
   new_req->l1_miss_cycle = MAX_CTR;
+  /* This struct is pool-recycled across unrelated requests (new_mem_req pulls it back out of
+     mem->req_pool_free_list); without resetting these, a recycled request would inherit a
+     stale lacs_snap from whatever request last occupied this slot, and lacs_note_miss's
+     "already snapshotted" guard would then skip taking a real snapshot for it. */
+  for (uns lacs_slot = 0; lacs_slot < LACS_NUM_SLOTS; lacs_slot++) {
+    new_req->lacs_snap[lacs_slot] = LACS_SNAP_NONE;
+    new_req->lacs_iir[lacs_slot] = 0;
+  }
   new_req->oldest_op_unique_num = (Counter)0;
   new_req->oldest_op_op_num = (Counter)0;
   new_req->oldest_op_addr = (Addr)0;
@@ -2717,10 +2756,12 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
       case DEST_MLC:
         new_req->mlc_miss = TRUE;
         new_req->mlc_miss_cycle = cycle_count;
+        lacs_note_miss(LACS_SLOT_MLC, &MLC(proc_id)->cache, new_req);
         break;
       case DEST_L1:
         new_req->l1_miss = TRUE;
         new_req->l1_miss_cycle = cycle_count;
+        lacs_note_miss(LACS_SLOT_L1, &L1(proc_id)->cache, new_req);
         break;
       default:
         printf("%s: unexpected destination %d\n", __func__, destination);
@@ -3129,6 +3170,7 @@ Flag l1_fill_line(Mem_Req* req) {
   }
 
   mlp_stage_fill_boost(&L1(req->proc_id)->cache, req);
+  lacs_fill(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3448,6 +3490,7 @@ Flag mlc_fill_line(Mem_Req* req) {
   }
 
   mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
+  lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
