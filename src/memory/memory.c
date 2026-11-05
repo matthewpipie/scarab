@@ -681,6 +681,16 @@ static inline Stat_Enum mem_reject_stat(Mshr* mshr) {
   return stat;
 }
 
+_Static_assert(MSHR_ICACHE == 0 && REJECTED_L1_WB_FULL - REJECTED_ICACHE_MSHR_FULL == MSHR_NUM_FILES - 1,
+               "REJECTED_*_FULL does not list every Mshr_File in order");
+
+/* Counts a request turned away because the file it would enter is full, under the level
+   that looks the file up and under the file itself. */
+static inline void mem_stat_reject(uns8 proc_id, Mshr* mshr) {
+  STAT_EVENT(proc_id, mem_reject_stat(mshr));
+  STAT_EVENT(proc_id, REJECTED_ICACHE_MSHR_FULL + mshr->file);
+}
+
 /* A level's writeback file is looked up by the same cache as its miss file. The icache
    never holds a dirty line, so it has none. */
 static inline Mshr* mem_wb_file(Mshr* miss) {
@@ -916,6 +926,14 @@ void debug_memory() {
 /**************************************************************************************/
 /* update_memory: */
 
+/* Samples a file for this L1 cycle: the entries in use, and whether all of them are. */
+static inline void mem_stat_mshr_pressure(uns8 proc_id, Mshr* mshr, Stat_Enum occupancy, Stat_Enum full_cycles) {
+  uns in_use = mshr_count(mshr);
+  INC_STAT_EVENT(proc_id, occupancy, in_use);
+  if (in_use >= mshr->size)
+    STAT_EVENT(proc_id, full_cycles);
+}
+
 void update_on_chip_memory_stats() {
   STAT_EVENT_ALL(L1_CYCLE);
   STAT_EVENT(0, MIN2(MEM_REQ_DEMANDS__0 + mem_req_demand_entries / 4, MEM_REQ_DEMANDS_64));
@@ -929,7 +947,11 @@ void update_on_chip_memory_stats() {
     INC_STAT_EVENT(proc_id, CORE_MLP, mem->uncores[proc_id].num_outstanding_l1_misses);
     Counter l1_lines = GET_TOTAL_STAT_EVENT(proc_id, NORESET_L1_FILL) - GET_TOTAL_STAT_EVENT(proc_id, NORESET_L1_EVICT);
     INC_STAT_EVENT(proc_id, L1_LINES, l1_lines);
+    mem_stat_mshr_pressure(proc_id, &mem->uncores[proc_id].icache_mshr, ICACHE_MSHR_OCCUPANCY, ICACHE_MSHR_FULL_CYCLES);
+    mem_stat_mshr_pressure(proc_id, &mem->uncores[proc_id].dcache_mshr, DCACHE_MSHR_OCCUPANCY, DCACHE_MSHR_FULL_CYCLES);
   }
+  mem_stat_mshr_pressure(0, &mem->mlc_mshr, MLC_MSHR_OCCUPANCY, MLC_MSHR_FULL_CYCLES);
+  mem_stat_mshr_pressure(0, &mem->l1_mshr, L1_MSHR_OCCUPANCY, L1_MSHR_FULL_CYCLES);
 }
 
 /**
@@ -1387,7 +1409,7 @@ static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data*
   /* Descending admits the request to the LLC, so it is the LLC's budget that gates;
      without room the request stays in the dcache_mshr and retries. */
   if (mshr_full(&mem->mlc_mshr, req->addr)) {
-    STAT_EVENT(req->proc_id, mem_reject_stat(&mem->mlc_mshr));
+    mem_stat_reject(req->proc_id, &mem->mlc_mshr);
     return FALSE;
   }
 
@@ -2511,8 +2533,11 @@ static Flag mem_enter_dram(Mem_Req* req) {
     ASSERT(req->proc_id, !dram_match || dram_match->type == MRT_WB || dram_match->type == MRT_WB_NODIRTY);
   }
   req->state = MRS_MEM_NEW;
-  if (mshr_full(&mem->l1_mshr, req->addr) || !ramulator_send(req)) {
+  Flag l1_full = mshr_full(&mem->l1_mshr, req->addr);
+  if (l1_full || !ramulator_send(req)) {
     STAT_EVENT(req->proc_id, mem_reject_stat(&mem->l1_mshr));
+    if (l1_full)
+      STAT_EVENT(req->proc_id, REJECTED_L1_MSHR_FULL);
     return FALSE;
   }
   mshr_add(&mem->l1_mshr, req);
@@ -2623,7 +2648,7 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
      one, and a prefetch leaves the icache's and dcache's demand reserve free. */
   Flag join = mshr_line(entering, addr) != NULL;
   if (mshr_full(entering, addr)) {
-    STAT_EVENT(proc_id, mem_reject_stat(entering));
+    mem_stat_reject(proc_id, entering);
     return FALSE;
   }
   uns reserve = entering->file == MSHR_ICACHE   ? ICACHE_MSHR_DEMAND_RESERVE
@@ -2772,7 +2797,7 @@ static Flag new_mem_wb_req(Mshr* target, Mem_Req_Type type, uns8 proc_id, Addr a
   ASSERTM(proc_id, !mshr_line(target, addr), "%s: a second writeback to line 0x%s\n", mshr_name(target),
           hexstr64s(addr));
   if (mshr_full(target, addr)) {
-    STAT_EVENT(proc_id, mem_reject_stat(target));
+    mem_stat_reject(proc_id, target);
     return FALSE;
   }
 
