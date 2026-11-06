@@ -60,7 +60,7 @@
  *     forces it off (every fill gets the plain default cost, which degenerates eviction
  *     toward the aging/RNG tie-break alone), 0 (default) decides adaptively each period by
  *     comparing this period's average numIssued against the previous period's -- numIssued
- *     swinging by more than --lacs_cs_tolerance percent means the working set just changed
+ *     swinging by more than --lacs_cs_tolerance instructions means the working set just changed
  *     underneath the trained history, so cost-sensitivity is switched off until a period
  *     stable enough to retrain it is observed.
  *
