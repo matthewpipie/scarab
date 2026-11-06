@@ -48,6 +48,7 @@
 
 #include "bp/bp.h"
 #include "dvfs/perf_pred.h"
+#include "memory/lacs.h"
 
 #include "cmp_model.h"
 #include "exec_ports.h"
@@ -538,6 +539,7 @@ static inline void exec_stage_process_op(Op* op) {
 
   op_set_exec_cycle(op, cycle_count + abs(op->uop->latency));
   op->exec_count++;
+  lacs_note_issue(op);
   if (op->uop->mem_type == NOT_MEM)
     op_set_done_cycle(op, op_get_exec_cycle(op));
 
