@@ -148,10 +148,16 @@ static Lacs_Train_State* lacs_train_state(uns8 proc_id, Lacs_Slot slot) {
   return s;
 }
 
+// Calculate the xor folded index into the history table
 static inline uns lacs_hist_index(Lacs_Train_State* s, Addr line_addr) {
-  Addr folded = line_addr ^ (line_addr >> LACS_HIST_BITS) ^ (line_addr >> (2 * LACS_HIST_BITS));
-  return (uns)(folded & (s->hist_size - 1));
-}
+    Addr folded = 0;
+    // Split into LACS_HIST_BIT parts and xor them together.
+    // After the final split, the next shift will bring in all 0's hence
+    // we stop when v == 0.
+    for (Addr v = line_addr; v != 0; v >>= LACS_HIST_BITS)
+      folded ^= v;
+    return (uns)(folded & (s->hist_size - 1));
+  }
 
 /* Re-evaluates the threshold and the cost-sensitivity switch from the period just closed,
    then resets the accumulators for the next one. */
