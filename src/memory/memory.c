@@ -2142,16 +2142,11 @@ static void mem_merge_at_level(Mshr* level, Mem_Req* req) {
                              fetcher->prefetcher_id);
     }
     fetcher->demand_match_prefetch = TRUE;
-    switch (level->file) {
-      case MSHR_MLC:
-        lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(fetcher->proc_id)->cache, fetcher, req->type);
-        break;
-      case MSHR_L1:
-        lacs_note_demand_merge(LACS_SLOT_L1, &L1(fetcher->proc_id)->cache, fetcher, req->type);
-        break;
-      default:
-        break; /* icache/dcache MSHR: below any level LACS tracks */
-    }
+    /* REPL_LACS: whichever file this merge is at, the fetcher may already have missed the MLC,
+       the LLC, or both. Retake each level's snapshot that is still a prefetch's; a level not
+       missed yet snapshots as a demand at its own miss, since demand_match_prefetch is set. */
+    lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(fetcher->proc_id)->cache, fetcher, req->type);
+    lacs_note_demand_merge(LACS_SLOT_L1, &L1(fetcher->proc_id)->cache, fetcher, req->type);
   }
   fetcher->priority = MIN2(fetcher->priority, req->priority);
   mshr_add(level, req);
