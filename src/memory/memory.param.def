@@ -137,8 +137,8 @@ DEF_PARAM(lacs_thresh_init, LACS_THRESH_INIT, uns, uns, 50, )
 DEF_PARAM(lacs_thresh_step, LACS_THRESH_STEP, uns, uns, 4, )
 /* 0 = adaptive (default), 1 = always cost-sensitive, 2 = never (plain aging/RNG eviction). */
 DEF_PARAM(lacs_cs_mode, LACS_CS_MODE, uns, uns, 0, )
-/* Percent swing in average numIssued between periods tolerated before cost-sensitivity
-   (in adaptive mode) switches off. */
+/* Op2: the largest change in a period's average numIssued, in instructions, from the
+   previous period's that keeps cost-sensitivity on in adaptive mode (paper: 10). */
 DEF_PARAM(lacs_cs_tolerance, LACS_CS_TOLERANCE, uns, uns, 10, )
 DEF_PARAM(lacs_pref_insert_cost, LACS_PREF_INSERT_COST, uns, uns, 1, )
 DEF_PARAM(lacs_pref_insert_lookup, LACS_PREF_INSERT_LOOKUP, Flag, Flag, FALSE, )
