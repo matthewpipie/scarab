@@ -245,10 +245,20 @@ void lacs_fill(Lacs_Slot slot, Cache* cache, Mem_Req* req) {
   if (trained) {
     Counter num_issued = g_lacs_iic[req->proc_id] - req->lacs_iir[slot];
     Flag high_cost = num_issued < s->threshold;
-    cost = high_cost ? LACS_COST_HIGH : LACS_COST_LOW;
     valid = s->cost_sensitive;
 
-    s->hist[idx] = (uns8)cost;
+    /* Steps E1/E2/F: the history entry moves one step per miss (3/2 = high cost, 1/0 = low;
+       3 and 0 are the confident ends), and the line is inserted with the counter's new
+       value rather than with this one miss's classification. */
+    uns8* stored = &s->hist[idx];
+    if (high_cost) {
+      if (*stored < LACS_COST_HIGH)
+        (*stored)++;
+    } else if (*stored > LACS_COST_LOW) {
+      (*stored)--;
+    }
+    cost = *stored;
+
     s->period_fills++;
     s->period_issued_sum += num_issued;
     if (high_cost) {
