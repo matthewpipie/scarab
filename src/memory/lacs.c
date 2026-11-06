@@ -242,8 +242,7 @@ void lacs_fill(Lacs_Slot slot, Cache* cache, Mem_Req* req) {
     return;
 
   Lacs_Train_State* s = lacs_train_state(req->proc_id, slot);
-  Addr line_addr = get_cache_line_addr(cache, req->addr);
-  uns idx = lacs_hist_index(s, line_addr);
+  uns idx = lacs_hist_index(s, req->addr >> cache->shift_bits);
 
   STAT_EVENT(req->proc_id, slot == LACS_SLOT_MLC ? MLC_LACS_FILL : L1_LACS_FILL);
 
