@@ -2244,18 +2244,11 @@ Flag mem_adjust_matching_request(Mem_Req* req, Mem_Req_Type type, Addr addr, uns
 
       pref_ul1_pref_hit_late(req->proc_id, req->addr, req->loadPC, req->global_hist, req->prefetcher_id);
       req->demand_match_prefetch = TRUE;
-      switch (req->state) {
-        case MRS_MLC_NEW:
-        case MRS_MLC_WAIT:
-          lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req, type);
-          break;
-        case MRS_L1_NEW:
-        case MRS_L1_WAIT:
-          lacs_note_demand_merge(LACS_SLOT_L1, &L1(req->proc_id)->cache, req, type);
-          break;
-        default:
-          break; /* below any level LACS tracks */
-      }
+      /* REPL_LACS: req->state names the next lookup, not the last miss, so req may already
+         have missed the MLC, the LLC, or both. Retake each level's snapshot that is still a
+         prefetch's; a level not missed yet snapshots as a demand at its own miss. */
+      lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req, type);
+      lacs_note_demand_merge(LACS_SLOT_L1, &L1(req->proc_id)->cache, req, type);
       req->type = type;  // type promotion
       req->done_func = done_func;
       // if (DRAM_SCHED == DRAM_SCHED_FAIR_QUEUING_2LEVEL) {
