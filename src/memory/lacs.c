@@ -52,10 +52,11 @@
  *
  * Threshold and cost-sensitivity adaptation (every 1 << --lacs_period_log2 trained fills,
  * per core per level):
- *   - The fraction of this period's fills classified "high cost" is compared against a
- *     50% target. The threshold moves by --lacs_thresh_step, left-shifted by an amount in
- *     [--lacs_min_high_shift, --lacs_max_high_shift] proportional to how far off target the
- *     period was -- a small miss gets a small nudge, a large one a bigger correction.
+ *   - Op1: if fewer than period >> --lacs_min_high_shift of this period's fills were
+ *     classified "high cost" (paper: 1/32), the threshold rises by --lacs_thresh_step
+ *     (paper: 8); if more than period >> --lacs_max_high_shift (paper: 1/16), it drops by
+ *     the same step; in between it stays put. Reserving only a small fraction of blocks is
+ *     what makes LACS thrash-resistant (paper section 4.2).
  *   - --lacs_cs_mode selects whether the trained cost is used at all: 1 forces it on, 2
  *     forces it off (every fill gets the plain default cost, which degenerates eviction
  *     toward the aging/RNG tie-break alone), 0 (default) decides adaptively each period by
