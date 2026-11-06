@@ -188,8 +188,7 @@ static void lacs_end_period(Lacs_Train_State* s, Lacs_Slot slot, uns8 proc_id) {
   } else if (s->have_prev_avg) {
     Counter diff =
         (avg_issued > s->prev_period_avg) ? avg_issued - s->prev_period_avg : s->prev_period_avg - avg_issued;
-    Counter tolerance_abs = (s->prev_period_avg * LACS_CS_TOLERANCE) / 100;
-    s->cost_sensitive = diff <= tolerance_abs;
+    s->cost_sensitive = diff <= LACS_CS_TOLERANCE; /* Op2: absolute tolerance, as in the paper */
   } else {
     s->cost_sensitive = TRUE; /* optimistic until there are two periods to compare */
   }
