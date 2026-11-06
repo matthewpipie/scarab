@@ -138,7 +138,10 @@ static Lacs_Train_State* lacs_train_state(uns8 proc_id, Lacs_Slot slot) {
     s->threshold = LACS_THRESH_INIT;
     s->cost_sensitive = (LACS_CS_MODE != 2);
     s->hist_size = 1u << LACS_HIST_BITS;
-    s->hist = (uns8*)calloc(s->hist_size, sizeof(uns8));
+    s->hist = (uns8*)malloc(s->hist_size * sizeof(uns8));
+    /* Paper section 4.3: every entry starts at 1 (low cost, low confidence). */
+    for (uns ii = 0; ii < s->hist_size; ii++)
+      s->hist[ii] = 1;
     s->initialized = TRUE;
   }
   return s;
