@@ -167,18 +167,18 @@ static inline uns lacs_hist_index(Lacs_Train_State* s, Addr line_addr) {
    then resets the accumulators for the next one. */
 static void lacs_end_period(Lacs_Train_State* s, Lacs_Slot slot, uns8 proc_id) {
   Counter avg_issued = s->period_issued_sum / s->period_fills;
-  uns high_permille = (uns)((s->period_high * 1000) / s->period_fills);
-  const uns target_permille = 500;
-  uns error = high_permille > target_permille ? high_permille - target_permille : target_permille - high_permille;
-  uns shift = LACS_MIN_HIGH_SHIFT + (error * (LACS_MAX_HIGH_SHIFT - LACS_MIN_HIGH_SHIFT)) / target_permille;
-  Counter step = (Counter)LACS_THRESH_STEP << shift;
+  /* Op1 (paper section 4.2, Table 1): keep the number of high-cost fills between minHigh and
+     maxHigh (1/32 and 1/16 of the period in the paper), with a fixed step and no change in
+     between. */
+  Counter min_high = s->period_fills >> LACS_MIN_HIGH_SHIFT;
+  Counter max_high = s->period_fills >> LACS_MAX_HIGH_SHIFT;
 
-  if (high_permille > target_permille) {
-    s->threshold = (s->threshold > step) ? s->threshold - step : 1;
-    STAT_EVENT(proc_id, slot == LACS_SLOT_MLC ? MLC_LACS_THRESH_DOWN : L1_LACS_THRESH_DOWN);
-  } else if (high_permille < target_permille) {
-    s->threshold += step;
+  if (s->period_high < min_high) {
+    s->threshold += LACS_THRESH_STEP;
     STAT_EVENT(proc_id, slot == LACS_SLOT_MLC ? MLC_LACS_THRESH_UP : L1_LACS_THRESH_UP);
+  } else if (s->period_high > max_high) {
+    s->threshold = (s->threshold > LACS_THRESH_STEP) ? s->threshold - LACS_THRESH_STEP : 1;
+    STAT_EVENT(proc_id, slot == LACS_SLOT_MLC ? MLC_LACS_THRESH_DOWN : L1_LACS_THRESH_DOWN);
   }
 
   if (LACS_CS_MODE == 1) {
