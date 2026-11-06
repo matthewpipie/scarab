@@ -104,7 +104,8 @@ typedef struct Lacs_Train_State_struct {
   Counter prev_period_avg;
   Flag have_prev_avg;
 
-  /* Per-line-address history: last cost trained at that (XOR-folded) index. */
+  /* Per-line-address history (the paper's cost_stored): a 2-bit saturating counter per
+     (XOR-folded) index, trained up on a high-cost miss and down on a low-cost one. */
   uns8* hist;
   uns hist_size;
 
