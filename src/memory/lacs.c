@@ -88,6 +88,10 @@
 #define LACS_COST_HIGH 3u
 #define LACS_COST_LOW 0u
 
+// Per §4.2 min high divides fills by 32 and max high divides fills by 32
+#define LACS_MIN_HIGH_SHIFT 5
+#define LACS_MAX_HIGH_SHIFT 4
+
 typedef struct Lacs_Train_State_struct {
   Flag initialized;
 

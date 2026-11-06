@@ -133,8 +133,6 @@ DEF_PARAM(lacs_period_log2, LACS_PERIOD_LOG2, uns, uns, 10, )
 DEF_PARAM(lacs_hist_bits, LACS_HIST_BITS, uns, uns, 12, )
 DEF_PARAM(lacs_thresh_init, LACS_THRESH_INIT, uns, uns, 50, )
 DEF_PARAM(lacs_thresh_step, LACS_THRESH_STEP, uns, uns, 4, )
-DEF_PARAM(lacs_min_high_shift, LACS_MIN_HIGH_SHIFT, uns, uns, 0, )
-DEF_PARAM(lacs_max_high_shift, LACS_MAX_HIGH_SHIFT, uns, uns, 4, )
 /* 0 = adaptive (default), 1 = always cost-sensitive, 2 = never (plain aging/RNG eviction). */
 DEF_PARAM(lacs_cs_mode, LACS_CS_MODE, uns, uns, 0, )
 /* Percent swing in average numIssued between periods tolerated before cost-sensitivity
