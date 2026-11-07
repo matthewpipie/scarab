@@ -48,6 +48,7 @@
 #include "dvfs/dvfs.h"
 #include "dvfs/perf_pred.h"
 #include "memory/cache_part.h"
+#include "memory/lacs.h"
 #include "prefetcher/D_JOLT.h"
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
@@ -334,6 +335,7 @@ void cmp_per_core_done(uns8 proc_id) {
   stats_per_core_collect(proc_id);
   if (PREF_FRAMEWORK_ON)
     pref_per_core_done(proc_id);
+  lacs_done(proc_id);
 }
 /**************************************************************************************/
 /* cmp_wake: */

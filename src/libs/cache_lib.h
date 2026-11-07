@@ -68,6 +68,7 @@ typedef enum Repl_Policy_enum {
   REPL_BRRIP,   /* bimodal re-reference interval prediction */
   REPL_DRRIP,   /* dynamic re-reference interval prediction */
   REPL_SHIP,    /* signature-based hit predictor */
+  REPL_LACS,    /* locality-aware cost-sensitive replacement (Kharbutli & Sheikh, IEEE TC 2014) */
 
   NUM_REPL
 } Repl_Policy;
@@ -128,12 +129,12 @@ struct Cache_struct {
    *    shift_mask:  00000000  00000000  1111111111
    * tag_pure_mask:  11111111
    */
-  uns set_bits;     /* number of bits used in the set mask */
-  uns tag_bits;     /* number of bits used in the tag mask */
-  uns shift_bits;   /* number of bits to shift an address before using (assuming it is shifted) */
-  Addr set_mask;    /* mask applied after shifting to get the index */
-  Addr tag_mask;    /* mask used to get the tag after shifting */
-  Addr offset_mask; /* mask used to get the line offset */
+  uns set_bits;       /* number of bits used in the set mask */
+  uns tag_bits;       /* number of bits used in the tag mask */
+  uns shift_bits;     /* number of bits to shift an address before using (assuming it is shifted) */
+  Addr set_mask;      /* mask applied after shifting to get the index */
+  Addr tag_mask;      /* mask used to get the tag after shifting */
+  Addr offset_mask;   /* mask used to get the line offset */
   Addr tag_pure_mask; /* mask used to get the folded tag, no 0-paddings in LSB side */
 
   uns* repl_ctrs; /* replacement info */
@@ -213,6 +214,16 @@ void update_repl_resteer_policy(Cache*, Addr);
 /* REPL_MLP: stage the boost the NEXT cache_insert_replpos call should stamp on the new line.
    Call right before a fill-time cache_insert on a cache running REPL_MLP; reset to 0 after. */
 void cache_set_next_fill_mlp_boost(float boost);
+
+/* REPL_LACS: stage the cost the NEXT cache_insert (strategy path) should stamp on the new
+   line. Call right before a fill-time cache_insert on a cache running REPL_LACS; `valid`
+   FALSE means "use the policy's default," not "use cost 0." Consumed and reset by
+   lacs_update_insert. */
+void cache_set_lacs_next_insert(Flag valid, uns cost);
+
+/* REPL_LACS: this cache's eviction totals (real evictions, how many of those first had to
+   age the set, how many had more than one same-cost candidate), for end-of-run stats. */
+void cache_lacs_counters(Cache* cache, Counter* evictions, Counter* evict_aging, Counter* evict_ties);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);
