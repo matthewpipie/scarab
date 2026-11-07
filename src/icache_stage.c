@@ -51,8 +51,11 @@
 #include "frontend/pin_trace_fe.h"
 #include "libs/list_lib.h"
 #include "libs/port_lib.h"
+#include "memory/icarus.h"
 #include "memory/memory.h"
 #include "memory/mshr.h"
+
+#include "issue_queue.h"
 #include "prefetcher/D_JOLT.h"
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
@@ -908,6 +911,13 @@ void execute_coupled_FSM() {
       ifetch_req->fe_window_cycles++;
       if (topdown_fe_reason == TD_FE_ICACHE_MISS)
         ifetch_req->fe_bound_cycles++;
+
+      /* REPL_ICARUS: decode saw nothing this cycle (cur_data->op_count == 0, the same
+         condition ICACHE_STAGE_STARVED above is derived from) because of this outstanding
+         ifetch miss, and nothing else was available to hide the stall -- train the CIT
+         entry for this line/branch-history pair as genuinely critical. */
+      if (!cur_data->op_count && issue_queue_is_empty())
+        icarus_note_fetch_stall(ic->proc_id, ic->line_addr, ifetch_req->ghist);
     }
   }
 
