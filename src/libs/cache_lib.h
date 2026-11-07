@@ -97,6 +97,8 @@ typedef struct Cache_Entry_struct {
   float mlp_boost; /* REPL_MLP: eviction-priority boost staged at fill (mlp_lin_data_lambda or
                        mlp_lin_instr_lambda if the filling load/fetch cleared its boundness
                        threshold, else 0) */
+  Counter mlp_stamp; /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
+                        recency update (fill or hit) */
 } Cache_Entry;
 
 // DO NOT CHANGE THIS ORDER
@@ -164,6 +166,8 @@ struct Cache_struct {
 
   /* For repl with predictor */
   void* predictor;
+
+  Counter* mlp_set_fills; /* REPL_MLP: fills into each set so far, the clock for mlp_boost_in_fills */
 };
 
 /**************************************************************************************/

@@ -154,6 +154,8 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
   if (repl_policy < REPL_VOID)
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
+  cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
+
   /* allocate memory for all the sets (pointers to line arrays)  */
   cache->entries = (Cache_Entry**)malloc(sizeof(Cache_Entry*) * num_sets);
 
@@ -359,6 +361,9 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
       *repl_line_addr = new_line->base;
     else
       *repl_line_addr = 0;
+
+    if (cache->repl_policy == REPL_MLP)
+      cache->mlp_set_fills[set]++;
     DEBUG(0, "Replacing 2.2f(set %u, way %u, tag 0x%s, base 0x%s) in cache '%s' with base 0x%s\n", set, repl_index,
           hexstr64s(new_line->tag), hexstr64s(new_line->base), cache->name, hexstr64s(*line_addr));
   }
@@ -372,6 +377,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   new_line->pref = isPrefetch;
   new_line->mlp_boost = g_next_fill_mlp_boost;
   g_next_fill_mlp_boost = 0.0;
+  new_line->mlp_stamp = cache->mlp_set_fills ? cache->mlp_set_fills[set] : 0;
 
   new_line->pw_start_addr = addr;  // only means anything for uop cache
 
@@ -382,6 +388,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
       break;
     case INSERT_REPL_LRU:
       new_line->last_access_time = 123;  // Just choose a small number
+      new_line->mlp_stamp = 0;
       break;
     case INSERT_REPL_MRU:
       new_line->last_access_time = sim_time;
@@ -637,6 +644,29 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
     }
 
     case REPL_MLP: {
+      if (MLP_BOOST_IN_FILLS) {
+        /* Evict argmin(mlp_stamp + mlp_boost), ties to the least recently used. mlp_stamp is the
+           set's fill count at the line's last recency update, so a marked line ranks as if touched
+           mlp_boost fills later than it was: its protection lapses mlp_boost fills after its last
+           touch unless a hit renews it. With every boost 0 this is plain LRU. */
+        uns best_ind = 0;
+        double best_val = 0.0;
+        for (ii = 0; ii < cache->assoc; ii++) {
+          Cache_Entry* entry = &cache->entries[set][ii];
+          if (!entry->valid) {
+            *way = ii;
+            return entry;
+          }
+          double val = (double)entry->mlp_stamp + (double)entry->mlp_boost;
+          if (ii == 0 || val < best_val ||
+              (val == best_val && entry->last_access_time < cache->entries[set][best_ind].last_access_time)) {
+            best_val = val;
+            best_ind = ii;
+          }
+        }
+        *way = best_ind;
+        return &cache->entries[set][best_ind];
+      }
       /* Evict argmin(Recency + mlp_boost). Recency is the LRU stack position (0 = LRU), computed
          as a rank -- how many resident lines are older -- rather than compared via raw
          last_access_time, since mlp_boost (in stack positions) has to be added to something on
@@ -724,6 +754,8 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
        leaving mlp_boost to decide the victim alone. */
     case REPL_MLP:
       cur_entry->last_access_time = sim_time;
+      if (cache->mlp_set_fills)  // REPL_MLP only: the policies above share this case
+        cur_entry->mlp_stamp = cache->mlp_set_fills[set];
       break;
     case REPL_RANDOM: {
       char* old_rand_state = (char*)setstate(rand_repl_state);
