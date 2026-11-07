@@ -351,6 +351,16 @@ DEF_STAT(  MLP_MARKED_LOAD		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_FETCH		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_MERGE		           , COUNT  , NO_RATIO  )
 
+// REPL_ICARUS: MLC-level criticality+reuse binning (Kalbande et al., ASPLOS 2026)
+DEF_STAT(  MLC_ICARUS_FILL		           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_CRITICAL_FILL	   , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_CIT_TRAIN	       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_CIT_RESET	       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_EVICT_00		       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_EVICT_01		       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_EVICT_11		       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_ICARUS_EVICT_10		       , COUNT  , NO_RATIO  )
+
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
 

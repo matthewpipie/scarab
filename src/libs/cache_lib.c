@@ -44,6 +44,7 @@
 #include "memory/memory.param.h"
 
 #include "frontend/frontend_intf.h"
+#include "statistics.h"
 
 // DeleteMe
 #define ideal_num_entries 256
@@ -59,6 +60,18 @@ static float g_next_fill_mlp_boost = 0.0;
 
 void cache_set_next_fill_mlp_boost(float boost) {
   g_next_fill_mlp_boost = boost;
+}
+
+/* From memory/icarus.c tell cache_insert() (which knows nothing of a line's criticality)
+that the next fill should be marked critical, set when a line is determined to be critical
+by icarus_fill, and reset to 0 after each fill.  */
+
+static Flag g_icarus_next_valid = FALSE;
+static Flag g_icarus_next_critical = FALSE;
+
+void cache_set_icarus_next_insert(Flag valid, Flag critical) {
+  g_icarus_next_valid = valid;
+  g_icarus_next_critical = critical;
 }
 
 /**************************************************************************************/
@@ -1859,6 +1872,159 @@ Cache_Entry* ship_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
 }
 
 /**************************************************************************************/
+/* ICARUS -- Kalbande, Jedhe Deshmukh, Ros & Panda, "ICARUS: Criticality and Reuse based
+ * Instruction Caching for Datacenter Applications", ASPLOS 2026.
+ *
+ * Two bits per line -- icarus_critical (staged at fill time by memory/icarus.c from its
+ * branch-history-contextualized Critical Instruction Table; always FALSE for data lines)
+ * and icarus_reused (set on any hit, cleared on insert) -- place every line into one of four
+ * priority bins: [0,0] < [0,1] < [1,1] < [1,0]. Each bin has a watermark (a quota over the
+ * set's ways); eviction scans bins lowest-priority-first and only takes a victim from a bin
+ * whose current occupancy in this set is at or above its watermark, picking the
+ * least-recently-used line within that bin (this codebase has no tree-PLRU, so
+ * last_access_time -- stamped here on insert/hit, not by the generic LRU path, since the
+ * strategy-table-driven policies don't touch it themselves -- stands in for it). */
+void icarus_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                        Repl_Policy repl_policy);
+void icarus_update_hit(Cache* cache, uns set, uns way, void* arg);
+void icarus_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg);
+Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external);
+
+static inline uns icarus_bin_of(Cache_Entry* entry) {
+  return (entry->icarus_critical ? 2u : 0u) | (entry->icarus_reused ? 1u : 0u);
+}
+
+/* Priority order, lowest first: [0,0], [0,1], [1,1], [1,0]. */
+static const uns ICARUS_BIN_PRIORITY[4] = {0u, 1u, 3u, 2u};
+
+static inline uns icarus_watermark(uns bin) {
+  switch (bin) {
+    case 0:
+      return ICARUS_WMARK_00;
+    case 1:
+      return ICARUS_WMARK_01;
+    case 3:
+      return ICARUS_WMARK_11;
+    case 2:
+      return ICARUS_WMARK_10;
+    default:
+      return 0;
+  }
+}
+
+void icarus_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                        Repl_Policy repl_policy) {
+  general_action_init(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
+  // Sum of watermarks must be less than or equal to ways per set
+  ASSERTM(0, ICARUS_WMARK_00 + ICARUS_WMARK_01 + ICARUS_WMARK_11 + ICARUS_WMARK_10 <= assoc,
+          "REPL_ICARUS watermarks (%u+%u+%u+%u=%u) exceed %s's associativity (%u) -- pass "
+          "--icarus_wmark_* values that sum to <= assoc, or --mlc_assoc=16 to match the paper's "
+          "L2 config\n",
+          ICARUS_WMARK_00, ICARUS_WMARK_01, ICARUS_WMARK_11, ICARUS_WMARK_10,
+          ICARUS_WMARK_00 + ICARUS_WMARK_01 + ICARUS_WMARK_11 + ICARUS_WMARK_10, name, assoc);
+}
+
+// On a hit, mark the icarus reused bit as true and update LRU state
+void icarus_update_hit(Cache* cache, uns set, uns way, void* arg) {
+  cache->entries[set][way].icarus_reused = TRUE;
+  cache->entries[set][way].last_access_time = cycle_count;
+
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_HIT);
+}
+
+// Handles insertion under the icarus policy.
+void icarus_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg) {
+  // If global per-insertion criticality is set, mark line as critical
+  cache->entries[set][way].icarus_critical = g_icarus_next_valid ? g_icarus_next_critical : FALSE;
+  // Line hasnt been reused yet
+  cache->entries[set][way].icarus_reused = FALSE;
+  cache->entries[set][way].last_access_time = cycle_count;
+  // Reset for next insertion
+  g_icarus_next_valid = FALSE;
+  g_icarus_next_critical = FALSE;
+
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
+}
+
+static inline void icarus_stat_evict(uns8 proc_id, uns bin) {
+  switch (bin) {
+    case 0:
+      STAT_EVENT(proc_id, MLC_ICARUS_EVICT_00);
+      break;
+    case 1:
+      STAT_EVENT(proc_id, MLC_ICARUS_EVICT_01);
+      break;
+    case 3:
+      STAT_EVENT(proc_id, MLC_ICARUS_EVICT_11);
+      break;
+    case 2:
+      STAT_EVENT(proc_id, MLC_ICARUS_EVICT_10);
+      break;
+    default:
+      break;
+  }
+}
+
+Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
+  int ii;
+
+  // First elect to evict an invalid way
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (!cache->entries[set][ii].valid) {
+      *way = ii;
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
+  // Loop through all bins from low prio to high prio
+  for (int bb = 0; bb < 4; bb++) {
+    uns bin = ICARUS_BIN_PRIORITY[bb];
+    uns count = 0;
+    int lru_way = -1;
+    Counter lru_time = 0;
+    
+    // Count number of ways in set in our bin
+    for (ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      if (icarus_bin_of(entry) != bin)
+        continue;
+      count++;
+      if (lru_way == -1 || entry->last_access_time < lru_time) {
+        lru_way = ii;
+        lru_time = entry->last_access_time;
+      }
+    }
+
+    // If this bin has more entries than its watermark,
+    // elect to evict from this bin
+    if (count >= icarus_watermark(bin) && lru_way != -1) {
+      *way = lru_way;
+      if (!if_external)
+        icarus_stat_evict(proc_id, bin);
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
+  /* Fallback: shouldn't trigger when the watermarks sum to <= assoc and the set is full, but
+     fall back to global LRU across the set rather than leaving *way uninitialized. */
+  int lru_way = 0;
+  Counter lru_time = cache->entries[set][0].last_access_time;
+  for (ii = 1; ii < cache->assoc; ii++) {
+    if (cache->entries[set][ii].last_access_time < lru_time) {
+      lru_way = ii;
+      lru_time = cache->entries[set][ii].last_access_time;
+    }
+  }
+  *way = lru_way;
+  if (!if_external)
+    icarus_stat_evict(proc_id, icarus_bin_of(&cache->entries[set][lru_way]));
+  cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+  return &cache->entries[set][*way];
+}
+
+/**************************************************************************************/
 /* Driven Table */
 
 // clang-format off
@@ -1869,6 +2035,7 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_BRRIP,   brrip_action_init,    general_action_repl,  nru_update_hit,     brrip_update_insert,  rrip_update_evict   },
   { REPL_DRRIP,   drrip_action_init,    general_action_repl,  nru_update_hit,     drrip_update_insert,  rrip_update_evict   },
   { REPL_SHIP,    ship_action_init,     general_action_repl,  ship_update_hit,    ship_update_insert,   ship_update_evict   },
+  { REPL_ICARUS,  icarus_action_init,   general_action_repl,  icarus_update_hit,  icarus_update_insert, icarus_update_evict },
   { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL                },
 };
 // clang-format on

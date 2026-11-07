@@ -68,6 +68,8 @@ typedef enum Repl_Policy_enum {
   REPL_BRRIP,   /* bimodal re-reference interval prediction */
   REPL_DRRIP,   /* dynamic re-reference interval prediction */
   REPL_SHIP,    /* signature-based hit predictor */
+  REPL_ICARUS,  /* branch-history-contextualized criticality + reuse binning
+                   (Kalbande et al., ASPLOS 2026) */
 
   NUM_REPL
 } Repl_Policy;
@@ -97,6 +99,10 @@ typedef struct Cache_Entry_struct {
   float mlp_boost; /* REPL_MLP: eviction-priority boost staged at fill (mlp_lin_data_lambda or
                        mlp_lin_instr_lambda if the filling load/fetch cleared its boundness
                        threshold, else 0) */
+
+  Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
+                            time; always FALSE for data lines */
+  Flag icarus_reused;   /* REPL_ICARUS: hit at least once since it was filled */
 } Cache_Entry;
 
 // DO NOT CHANGE THIS ORDER
@@ -213,6 +219,12 @@ void update_repl_resteer_policy(Cache*, Addr);
 /* REPL_MLP: stage the boost the NEXT cache_insert_replpos call should stamp on the new line.
    Call right before a fill-time cache_insert on a cache running REPL_MLP; reset to 0 after. */
 void cache_set_next_fill_mlp_boost(float boost);
+
+/* REPL_ICARUS: stage the criticality bit the NEXT cache_insert[_replpos] call should stamp on
+   the new line. Call right before a fill-time cache_insert on a cache running REPL_ICARUS;
+   `valid` FALSE means "use the default (not critical)," not "critical == FALSE" specifically.
+   Consumed and reset by icarus_update_insert. */
+void cache_set_icarus_next_insert(Flag valid, Flag critical);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);
