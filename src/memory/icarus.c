@@ -82,6 +82,8 @@ static Icarus_State g_icarus[MAX_NUM_PROCS];
 static Icarus_State* icarus_state(uns8 proc_id) {
   Icarus_State* s = &g_icarus[proc_id];
   if (!s->initialized) {
+    ASSERTM(proc_id, ICARUS_BHR_BITS >= 1 && ICARUS_BHR_BITS <= 32,
+            "--icarus_bhr_bits must be in [1, 32] (global_hist is 32 bits), got %u\n", ICARUS_BHR_BITS);
     // Default size of 512 entries
     s->cit_size = 1u << ICARUS_CIT_BITS;
     // Initialize counter array and set base of reset counter
