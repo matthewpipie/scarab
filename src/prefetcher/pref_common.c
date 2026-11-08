@@ -530,8 +530,21 @@ static uns pref_num_to(HWP_Type dest) {
 /* Appends a candidate to a level's queue, the level's lookup pipeline. A prefetcher inserts
    at most PREF_INSERT_PER_CYCLE a cycle at a level, and the queue holds (latency + 1) *
    PREF_QUEUE_PER_CYCLE entries per prefetcher sending to it; further candidates are dropped.
-   With PREF_RETRY a blocked head also holds the queue until it drains. */
-static Flag pref_queue_add(List* q, HWP_Type dest, uns latency, Pref_Mem_Req* req, Stat_Enum full_stat) {
+   With PREF_RETRY a blocked head also holds the queue until it drains.
+   With PREF_QUEUE_FILTER_DUPS a candidate whose line is already queued, from any prefetcher,
+   is dropped and reported queued, as ChampSim's PQ merges one. The queue's entry keeps its
+   prefetcher and metadata. The duplicate writes nothing, so it takes neither an insertion nor
+   an entry. */
+static Flag pref_queue_add(List* q, HWP_Type dest, uns latency, Pref_Mem_Req* req, Stat_Enum full_stat,
+                           Stat_Enum dup_stat) {
+  if (PREF_QUEUE_FILTER_DUPS) {
+    for (List_Entry* e = q->head; e; e = e->next) {
+      if (((Pref_Mem_Req*)&e->data)->line_addr == req->line_addr) {
+        STAT_EVENT(req->proc_id, dup_stat);
+        return TRUE;
+      }
+    }
+  }
   /* Per core, level and prefetcher: the cycle of its last insertion and how many it made then. */
   static Counter cand_cycle[MAX_NUM_PROCS][PREF_TO_NUM][PREF_ID_NUM];
   static uns cand_count[MAX_NUM_PROCS][PREF_TO_NUM][PREF_ID_NUM];
@@ -564,8 +577,8 @@ Flag pref_addto_dl0req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id) 
                       .prefetcher_id = prefetcher_id,
                       .rdy_cycle = cycle_count + DCACHE_CYCLES,
                       .queue_cycle = cycle_count};
-  return pref_queue_add(&pref.cores[proc_id]->dl0req_queue, PREF_TO_DCACHE, DCACHE_CYCLES, &req,
-                        PREF_DL0REQ_QUEUE_FULL);
+  return pref_queue_add(&pref.cores[proc_id]->dl0req_queue, PREF_TO_DCACHE, DCACHE_CYCLES, &req, PREF_DL0REQ_QUEUE_FULL,
+                        PREF_DL0REQ_QUEUE_DUP);
 }
 
 Flag pref_addto_umlc_req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id) {
@@ -578,7 +591,8 @@ Flag pref_addto_umlc_req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id
                       .prefetcher_id = prefetcher_id,
                       .rdy_cycle = freq_cycle_count(FREQ_DOMAIN_L1) + MLC_CYCLES,
                       .queue_cycle = cycle_count};
-  return pref_queue_add(&pref.cores[proc_id]->umlc_req_queue, PREF_TO_UMLC, MLC_CYCLES, &req, PREF_UMLC_REQ_QUEUE_FULL);
+  return pref_queue_add(&pref.cores[proc_id]->umlc_req_queue, PREF_TO_UMLC, MLC_CYCLES, &req, PREF_UMLC_REQ_QUEUE_FULL,
+                        PREF_UMLC_REQ_QUEUE_DUP);
 }
 
 Flag pref_addto_ul1req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id) {
@@ -600,7 +614,8 @@ Flag pref_addto_ul1req_queue_set(uns8 proc_id, Addr line_index, uns8 prefetcher_
                       .bw_limited = bw,
                       .rdy_cycle = freq_cycle_count(FREQ_DOMAIN_L1) + L1_CYCLES,
                       .queue_cycle = cycle_count};
-  return pref_queue_add(&pref.cores[proc_id]->ul1req_queue, PREF_TO_UL1, L1_CYCLES, &req, PREF_UL1REQ_QUEUE_FULL);
+  return pref_queue_add(&pref.cores[proc_id]->ul1req_queue, PREF_TO_UL1, L1_CYCLES, &req, PREF_UL1REQ_QUEUE_FULL,
+                        PREF_UL1REQ_QUEUE_DUP);
 }
 
 Flag pref_hwp_instance_enabled(const HWP* hwp, Pref_Train_Level lvl) {
