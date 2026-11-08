@@ -53,6 +53,7 @@
 
 #include <string.h>
 
+#include "globals/assert.h"
 #include "globals/global_defs.h"
 #include "globals/global_types.h"
 #include "globals/global_vars.h"
@@ -82,6 +83,8 @@ static Icarus_State g_icarus[MAX_NUM_PROCS];
 static Icarus_State* icarus_state(uns8 proc_id) {
   Icarus_State* s = &g_icarus[proc_id];
   if (!s->initialized) {
+    ASSERTM(proc_id, ICARUS_BHR_BITS >= 1 && ICARUS_BHR_BITS <= 32,
+            "--icarus_bhr_bits must be in [1, 32] (global_hist is 32 bits), got %u\n", ICARUS_BHR_BITS);
     // Default size of 512 entries
     s->cit_size = 1u << ICARUS_CIT_BITS;
     // Initialize counter array and set base of reset counter
@@ -99,11 +102,12 @@ static Icarus_State* icarus_state(uns8 proc_id) {
 // training hook, icarus_fill's lookup) just pass a raw address and can't disagree with each
 // other about granularity the way two independently-computed shifts could (e.g. if
 // --icache_line_size and --mlc_line_size are ever set to different values).
-static inline uns icarus_cit_index(Icarus_State* s, Addr addr, uns64 bhr) {
+static inline uns icarus_cit_index(Icarus_State* s, Addr addr, uns32 hist) {
   Addr block_num = addr >> LOG2(MLC_LINE_SIZE);
-  // Correct BHR precision for icarus
-  uns64 bhr_masked = bhr & ((1ull << ICARUS_BHR_BITS) - 1);
-  Addr sig = block_num ^ (block_num >> 3) ^ bhr_masked;
+  // Scarab's global history shifts each new outcome in at bit 31 (bp.c), so the last
+  // ICARUS_BHR_BITS branches are the TOP bits of hist; the low bits are the oldest ones.
+  uns32 recent = hist >> (32 - ICARUS_BHR_BITS);
+  Addr sig = block_num ^ (block_num >> 3) ^ recent;
   return (uns)(sig & (s->cit_size - 1));
 }
 
@@ -115,9 +119,9 @@ static inline Flag icarus_is_inst_req(Mem_Req* req) {
 }
 
 // Returns true if CIT table entry is > threshold for criticality
-static Flag icarus_lookup_critical(uns8 proc_id, Addr addr, uns64 bhr) {
+static Flag icarus_lookup_critical(uns8 proc_id, Addr addr, uns32 hist) {
   Icarus_State* s = icarus_state(proc_id);
-  uns idx = icarus_cit_index(s, addr, bhr);
+  uns idx = icarus_cit_index(s, addr, hist);
   return s->cit[idx] >= ICARUS_CRIT_THRESH;
 }
 
