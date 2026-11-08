@@ -59,6 +59,7 @@
 #include "lsq.h"
 #include "map.h"
 #include "map_rename.h"
+#include "map_stage.h"
 #include "op_pool.h"
 #include "sim.h"
 #include "statistics.h"
@@ -145,6 +146,7 @@ void reset_node_stage() {
   node->mem_blocked = FALSE;
   node->mem_block_length = 0;
   node->ret_stall_length = 0;
+  node->fe_starved = FALSE;
 
   node->node_precommit = NULL;
   node->prev_op_fusable = FALSE;
@@ -342,6 +344,11 @@ void node_fill_rob(Stage_Data* src_sd) {
   Flag on_path = FALSE;
   uns ii;
 
+  /* Miss-cost accounting (stats only): the icache stage, later this cycle, charges the miss it
+     is waiting on for this cycle. map->reg_file_stall is last cycle's (map updates after node),
+     which is close enough to tell a rename stall apart from an empty frontend. */
+  node->fe_starved = src_sd->op_count == 0 && !is_node_table_full() && !map->reg_file_stall;
+
   /* if nothing to process, return */
   if (src_sd->op_count == 0) {
     DEBUG(node->proc_id, "Node fill starved: src_sd_op_count:0 node_count:%d\n", node->node_count);
@@ -452,6 +459,12 @@ void node_retire() {
             unsstr64(op_get_done_cycle(op)), unsstr64(cycle_count), (unsigned)(OP_DONE(op) ? 1 : 0));
       // op is not ready to retire
       collect_not_ready_to_retire_stats(op);
+      /* Miss-cost accounting (stats only): nothing retires this cycle because the head is a
+         load still waiting on its memory request, so charge the cycle to that request. Same
+         liveness test as lsq_tag_inflight_loads: op->req is never cleared, but until the
+         load's done_cycle is set it is still the request the load is waiting on. */
+      if (ret_count == 0 && op->uop->mem_type == MEM_LD && op->req && op_get_done_cycle(op) == MAX_CTR)
+        op->req->rob_stall_cycles++;
       break;
     }
 

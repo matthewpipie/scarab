@@ -908,6 +908,11 @@ void execute_coupled_FSM() {
       ifetch_req->fe_window_cycles++;
       if (topdown_fe_reason == TD_FE_ICACHE_MISS)
         ifetch_req->fe_bound_cycles++;
+      /* Miss-cost accounting (stats only): unlike fe_bound_cycles, which counts fetch bubbles the
+         IDQ may still hide, charge only cycles the backend is actually starved (set by the node
+         stage earlier this cycle), and only on-path. */
+      if (topdown_fe_reason == TD_FE_ICACHE_MISS && !ic->off_path && node->fe_starved)
+        ifetch_req->fe_stall_cycles++;
     }
   }
 

@@ -167,6 +167,10 @@ struct Mem_Req_struct {
                                                  in flight, summed across every op merged into it */
   Counter ld_bound_cycles;                   /* REPL_MLP: subset of ld_window_cycles the core was
                                                  backend/memory-bound */
+  Counter rob_stall_cycles;                  /* Miss cost (stats only): cycles nothing retired
+                                                 because the ROB head was a load waiting on this */
+  Counter fe_stall_cycles;                   /* Miss cost (stats only): cycles the backend got no
+                                                 ops while the on-path icache waited on this */
   Counter unique_num;                        /* unique num that allocated this request - for icache
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */
