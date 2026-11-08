@@ -99,11 +99,12 @@ static Icarus_State* icarus_state(uns8 proc_id) {
 // training hook, icarus_fill's lookup) just pass a raw address and can't disagree with each
 // other about granularity the way two independently-computed shifts could (e.g. if
 // --icache_line_size and --mlc_line_size are ever set to different values).
-static inline uns icarus_cit_index(Icarus_State* s, Addr addr, uns64 bhr) {
+static inline uns icarus_cit_index(Icarus_State* s, Addr addr, uns32 hist) {
   Addr block_num = addr >> LOG2(MLC_LINE_SIZE);
-  // Correct BHR precision for icarus
-  uns64 bhr_masked = bhr & ((1ull << ICARUS_BHR_BITS) - 1);
-  Addr sig = block_num ^ (block_num >> 3) ^ bhr_masked;
+  // Scarab's global history shifts each new outcome in at bit 31 (bp.c), so the last
+  // ICARUS_BHR_BITS branches are the TOP bits of hist; the low bits are the oldest ones.
+  uns32 recent = hist >> (32 - ICARUS_BHR_BITS);
+  Addr sig = block_num ^ (block_num >> 3) ^ recent;
   return (uns)(sig & (s->cit_size - 1));
 }
 
