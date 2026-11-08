@@ -226,6 +226,10 @@ void cache_set_next_fill_mlp_boost(float boost);
    Consumed and reset by icarus_update_insert. */
 void cache_set_icarus_next_insert(Flag valid, Flag critical);
 
+/* REPL_ICARUS: set the critical bit of the resident line holding `addr` (the CIT's
+   criticality signal on a hit). Leaves LRU state alone. Returns TRUE if newly set. */
+Flag cache_icarus_mark_critical(Cache* cache, Addr addr);
+
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);
 void* access_ideal_storage(Cache* cache, uns set, Addr tag, Addr tag_full, Addr addr, Flag* tag_aliasing);

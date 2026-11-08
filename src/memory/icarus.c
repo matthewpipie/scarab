@@ -40,7 +40,8 @@
  * icarus_note_fetch_stall trains an entry up (saturating) once per request, the first cycle
  * that, with that request outstanding, decode was starved by it *and* the issue queue was
  * completely empty -- nothing else was around to hide the stall, so this miss was genuinely
- * on the critical path. icarus_fill looks the entry up at fill time: at or above
+ * on the critical path. icarus_fill looks the entry up at fill time, and icarus_mlc_hit on
+ * an MLC hit (the paper's criticality signal for a resident line): at or above
  * --icarus_crit_thresh means "critical." The whole table is reset every
  * --icarus_reset_interval cycles, per the paper's finding that criticality is highly dynamic
  * (~28% of critical lines stay critical across intervals).
@@ -187,4 +188,11 @@ void icarus_fill(Cache* cache, Mem_Req* req) {
   }
   // Set globals
   cache_set_icarus_next_insert(TRUE, critical);
+}
+
+void icarus_mlc_hit(Cache* cache, Mem_Req* req) {
+  if (cache->repl_policy != REPL_ICARUS || !icarus_is_inst_req(req) || !req->icarus_hist_valid)
+    return;
+  if (icarus_lookup_critical(req->proc_id, req->addr, req->icarus_hist) && cache_icarus_mark_critical(cache, req->addr))
+    STAT_EVENT(req->proc_id, MLC_ICARUS_HIT_MARK_CRITICAL);
 }

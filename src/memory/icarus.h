@@ -45,7 +45,7 @@ extern "C" {
 /* Right after a successful instruction new_mem_req for `line_addr` (demand fetch or FDIP):
    records `hist` -- Op.fetch_ghist of the line's first op, i.e. the branch history leading
    to the fetch -- on the request that will go to memory for the line, unless a request
-   already carries one. The CIT is indexed with this history at training and fill. */
+   already carries one. The CIT is indexed with this history at training, fill and hit. */
 void icarus_tag_req(uns8 proc_id, Addr line_addr, uns32 hist);
 
 /* Called every cycle decode was starved by the outstanding instruction-fetch request `req`
@@ -63,6 +63,12 @@ void icarus_note_fetch_stall(uns8 proc_id, Addr addr, Mem_Req* req);
    the immediately-following cache_insert via cache_set_icarus_next_insert. Must be the last
    thing called before that insert. */
 void icarus_fill(Cache* cache, Mem_Req* req);
+
+/* MLC hit by an instruction request: the CIT's criticality signal for a line that is already
+   resident (paper Fig. 10: [0,0]->[1,0], [0,1]->[1,1]). Sets the line's critical bit if the
+   CIT predicts critical; never clears it. Call after the hit's cache_access, which has
+   already set the reuse bit. */
+void icarus_mlc_hit(Cache* cache, Mem_Req* req);
 
 /**************************************************************************************/
 

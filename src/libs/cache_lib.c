@@ -1875,13 +1875,13 @@ Cache_Entry* ship_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
 /* ICARUS -- Kalbande, Jedhe Deshmukh, Ros & Panda, "ICARUS: Criticality and Reuse based
  * Instruction Caching for Datacenter Applications", ASPLOS 2026.
  *
- * Two bits per line -- icarus_critical (staged at fill time by memory/icarus.c from its
- * branch-history-contextualized Critical Instruction Table; always FALSE for data lines)
- * and icarus_reused (set on any hit, cleared on insert) -- place every line into one of four
- * priority bins: [0,0] < [0,1] < [1,1] < [1,0]. Each bin has a watermark (the number of
- * lines it keeps); eviction scans bins lowest-priority-first and only takes a victim from a
- * bin whose current occupancy in this set is above its watermark, picking the
- * least-recently-used line within that bin (this codebase has no tree-PLRU, so
+ * Two bits per line -- icarus_critical (staged at fill time, or set later on an MLC hit, by
+ * memory/icarus.c from its branch-history-contextualized Critical Instruction Table; always
+ * FALSE for data lines) and icarus_reused (set on any hit, cleared on insert) -- place every
+ * line into one of four priority bins: [0,0] < [0,1] < [1,1] < [1,0]. Each bin has a
+ * watermark (the number of lines it keeps); eviction scans bins lowest-priority-first and
+ * only takes a victim from a bin whose current occupancy in this set is above its watermark,
+ * picking the least-recently-used line within that bin (this codebase has no tree-PLRU, so
  * last_access_time -- stamped here on insert/hit, not by the generic LRU path, since the
  * strategy-table-driven policies don't touch it themselves -- stands in for it). */
 void icarus_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
@@ -2026,6 +2026,23 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
     icarus_stat_evict(proc_id, icarus_bin_of(&cache->entries[set][lru_way]));
   cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
   return &cache->entries[set][*way];
+}
+
+/* REPL_ICARUS: the CIT's criticality signal for a line already in the cache (see
+   icarus_mlc_hit). Sets the critical bit without touching LRU state; returns TRUE if the bit
+   was newly set, FALSE if the line was already critical or isn't present. */
+Flag cache_icarus_mark_critical(Cache* cache, Addr addr) {
+  Addr tag, tag_full, line_addr;
+  uns set = cache_index(cache, addr, &tag, &tag_full, &line_addr);
+  for (uns ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    if (entry->valid && entry->tag == tag) {
+      Flag newly = !entry->icarus_critical;
+      entry->icarus_critical = TRUE;
+      return newly;
+    }
+  }
+  return FALSE;
 }
 
 /**************************************************************************************/

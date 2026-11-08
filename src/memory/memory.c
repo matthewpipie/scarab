@@ -1654,6 +1654,8 @@ static void mem_complete_mlc_access(Mem_Req* req) {
     update_mlc_lru = FALSE;
   data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);  // access MLC
   req->mlc_hit = data ? TRUE : FALSE;
+  if (data)
+    icarus_mlc_hit(&MLC(req->proc_id)->cache, req);
 
   if (data || PERFECT_MLC) { /* mlc hit */
     /* if exclusive cache, invalidate the line in L2 if there is a done function
