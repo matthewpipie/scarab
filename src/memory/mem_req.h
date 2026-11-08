@@ -107,11 +107,13 @@ typedef enum Lacs_Slot_enum {
   LACS_NUM_SLOTS
 } Lacs_Slot;
 
-/* REPL_LACS: what a level's snapshot on a request was taken for (Mem_Req.lacs_snap). */
+/* REPL_LACS: where a request's miss at one level stands (Mem_Req.lacs_snap). */
 typedef enum Lacs_Snap_enum {
-  LACS_SNAP_NONE,     /* not missed at this level yet, a writeback, or already filled */
-  LACS_SNAP_DEMAND,   /* a demand was waiting when the snapshot was (re)taken */
-  LACS_SNAP_PREFETCH, /* a prefetch with no demand waiting */
+  LACS_SNAP_NONE,      /* not missed at this level, or a writeback */
+  LACS_SNAP_DEMAND,    /* outstanding; a demand was waiting when the snapshot was (re)taken */
+  LACS_SNAP_PREFETCH,  /* outstanding; a prefetch with no demand waiting */
+  LACS_SNAP_TRAINED,   /* returned and trained the history table (paper Steps D/E) */
+  LACS_SNAP_UNTRAINED, /* returned without training: a prefetch no demand merged into in time */
 } Lacs_Snap;
 
 #define DRAM_REQ_STATUS_LIST(elem) elem(CONFLICT) elem(MISS) elem(HIT)
