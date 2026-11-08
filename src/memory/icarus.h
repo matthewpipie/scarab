@@ -48,13 +48,14 @@ extern "C" {
    already carries one. The CIT is indexed with this history at training and fill. */
 void icarus_tag_req(uns8 proc_id, Addr line_addr, uns32 hist);
 
-/* Once per cycle per core, when decode was starved this cycle by the outstanding
-   instruction-fetch request `req` for `addr` and the issue queue was completely empty
-   (nothing else was hiding the stall): trains the per-core Critical Instruction Table (CIT)
-   entry for (addr, req's history). Lazily resets the whole CIT every --icarus_reset_interval
-   cycles. `addr` is a raw address (e.g. ic->line_addr) -- the CIT hashes at MLC_LINE_SIZE
-   granularity internally, so callers don't need to shift and can't disagree with
-   icarus_fill's lookup about what granularity to use. */
+/* Called every cycle decode was starved by the outstanding instruction-fetch request `req`
+   for `addr` and the issue queue was completely empty (nothing else was hiding the stall),
+   but trains the per-core Critical Instruction Table (CIT) entry for (addr, req's history)
+   only once per request: the paper counts critical fetches, not starved cycles. Lazily
+   resets the whole CIT every --icarus_reset_interval cycles. `addr` is a raw address (e.g.
+   ic->line_addr) -- the CIT hashes at MLC_LINE_SIZE granularity internally, so callers
+   don't need to shift and can't disagree with icarus_fill's lookup about what granularity
+   to use. */
 void icarus_note_fetch_stall(uns8 proc_id, Addr addr, Mem_Req* req);
 
 /* Fill time for the MLC: looks up the CIT for the filling line (instruction-type requests

@@ -37,8 +37,8 @@
  * just before predicting it, recorded in ft.cc), not g_bp_data's current history, which with
  * a decoupled front end is up to an FTQ ahead of fetch and FDIP. icarus_tag_req copies it
  * onto the line's request (Mem_Req.icarus_hist) when the demand fetch or FDIP issues it.
- * icarus_note_fetch_stall trains an entry up (saturating) whenever, on a cycle an
- * instruction-fetch miss is outstanding, decode was starved by it *and* the issue queue was
+ * icarus_note_fetch_stall trains an entry up (saturating) once per request, the first cycle
+ * that, with that request outstanding, decode was starved by it *and* the issue queue was
  * completely empty -- nothing else was around to hide the stall, so this miss was genuinely
  * on the critical path. icarus_fill looks the entry up at fill time: at or above
  * --icarus_crit_thresh means "critical." The whole table is reset every
@@ -154,10 +154,14 @@ void icarus_note_fetch_stall(uns8 proc_id, Addr addr, Mem_Req* req) {
     STAT_EVENT(proc_id, MLC_ICARUS_CIT_RESET);
   }
 
-  if (!req->icarus_hist_valid)  // untagged: no history to index the CIT with
+  // Paper §3.3: one increment per critical fetch, not per starved cycle. Counting cycles
+  // saturates the 2-bit entry within a single stall, so a line would be marked critical at
+  // its own fill on its first starvation, defeating the "starved at least twice" filter that
+  // keeps dead-on-arrival lines out of the [1,0] bin.
+  if (req->icarus_trained || !req->icarus_hist_valid)
     return;
+  req->icarus_trained = TRUE;
 
-  // Increment counter because we are critical
   uns idx = icarus_cit_index(s, addr, req->icarus_hist);
   if (s->cit[idx] < ICARUS_CIT_MAX)
     s->cit[idx]++;

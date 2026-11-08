@@ -2444,6 +2444,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->fe_bound_cycles = 0;
   new_req->icarus_hist = 0;
   new_req->icarus_hist_valid = FALSE;
+  new_req->icarus_trained = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
 

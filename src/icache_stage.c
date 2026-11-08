@@ -920,7 +920,8 @@ void execute_coupled_FSM() {
       /* REPL_ICARUS: decode saw nothing this cycle (cur_data->op_count == 0, the same
          condition ICACHE_STAGE_STARVED above is derived from) because of this outstanding
          ifetch miss, and nothing else was available to hide the stall -- train the CIT
-         entry for this line/branch-history pair as genuinely critical. */
+         entry for this line/branch-history pair as genuinely critical (once per request;
+         icarus_note_fetch_stall ignores the request's later starved cycles). */
       if (!cur_data->op_count && issue_queue_is_empty())
         icarus_note_fetch_stall(ic->proc_id, ic->line_addr, ifetch_req);
     }
