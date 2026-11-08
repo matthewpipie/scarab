@@ -49,8 +49,8 @@ void lsq_dispatch(Op* mem_op);          // insert mem op into LSQ when mem op is
 void lsq_commit(Op* mem_op);            // free the entry when the mem op is retired
 
 int lsq_get_in_flight_load_num();
-void lsq_tag_inflight_loads(Flag mem_bound_cycle);  // REPL_MLP: accumulate ld_window_cycles/ld_bound_cycles
-                                                     // on each in-flight load's Mem_Req
+void lsq_tag_inflight_loads(Flag fu_wait);  // REPL_MLP: accumulate ld_window_cycles/ld_bound_cycles
+                                             // on each in-flight load's Mem_Req
 
 #ifdef __cplusplus
 }

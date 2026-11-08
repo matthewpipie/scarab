@@ -347,9 +347,9 @@ int lsq_get_in_flight_load_num() {
    (mlp_stage_fill_boost) happen before the dcache fill, so no cycle they would read is dropped.
 
    A request fed by several merged loads accumulates faster, but the bound/window ratio -- what fill
-   time actually reads -- stays representative since mem_bound_cycle is the same core-wide flag for
-   every one of them. */
-void lsq_tag_inflight_loads(Flag mem_bound_cycle) {
+   time actually reads -- stays representative since fu_wait is the same core-wide flag for every
+   one of them. */
+void lsq_tag_inflight_loads(Flag fu_wait) {
   if (!LSQ_ENABLE)
     return;
 
@@ -357,7 +357,7 @@ void lsq_tag_inflight_loads(Flag mem_bound_cycle) {
   for (const auto& entry : load_entries) {
     if (entry.op->state >= OS_IN_RS && entry.op->req && op_get_done_cycle(entry.op) == MAX_CTR) {
       entry.op->req->ld_window_cycles++;
-      if (mem_bound_cycle)
+      if (fu_wait)
         entry.op->req->ld_bound_cycles++;
     }
   }
