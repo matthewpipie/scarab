@@ -3320,12 +3320,20 @@ Flag mlc_fill_line(Mem_Req* req) {
     mlc_miss_is_satisfied(req);
     return TRUE;
   }
+  /* An MLC prefetch that promoted a dirty line out of an exclusive LLC carries the only
+     copy. Whichever line ends up holding it below -- a new one, or one already resident
+     -- must be dirty, or its eviction drops the data. mem_invalidate_on_promote() put
+     the dirty bit in dirty_l0, the field a core-bound fill hands to the dcache; an MLC
+     prefetch has no op, so nothing else sets it. */
+  Flag promoted_dirty = req->destination == DEST_MLC && req->dirty_l0;
+  if (promoted_dirty)
+    STAT_EVENT(req->proc_id, EXCL_PROMOTE_DIRTY_TO_MLC);
   /* Another request already filled the line: inserting it again would evict a victim
      the insert then keeps (cache_insert reuses the line's own way). */
   Addr resident_addr;
   MLC_Data* resident = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &resident_addr, FALSE);
   if (resident) {
-    resident->dirty |= (req->type == MRT_WB);
+    resident->dirty |= (req->type == MRT_WB) || promoted_dirty;
     mlc_miss_is_satisfied(req);
     return TRUE;
   }
@@ -3336,7 +3344,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     L1_Data* dup = (L1_Data*)cache_access(&L1(req->proc_id)->cache, req->addr, &dup_addr, FALSE);
     if (dup) {
       /* A writeback is the newer copy: the resident line keeps its dirty bit. */
-      dup->dirty |= (req->type == MRT_WB);
+      dup->dirty |= (req->type == MRT_WB) || promoted_dirty;
       STAT_EVENT(req->proc_id, EXCL_FILL_DUP_SKIPPED_MLC);
       mlc_miss_is_satisfied(req);
       return TRUE;
@@ -3545,6 +3553,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     mshr_remove(&mem->mlc_wb, wb);
     mem_free_req(wb);
   }
+  data->dirty |= promoted_dirty;
   data->prefetch = req->type == MRT_DPRF || req->type == MRT_IPRF || req->type == MRT_UOCPRF ||
                    req->type == MRT_FDIPPRFON || req->type == MRT_FDIPPRFOFF || req->type == MRT_FDIPPRFALT ||
                    req->demand_match_prefetch;
