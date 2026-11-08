@@ -12,6 +12,7 @@ extern "C" {
 #include "memory/memory.param.h"
 #include "prefetcher/pref.param.h"
 
+#include "memory/icarus.h"
 #include "memory/memory.h"
 #include "prefetcher/eip.h"
 
@@ -997,6 +998,9 @@ void FDIP::update() {
           success =
               new_mem_req(mem_type, proc_id, line_addr, ICACHE_LINE_SIZE, 0, NULL, instr_fill_line, unique_count, 0);
           // ICACHE_LINE_SIZE, 0, NULL, instr_fill_line, unique_count++, 0); // bug?
+          // REPL_ICARUS: op is the first op of this line on the predicted path
+          if (success != Mshr_Req_Result::FAILED)
+            icarus_tag_req(proc_id, line_addr, op->fetch_ghist);
           if (success == Mshr_Req_Result::SUCCESS_NEW) {
             STAT_EVENT(proc_id, FDIP_NEW_PREFETCHES_ONPATH0 + FDIP_PREF_STAT_COUNT * bp_id + op->off_path);
             DEBUG(proc_id, "[FDIP%u] Success to emit a new prefetch for %llx\n", bp_id, line_addr);

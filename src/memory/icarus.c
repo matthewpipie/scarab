@@ -33,8 +33,10 @@
  *
  * The paper's Critical Instruction Table (CIT): a per-core table of 2-bit saturating
  * counters, indexed by XOR-folding the missing line's address with the branch history that
- * led to the fetch (icache_stage.c snapshots the latter onto the request's `ghist` field,
- * extending the existing REPL_MLP-adjacent FDIP-only capture in memory.c's new_mem_req).
+ * led to the fetch. That history is Op.fetch_ghist of the line's first op (the BP's history
+ * just before predicting it, recorded in ft.cc), not g_bp_data's current history, which with
+ * a decoupled front end is up to an FTQ ahead of fetch and FDIP. icarus_tag_req copies it
+ * onto the line's request (Mem_Req.icarus_hist) when the demand fetch or FDIP issues it.
  * icarus_note_fetch_stall trains an entry up (saturating) whenever, on a cycle an
  * instruction-fetch miss is outstanding, decode was starved by it *and* the issue queue was
  * completely empty -- nothing else was around to hide the stall, so this miss was genuinely
@@ -60,6 +62,9 @@
 #include "globals/utils.h"
 
 #include "memory/memory.param.h"
+
+#include "memory/memory.h"
+#include "memory/mshr.h"
 
 #include "statistics.h"
 
@@ -128,7 +133,18 @@ static Flag icarus_lookup_critical(uns8 proc_id, Addr addr, uns32 hist) {
 /**************************************************************************************/
 /* Interface */
 
-void icarus_note_fetch_stall(uns8 proc_id, Addr addr, uns64 bhr) {
+void icarus_tag_req(uns8 proc_id, Addr line_addr, uns32 hist) {
+  Mshr_Line* line = mshr_line(mem_core_file(proc_id, MRT_IFETCH), line_addr);
+  Mem_Req* req = line ? mshr_line_first(line) : NULL;
+  // First issuer wins: a demand that merges into an FDIP prefetch keeps the prefetch's
+  // (same-path) history; one that waits on an untagged request (e.g. an IPRF) supplies it.
+  if (req && !req->icarus_hist_valid) {
+    req->icarus_hist = hist;
+    req->icarus_hist_valid = TRUE;
+  }
+}
+
+void icarus_note_fetch_stall(uns8 proc_id, Addr addr, Mem_Req* req) {
   Icarus_State* s = icarus_state(proc_id);
 
   // Check if we should reset the CIT table
@@ -138,8 +154,11 @@ void icarus_note_fetch_stall(uns8 proc_id, Addr addr, uns64 bhr) {
     STAT_EVENT(proc_id, MLC_ICARUS_CIT_RESET);
   }
 
+  if (!req->icarus_hist_valid)  // untagged: no history to index the CIT with
+    return;
+
   // Increment counter because we are critical
-  uns idx = icarus_cit_index(s, addr, bhr);
+  uns idx = icarus_cit_index(s, addr, req->icarus_hist);
   if (s->cit[idx] < ICARUS_CIT_MAX)
     s->cit[idx]++;
 
@@ -154,10 +173,11 @@ void icarus_fill(Cache* cache, Mem_Req* req) {
 
   STAT_EVENT(req->proc_id, MLC_ICARUS_FILL);
 
-  // Lookup addr in CIT and determine criticality
+  // Lookup addr in CIT and determine criticality. A request no fetch has tagged (e.g. an
+  // IPRF nobody has demanded yet) has no history to look up with, so it fills as non-critical.
   Flag critical = FALSE;
-  if (icarus_is_inst_req(req)) {
-    critical = icarus_lookup_critical(req->proc_id, req->addr, req->ghist);
+  if (icarus_is_inst_req(req) && req->icarus_hist_valid) {
+    critical = icarus_lookup_critical(req->proc_id, req->addr, req->icarus_hist);
     if (critical)
       STAT_EVENT(req->proc_id, MLC_ICARUS_CRITICAL_FILL);
   }

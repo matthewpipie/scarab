@@ -458,6 +458,11 @@ Flag mem_req_on_icache_miss() {
     success = new_mem_req(MRT_IFETCH, ic->proc_id, ic->line_addr, ICACHE_LINE_SIZE, 0, NULL, instr_fill_line,
                           unique_count, 0);
     if (success) {  // CMP maybe unique_count_per_core[proc_id]?
+      // REPL_ICARUS: the op buffer was just filled from this FT, so its head is the op the
+      // missing line was fetched for; its history is the one that led to this fetch.
+      Op* head = ft_op_buffer_peek(ic);
+      if (head)
+        icarus_tag_req(ic->proc_id, ic->line_addr, head->fetch_ghist);
       DEBUG(ic->proc_id, "from IC_STAGE for cl 0x%llx at cycle %llu\n", ic->line_addr, cycle_count);
       STAT_EVENT(ic->proc_id, ICACHE_STAGE_MISS);
 
@@ -917,7 +922,7 @@ void execute_coupled_FSM() {
          ifetch miss, and nothing else was available to hide the stall -- train the CIT
          entry for this line/branch-history pair as genuinely critical. */
       if (!cur_data->op_count && issue_queue_is_empty())
-        icarus_note_fetch_stall(ic->proc_id, ic->line_addr, ifetch_req->ghist);
+        icarus_note_fetch_stall(ic->proc_id, ic->line_addr, ifetch_req);
     }
   }
 

@@ -2442,6 +2442,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
 
   new_req->fe_window_cycles = 0;
   new_req->fe_bound_cycles = 0;
+  new_req->icarus_hist = 0;
+  new_req->icarus_hist_valid = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
 
@@ -2700,11 +2702,6 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
       new_req->fdip_pref_off_path = 0;
     new_req->ghist = g_bp_data->global_hist;
   }
-  /* REPL_ICARUS: snapshot the branch history that led to this fetch, independent of the
-     FDIP-only capture above -- the CIT signature needs it for every instruction fetch, not
-     just FDIP prefetches. */
-  if (type == MRT_IFETCH)
-    new_req->ghist = g_bp_data->global_hist;
   new_req->cyc_hit_by_demand_load = 0;
   if (PREF_FRAMEWORK_ON) {
     new_req->bw_prefetchable = pref_stream_enabled() && pref_stream_bw_prefetchable(proc_id, addr);

@@ -115,6 +115,10 @@ struct Mem_Req_struct {
   uns types;
   Counter fdip_emitted_cycle; /* cycle when the request is emitted. */
   uns64 ghist;
+  /* REPL_ICARUS: the branch history leading to the fetch that issued this request
+     (Op.fetch_ghist, set by icarus_tag_req; meaningful once icarus_hist_valid). */
+  uns32 icarus_hist;
+  Flag icarus_hist_valid;
   Counter demand_icache_emitted_cycle; /* cycle when the request is emitted. */
   Counter emitted_cycle;               /* cycle when request of any type was first initialized */
   Counter priority;                    /* priority of the miss */

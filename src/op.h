@@ -199,6 +199,8 @@ struct Op_struct {
   Flag conf_off_path;           // is the op on the correct path of the program? - confidence information
   Flag exit;                    // is this the last instruction to execute?
   Recovery_Info recovery_info;  // information that will be used to recover a mispredict by the op
+  uns32 fetch_ghist;            // BP global history just before this op was predicted (newest outcome
+                                // in bit 31): the history leading to its fetch. Set in ft.cc.
   // }}}
 
   // {{{ scheduler information
