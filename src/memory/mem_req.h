@@ -171,6 +171,9 @@ struct Mem_Req_struct {
                                                  because the ROB head was a load waiting on this */
   Counter fe_stall_cycles;                   /* Miss cost (stats only): cycles the backend got no
                                                  ops while the on-path icache waited on this */
+  Flag fe_abandoned;                         /* REPL_MLP (mlp_instr_mark 2): fetch was redirected
+                                                 away while stalled on this miss, and no demand
+                                                 fetch has reached it since */
   Counter unique_num;                        /* unique num that allocated this request - for icache
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */

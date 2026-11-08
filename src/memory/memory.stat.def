@@ -350,6 +350,11 @@ DEF_STAT(  L1_LINES       		           , RATIO  , L1_CYCLE  )
 DEF_STAT(  MLP_MARKED_LOAD		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_FETCH		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_MERGE		           , COUNT  , NO_RATIO  )
+// mlp_instr_mark 2's flag, counted under every policy. MLP_FE_ABANDON: redirects away from an
+// icache miss fetch was stalled on. _REREACH: a demand fetch reached such a miss again before its
+// fill, clearing the flag.
+DEF_STAT(  MLP_FE_ABANDON                  , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
 
 // Request stall cost (stats only), summed over requests by the level that served them; each
 // family is laid out MLC, LLC, MEM. COST_ROB: cycles nothing retired because the ROB head was
