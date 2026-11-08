@@ -1878,9 +1878,9 @@ Cache_Entry* ship_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
  * Two bits per line -- icarus_critical (staged at fill time by memory/icarus.c from its
  * branch-history-contextualized Critical Instruction Table; always FALSE for data lines)
  * and icarus_reused (set on any hit, cleared on insert) -- place every line into one of four
- * priority bins: [0,0] < [0,1] < [1,1] < [1,0]. Each bin has a watermark (a quota over the
- * set's ways); eviction scans bins lowest-priority-first and only takes a victim from a bin
- * whose current occupancy in this set is at or above its watermark, picking the
+ * priority bins: [0,0] < [0,1] < [1,1] < [1,0]. Each bin has a watermark (the number of
+ * lines it keeps); eviction scans bins lowest-priority-first and only takes a victim from a
+ * bin whose current occupancy in this set is above its watermark, picking the
  * least-recently-used line within that bin (this codebase has no tree-PLRU, so
  * last_access_time -- stamped here on insert/hit, not by the generic LRU path, since the
  * strategy-table-driven policies don't touch it themselves -- stands in for it). */
@@ -1996,9 +1996,10 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
       }
     }
 
-    // If this bin has more entries than its watermark,
-    // elect to evict from this bin
-    if (count >= icarus_watermark(bin) && lru_way != -1) {
+    // If this bin has more entries than its watermark, elect to evict from this bin
+    // (Fig. 9: "#lines > w"; a watermark is the number of lines a bin keeps, so a bin at
+    // exactly its watermark is protected)
+    if (count > icarus_watermark(bin)) {
       *way = lru_way;
       if (!if_external)
         icarus_stat_evict(proc_id, bin);
@@ -2007,16 +2008,19 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
     }
   }
 
-  /* Fallback: shouldn't trigger when the watermarks sum to <= assoc and the set is full, but
-     fall back to global LRU across the set rather than leaving *way uninitialized. */
-  int lru_way = 0;
-  Counter lru_time = cache->entries[set][0].last_access_time;
-  for (ii = 1; ii < cache->assoc; ii++) {
-    if (cache->entries[set][ii].last_access_time < lru_time) {
-      lru_way = ii;
-      lru_time = cache->entries[set][ii].last_access_time;
+  /* No bin is above its watermark, so every bin holds exactly its watermark (possible when the
+     watermarks sum to assoc, as the defaults do). Fig. 9 then evicts the LRU line of [0,0]; if
+     [0,0] is empty (watermark 0), take the lowest-priority bin that has a line. */
+  int lru_way = -1;
+  for (int bb = 0; bb < 4 && lru_way == -1; bb++) {
+    for (ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      if (icarus_bin_of(entry) == ICARUS_BIN_PRIORITY[bb] &&
+          (lru_way == -1 || entry->last_access_time < cache->entries[set][lru_way].last_access_time))
+        lru_way = ii;
     }
   }
+  ASSERT(proc_id, lru_way != -1);
   *way = lru_way;
   if (!if_external)
     icarus_stat_evict(proc_id, icarus_bin_of(&cache->entries[set][lru_way]));
