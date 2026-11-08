@@ -517,3 +517,61 @@ DEF_STAT(FNLMMA_PREFETCH_TYPE1, COUNT, NO_RATIO)
 DEF_STAT(FNLMMA_PREFETCH_TYPE2, COUNT, NO_RATIO)
 DEF_STAT(FNLMMA_PREFETCH_TYPE3, COUNT, NO_RATIO)
 DEF_STAT(FNLMMA_PREFETCH_TYPE4, DIST, NO_RATIO)
+
+/* Berti prefetcher (prefetcher/pref_berti.c), per core */
+/* History table writes: load misses, and first demand hits on prefetched lines; and loads
+   not written, being to the line of their IP's youngest entry */
+DEF_STAT(BERTI_HIST_INSERT_MISS, COUNT, NO_RATIO)
+DEF_STAT(BERTI_HIST_INSERT_PREF_HIT, COUNT, NO_RATIO)
+DEF_STAT(BERTI_HIST_SAME_LINE, COUNT, NO_RATIO)
+/* Searches for timely deltas: on the fill of a load miss, of a late prefetch a load caught,
+   and on a first demand hit on a prefetched line. A load whose latency overflowed (or a hit
+   on a line with no latency) does not search. */
+DEF_STAT(BERTI_SEARCH_MISS, COUNT, NO_RATIO)
+DEF_STAT(BERTI_SEARCH_LATE_PREF, COUNT, NO_RATIO)
+DEF_STAT(BERTI_SEARCH_PREF_HIT, COUNT, NO_RATIO)
+DEF_STAT(BERTI_SEARCH_NO_LATENCY, COUNT, NO_RATIO)
+/* Fetch latencies of the searches, summed (divide by the searches for the mean) */
+DEF_STAT(BERTI_SEARCH_LATENCY, COUNT, NO_RATIO)
+/* Timely deltas a search found */
+DEF_STAT(BERTI_TIMELY_DELTAS_0, DIST, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_1, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_2, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_3, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_4, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_5, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_6, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_7, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TIMELY_DELTAS_8_UP, DIST, NO_RATIO)
+/* Timely deltas skipped for not fitting berti_delta_bits */
+DEF_STAT(BERTI_DELTA_TOO_LARGE, COUNT, NO_RATIO)
+/* Table of deltas: entries allocated into a free slot or over a valid one */
+DEF_STAT(BERTI_TABLE_FILL, COUNT, NO_RATIO)
+DEF_STAT(BERTI_TABLE_EVICT, COUNT, NO_RATIO)
+/* New deltas: into a free slot, over a replaceable delta, or dropped for want of one */
+DEF_STAT(BERTI_DELTA_INSERT, COUNT, NO_RATIO)
+DEF_STAT(BERTI_DELTA_REPLACE, COUNT, NO_RATIO)
+DEF_STAT(BERTI_DELTA_DROP, COUNT, NO_RATIO)
+/* Learning phases ended, those that left the IP no prefetching delta, and the statuses they
+   gave (CAPPED: above the MLC watermark but past berti_max_pref_deltas) */
+DEF_STAT(BERTI_PHASE_END, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PHASE_END_NO_PREF, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PHASE_DELTAS_L1, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PHASE_DELTAS_L2, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PHASE_DELTAS_L2_REPL, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PHASE_DELTAS_NONE, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PHASE_DELTAS_CAPPED, COUNT, NO_RATIO)
+/* Dcache accesses whose IP is in the table of deltas or not, and those of an IP prefetching
+   from its warm-up statuses */
+DEF_STAT(BERTI_ACCESS_IP_HIT, COUNT, NO_RATIO)
+DEF_STAT(BERTI_ACCESS_IP_MISS, COUNT, NO_RATIO)
+DEF_STAT(BERTI_ACCESS_WARMUP, COUNT, NO_RATIO)
+/* Prefetches queued for the dcache and the MLC, and those the queue refused; dcache deltas
+   sent to the MLC as the dcache MSHRs were past the watermark; prefetches dropped for
+   leaving the page (berti_cross_page 0) or the core's address space */
+DEF_STAT(BERTI_PREF_QUEUED_L1, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PREF_QUEUED_L2, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PREF_QUEUE_FULL, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PREF_L1_MSHR_BUSY, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PREF_CROSS_PAGE, COUNT, NO_RATIO)
+DEF_STAT(BERTI_PREF_OUT_OF_RANGE, COUNT, NO_RATIO)

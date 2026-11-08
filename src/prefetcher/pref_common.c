@@ -55,6 +55,7 @@
 #include "prefetcher//pref_stridepc.h"
 #include "prefetcher/l2l1pref.h"
 #include "prefetcher/pref_2dc.h"
+#include "prefetcher/pref_berti.h"
 #include "prefetcher/pref_ghb.h"
 #include "prefetcher/pref_markov.h"
 #include "prefetcher/pref_phase.h"
@@ -499,6 +500,18 @@ void pref_umlc_cache_fill(uns8 proc_id, Addr fill_addr, Flag prefetch, Addr evic
   }
 }
 
+void pref_dl0_load_fetched(uns8 proc_id, Addr line_addr, Addr load_PC, Counter demand_cycle, Counter latency,
+                           Flag pref_hit) {
+  if (!PREF_FRAMEWORK_ON)
+    return;
+  for (int ii = 0; ii < pref_table_size; ii++) {
+    if (pref_table[ii].hwp_info->enabled && pref_table[ii].dl0_load_fetched &&
+        pref_hwp_instance_enabled(&pref_table[ii], PREF_TRAIN_LEVEL_DCACHE)) {
+      pref_table[ii].dl0_load_fetched(proc_id, line_addr, load_PC, demand_cycle, latency, pref_hit);
+    }
+  }
+}
+
 /* How many prefetcher ids an uns8 prefetcher_id names. */
 #define PREF_ID_NUM (UINT8_MAX + 1)
 
@@ -549,7 +562,8 @@ Flag pref_addto_dl0req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id) 
                       .line_addr = line_index << LOG2(DCACHE_LINE_SIZE),
                       .line_index = line_index,
                       .prefetcher_id = prefetcher_id,
-                      .rdy_cycle = cycle_count + DCACHE_CYCLES};
+                      .rdy_cycle = cycle_count + DCACHE_CYCLES,
+                      .queue_cycle = cycle_count};
   return pref_queue_add(&pref.cores[proc_id]->dl0req_queue, PREF_TO_DCACHE, DCACHE_CYCLES, &req,
                         PREF_DL0REQ_QUEUE_FULL);
 }
@@ -562,7 +576,8 @@ Flag pref_addto_umlc_req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id
                       .line_addr = line_index << LOG2(DCACHE_LINE_SIZE),
                       .line_index = line_index,
                       .prefetcher_id = prefetcher_id,
-                      .rdy_cycle = freq_cycle_count(FREQ_DOMAIN_L1) + MLC_CYCLES};
+                      .rdy_cycle = freq_cycle_count(FREQ_DOMAIN_L1) + MLC_CYCLES,
+                      .queue_cycle = cycle_count};
   return pref_queue_add(&pref.cores[proc_id]->umlc_req_queue, PREF_TO_UMLC, MLC_CYCLES, &req, PREF_UMLC_REQ_QUEUE_FULL);
 }
 
@@ -583,7 +598,8 @@ Flag pref_addto_ul1req_queue_set(uns8 proc_id, Addr line_index, uns8 prefetcher_
                       .loadPC = loadPC,
                       .global_hist = global_hist,
                       .bw_limited = bw,
-                      .rdy_cycle = freq_cycle_count(FREQ_DOMAIN_L1) + L1_CYCLES};
+                      .rdy_cycle = freq_cycle_count(FREQ_DOMAIN_L1) + L1_CYCLES,
+                      .queue_cycle = cycle_count};
   return pref_queue_add(&pref.cores[proc_id]->ul1req_queue, PREF_TO_UL1, L1_CYCLES, &req, PREF_UL1REQ_QUEUE_FULL);
 }
 
@@ -764,6 +780,7 @@ static void pref_drain_queue(uns proc_id, List* q, Destination dest) {
     info.bw_limited = pf->bw_limited;
     info.dest = dest;
     info.probed = TRUE;
+    info.queue_cycle = pf->queue_cycle;
     Flag blocked = FALSE; /* no bank port or MSHR this cycle */
     switch (pref_issue(pf_proc_id, dest, pf->line_addr, MRT_DPRF, line_size, delay, fill, &info)) {
       case PREF_ISSUE_BANK_BUSY:

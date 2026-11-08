@@ -187,6 +187,7 @@ typedef struct Pref_Req_Info_Struct {
   /* The prefetcher already looked this line up in dest's cache and missed, so the
      request is born one level below, holding an MSHR at dest. */
   Flag probed;
+  Counter queue_cycle; /* cycle_count when its prefetcher queued it */
 } Pref_Req_Info;
 
 typedef enum L1_Dyn_Partition_Policy_enum {

@@ -2242,6 +2242,7 @@ Flag mem_adjust_matching_request(Mem_Req* req, Mem_Req_Type type, Addr addr, uns
 
       pref_ul1_pref_hit_late(req->proc_id, req->addr, req->loadPC, req->global_hist, req->prefetcher_id);
       req->demand_match_prefetch = TRUE;
+      req->demand_match_cycle = cycle_count;
       req->type = type;  // type promotion
       req->done_func = done_func;
       // if (DRAM_SCHED == DRAM_SCHED_FAIR_QUEUING_2LEVEL) {
@@ -2437,6 +2438,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->unique_num = unique_num;  // this is for icache requests for now
   new_req->onpath_match_offpath = FALSE;
   new_req->demand_match_prefetch = FALSE;
+  new_req->demand_match_cycle = 0;
+  new_req->pref_queue_cycle = 0;
   new_req->dirty_l0 = op && op->uop->mem_type == MEM_ST && !op->off_path;
   new_req->wb_used_onpath = FALSE;
   new_req->mem_seq_num = 0;
@@ -2701,6 +2704,7 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
 
   new_req->loadPC = op ? op->inst->addr : 0;
   new_req->prefetcher_id = (pref_info ? pref_info->prefetcher_id : 0);
+  new_req->pref_queue_cycle = (pref_info ? pref_info->queue_cycle : 0);
   new_req->pref_distance = (pref_info ? pref_info->distance : 0);
   new_req->pref_loadPC = (pref_info ? pref_info->loadPC : 0);
   new_req->global_hist = (pref_info ? pref_info->global_hist : 0);
