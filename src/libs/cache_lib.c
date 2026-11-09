@@ -61,6 +61,18 @@ void cache_set_next_fill_mlp_boost(float boost) {
   g_next_fill_mlp_boost = boost;
 }
 
+/* REPL_LACS: staged by memory/lacs.c right before a fill-time cache_insert on a cache
+   running REPL_LACS, consumed by lacs_update_insert (the strategy table's update_insert,
+   since REPL_LACS -- unlike REPL_MLP -- sits in the strategy-table group). !valid means
+   "the policy's own default," not "cost 0." */
+static Flag g_lacs_next_valid = FALSE;
+static uns g_lacs_next_cost = 0;
+
+void cache_set_lacs_next_insert(Flag valid, uns cost) {
+  g_lacs_next_valid = valid;
+  g_lacs_next_cost = cost;
+}
+
 /**************************************************************************************/
 /* Static Prototypes */
 
@@ -141,11 +153,11 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
   /* set some fields to make indexing quick */
   cache->set_bits = LOG2(num_sets);
   cache->tag_bits = tag_bits;
-  cache->shift_bits = LOG2(line_size);                /* use for shift amt. */
-  cache->set_mask = N_BIT_MASK(LOG2(num_sets));       /* use after shifting */
+  cache->shift_bits = LOG2(line_size);          /* use for shift amt. */
+  cache->set_mask = N_BIT_MASK(LOG2(num_sets)); /* use after shifting */
   cache->tag_pure_mask = tag_bits == 64 ? N_BIT_MASK_64 : N_BIT_MASK(tag_bits);
   cache->tag_mask = cache->tag_pure_mask << LOG2(num_sets); /* use after shifting */
-  cache->offset_mask = N_BIT_MASK(cache->shift_bits); /* use before shifting */
+  cache->offset_mask = N_BIT_MASK(cache->shift_bits);       /* use before shifting */
 
   /* set up the index-hash state */
   cache_index_state_init(cache, idx_cfg);
@@ -1891,6 +1903,147 @@ Cache_Entry* ship_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
 }
 
 /**************************************************************************************/
+/* LACS -- Kharbutli & Sheikh, "LACS: A Locality-Aware Cost-Sensitive Cache Replacement
+ * Algorithm", IEEE TC 2014.
+ *
+ *  - Each line's reference_val holds a learned cost, 0..LACS_MAX_COST: memory/lacs.c trains
+ *    it per line address from how many instructions the core issued while that line's miss
+ *    was outstanding (few issued -> the core stalled on it -> high cost; many -> the miss
+ *    was hidden -> low cost), and stages the trained cost here via cache_set_lacs_next_insert
+ *    right before the fill's cache_insert -- the same stage-before-fill shape REPL_MLP's
+ *    g_next_fill_mlp_boost already uses, just consumed by the strategy table's update_insert
+ *    instead of cache_insert_replpos, since REPL_LACS (unlike REPL_MLP) sits after REPL_SHIP
+ *    in the enum and dispatches through the strategy table.
+ *  - Eviction: a free way is taken first (same reasoning as the RRIP family -- inserting at
+ *    cost 0 could otherwise starve empty ways the same way inserting at the distant RRPV
+ *    did before 213826f). Otherwise the victim is a cost-0 line; if none exists, every line
+ *    in the set is aged down by the set's minimum cost first (so at least one reaches 0),
+ *    then one of the (possibly several) cost-0 lines is picked by a cache-private RNG.
+ *  - Hits promote: reference_val saturates up toward LACS_MAX_COST on reuse, the mirror image
+ *    of training's "this address's misses are usually hidden" signal.
+ *  - The RNG is private to the cache (via predictor), not shared: REPL_RANDOM's rand_repl_state
+ *    is never initstate()'d (an existing latent bug, not touched here) and BRRIP/DRRIP's
+ *    rand() shares libc's single global stream with anything else in the process that calls
+ *    it -- neither is a safe building block to extend. It only advances on a real eviction
+ *    (if_external == FALSE); get_next_repl_line's peek reads the same state without moving it,
+ *    so the peek and the real eviction that immediately follows it agree on the same line by
+ *    construction -- nothing else can touch this cache's RNG state or any line's reference_val
+ *    in a cache between those two calls in that flow. */
+#define LACS_MAX_COST 3
+#define LACS_INIT_COST 1
+#define LACS_MAX_ASSOC 1024
+
+typedef struct Lacs_State_struct {
+  uns32 rng_state;
+  Counter evictions;
+  Counter evict_aging;
+  Counter evict_ties;
+} Lacs_State;
+
+void lacs_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                      Repl_Policy repl_policy);
+void lacs_update_hit(Cache* cache, uns set, uns way, void* arg);
+void lacs_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg);
+Cache_Entry* lacs_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external);
+
+static inline Lacs_State* lacs_state(Cache* cache) {
+  return (Lacs_State*)cache->predictor;
+}
+
+/* xorshift32. Never returns 0 once seeded away from it, so '% num_candidates' below never
+   divides by a state that can't advance. */
+static inline uns32 lacs_rng_next(uns32 state) {
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
+}
+
+/* A distinct, nonzero, deterministic (reproducible across runs) seed per cache that ends up
+   running LACS -- there may be more than one (MLC and LLC can both be configured this way). */
+static uns32 g_lacs_seed = 0x9e3779b9u;
+
+void lacs_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                      Repl_Policy repl_policy) {
+  Lacs_State* s = (Lacs_State*)calloc(1, sizeof(Lacs_State));
+  ASSERTM(0, assoc <= LACS_MAX_ASSOC, "%s: associativity %u exceeds LACS_MAX_ASSOC (%u)\n", name, assoc,
+          LACS_MAX_ASSOC);
+  g_lacs_seed = lacs_rng_next(g_lacs_seed);
+  s->rng_state = g_lacs_seed;
+  cache->predictor = s;
+}
+
+void lacs_update_hit(Cache* cache, uns set, uns way, void* arg) {
+  Cache_Entry* entry = &cache->entries[set][way];
+
+  // Step G: promotion on reuse
+  if (entry->reference_val < LACS_MAX_COST)
+    entry->reference_val++;
+
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_HIT);
+}
+
+void lacs_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg) {
+  cache->entries[set][way].reference_val =
+      g_lacs_next_valid ? (uns8)MIN2(g_lacs_next_cost, (uns)LACS_MAX_COST) : LACS_INIT_COST;
+  g_lacs_next_valid = FALSE;
+  g_lacs_next_cost = 0;
+
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
+}
+
+Cache_Entry* lacs_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
+  int ii;
+  uns8 min_cost = LACS_MAX_COST;
+  uns candidates[LACS_MAX_ASSOC];
+  uns num_candidates = 0;
+  Lacs_State* s = lacs_state(cache);
+
+  /* A free way is taken before any valid line, and taking one ages nothing -- same as every
+     RRIP-family search (see 213826f). */
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (!cache->entries[set][ii].valid) {
+      *way = ii;
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
+  // Step C: every way is valid here, so the set's minimum cost is well-defined.
+  for (ii = 0; ii < cache->assoc; ii++)
+    min_cost = MIN2(min_cost, cache->entries[set][ii].reference_val);
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (cache->entries[set][ii].reference_val == min_cost)
+      candidates[num_candidates++] = ii;
+  }
+
+  *way = candidates[s->rng_state % num_candidates];
+
+  if (!if_external) {
+    // Aging: bring the set down to the minimum cost, so at least one line reads 0 next time.
+    if (min_cost > 0) {
+      for (ii = 0; ii < cache->assoc; ii++)
+        cache->entries[set][ii].reference_val -= min_cost;
+      s->evict_aging++;
+    }
+    if (num_candidates > 1)
+      s->evict_ties++;
+    s->evictions++;
+    s->rng_state = lacs_rng_next(s->rng_state);
+  }
+
+  cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+  return &cache->entries[set][*way];
+}
+
+void cache_lacs_counters(Cache* cache, Counter* evictions, Counter* evict_aging, Counter* evict_ties) {
+  Lacs_State* s = lacs_state(cache);
+  *evictions = s ? s->evictions : 0;
+  *evict_aging = s ? s->evict_aging : 0;
+  *evict_ties = s ? s->evict_ties : 0;
+}
+
+/**************************************************************************************/
 /* Driven Table */
 
 // clang-format off
@@ -1901,6 +2054,7 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_BRRIP,   brrip_action_init,    general_action_repl,  nru_update_hit,     brrip_update_insert,  rrip_update_evict   },
   { REPL_DRRIP,   drrip_action_init,    general_action_repl,  nru_update_hit,     drrip_update_insert,  rrip_update_evict   },
   { REPL_SHIP,    ship_action_init,     general_action_repl,  ship_update_hit,    ship_update_insert,   ship_update_evict   },
+  { REPL_LACS,    lacs_action_init,     general_action_repl,  lacs_update_hit,    lacs_update_insert,   lacs_update_evict   },
   { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL                },
 };
 // clang-format on

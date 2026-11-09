@@ -274,6 +274,10 @@ uns num_offchip_stall_reqs(uns proc_id);
 /* The MSHR file a miss of this type enters below the core. */
 Mshr* mem_core_file(uns8 proc_id, Mem_Req_Type type);
 
+/* REPL_LACS: the cache a slot names for this core (memory/lacs.c has no access to this
+   file's own MLC()/L1() macros). */
+Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot);
+
 /**************************************************************************************/
 /* Externs */
 
