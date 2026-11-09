@@ -801,6 +801,7 @@ class IssueQueue {
   void grant(IssueQueueStats& stats_across_queue) { select_logic->grant(stats_across_queue); }
 
   bool has_ready_ops() const { return select_logic->has_ready_ops(); }
+  bool is_empty() const { return available_entries() == entries.size(); }
 };
 
 IssueQueue::IssueQueue(uns proc_id, uns16 queue_id, uns16 size, std::vector<FunctionalUnitPicker> connected_fu_pickers)
@@ -918,6 +919,7 @@ class IssueQueues {
   void wakeup(Op* op);
   void issued(Op* op);
   bool has_ready_ops() const;
+  bool is_empty() const;
 };
 
 IssueQueues::IssueQueues(uns proc_id) : proc_id(proc_id) {
@@ -1104,6 +1106,15 @@ bool IssueQueues::has_ready_ops() const {
   return false;
 }
 
+bool IssueQueues::is_empty() const {
+  for (const IssueQueue& queue : issue_queues) {
+    if (!queue.is_empty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Memory is blocked when there are no more MSHRs in the L1 Q (i.e., there is no way to handle a D-Cache miss)
 void IssueQueues::update_mem_block() {
   INC_STAT_EVENT(node->proc_id, CORE_MEM_BLOCKED, node->mem_blocked);
@@ -1165,6 +1176,10 @@ void issue_queue_issued(Op* op) {
 
 Flag issue_queue_has_ready_ops() {
   return issue_queues->has_ready_ops();
+}
+
+Flag issue_queue_is_empty() {
+  return issue_queues->is_empty();
 }
 
 /**************************************************************************************/

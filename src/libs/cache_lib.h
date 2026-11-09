@@ -69,6 +69,8 @@ typedef enum Repl_Policy_enum {
   REPL_DRRIP,   /* dynamic re-reference interval prediction */
   REPL_SHIP,    /* signature-based hit predictor */
   REPL_LACS,    /* locality-aware cost-sensitive replacement (Kharbutli & Sheikh, IEEE TC 2014) */
+  REPL_ICARUS,  /* branch-history-contextualized criticality + reuse binning
+                   (Kalbande et al., ASPLOS 2026) */
 
   NUM_REPL
 } Repl_Policy;
@@ -102,6 +104,10 @@ typedef struct Cache_Entry_struct {
                         recency update (fill or hit) */
   uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown: set ticks until the line's protection
                           expires; it is protected while this is nonzero */
+
+  Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
+                            time; always FALSE for data lines */
+  Flag icarus_reused;   /* REPL_ICARUS: hit at least once since it was filled */
 } Cache_Entry;
 
 // DO NOT CHANGE THIS ORDER
@@ -230,6 +236,16 @@ void cache_set_lacs_next_insert(Flag valid, uns cost);
 /* REPL_LACS: this cache's eviction totals (real evictions, how many of those first had to
    age the set, how many had more than one same-cost candidate), for end-of-run stats. */
 void cache_lacs_counters(Cache* cache, Counter* evictions, Counter* evict_aging, Counter* evict_ties);
+
+/* REPL_ICARUS: stage the criticality bit the NEXT cache_insert[_replpos] call should stamp on
+   the new line. Call right before a fill-time cache_insert on a cache running REPL_ICARUS;
+   `valid` FALSE means "use the default (not critical)," not "critical == FALSE" specifically.
+   Consumed and reset by icarus_update_insert. */
+void cache_set_icarus_next_insert(Flag valid, Flag critical);
+
+/* REPL_ICARUS: set the critical bit of the resident line holding `addr` (the CIT's
+   criticality signal on a hit). Leaves LRU state alone. Returns TRUE if newly set. */
+Flag cache_icarus_mark_critical(Cache* cache, Addr addr);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);

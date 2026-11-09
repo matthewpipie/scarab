@@ -154,6 +154,33 @@ DEF_PARAM(lacs_onpath_only, LACS_ONPATH_ONLY, Flag, Flag, TRUE, )
 /* Run LACS's training/stats on a cache even if it isn't actually running REPL_LACS. */
 DEF_PARAM(lacs_profile, LACS_PROFILE, Flag, Flag, FALSE, )
 
+/* ICARUS (REPL_ICARUS, Kalbande, Jedhe Deshmukh, Ros & Panda, ASPLOS 2026) at the MLC (this
+   repo's L2-equivalent; see the note above REPL_DRRIP's l1/mlc naming) only: a per-core
+   branch-history-contextualized Critical Instruction Table (CIT) feeds a 4-bin
+   criticality+reuse eviction scheme. See memory/icarus.c's top-of-file comment and the
+   ICARUS section of libs/cache_lib.c for the full algorithm. */
+DEF_PARAM(icarus_cit_bits, ICARUS_CIT_BITS, uns, uns, 9, )
+DEF_PARAM(icarus_bhr_bits, ICARUS_BHR_BITS, uns, uns, 9, )
+DEF_PARAM(icarus_crit_thresh, ICARUS_CRIT_THRESH, uns, uns, 2, )
+DEF_PARAM(icarus_reset_interval, ICARUS_RESET_INTERVAL, Counter, uns64, 1000000, )
+/* Per-bin eviction watermarks [not-critical/not-reused, not-critical/reused,
+   critical/reused, critical/not-reused]; defaults are the paper's, tuned for their 16-way
+   L2 (they sum to 16). icarus_action_init asserts they sum to <= --mlc_assoc. */
+DEF_PARAM(icarus_wmark_00, ICARUS_WMARK_00, uns, uns, 2, )
+DEF_PARAM(icarus_wmark_01, ICARUS_WMARK_01, uns, uns, 4, )
+DEF_PARAM(icarus_wmark_11, ICARUS_WMARK_11, uns, uns, 6, )
+DEF_PARAM(icarus_wmark_10, ICARUS_WMARK_10, uns, uns, 4, )
+/* §4.5 "costly fetch" mode, for workloads where many fetches are critical (the paper's case is
+   Verilator on a 1 MB L2): a fetch counts as critical only if it starves decode for more than
+   --icarus_costly_cycles cycles. 0 = off. 1 = auto: on for the next CIT reset interval if, in
+   the one that just ended, more than --icarus_costly_trigger_pct percent of the instruction
+   fetches reaching the MLC were critical by the §3.3 definition (each fetch that starved
+   decode with the issue queue empty, counted per fetch, not looked up in the CIT). 2 = always
+   on. */
+DEF_PARAM(icarus_costly_fetch, ICARUS_COSTLY_FETCH, uns, uns, 0, )
+DEF_PARAM(icarus_costly_cycles, ICARUS_COSTLY_CYCLES, uns, uns, 40, )
+DEF_PARAM(icarus_costly_trigger_pct, ICARUS_COSTLY_TRIGGER_PCT, uns, uns, 8, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be

@@ -51,8 +51,11 @@
 #include "frontend/pin_trace_fe.h"
 #include "libs/list_lib.h"
 #include "libs/port_lib.h"
+#include "memory/icarus.h"
 #include "memory/memory.h"
 #include "memory/mshr.h"
+
+#include "issue_queue.h"
 #include "prefetcher/D_JOLT.h"
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
@@ -466,6 +469,11 @@ Flag mem_req_on_icache_miss() {
     success = new_mem_req(MRT_IFETCH, ic->proc_id, ic->line_addr, ICACHE_LINE_SIZE, 0, NULL, instr_fill_line,
                           unique_count, 0);
     if (success) {  // CMP maybe unique_count_per_core[proc_id]?
+      // REPL_ICARUS: the op buffer was just filled from this FT, so its head is the op the
+      // missing line was fetched for; its history is the one that led to this fetch.
+      Op* head = ft_op_buffer_peek(ic);
+      if (head)
+        icarus_tag_req(ic->proc_id, ic->line_addr, head->fetch_ghist);
       DEBUG(ic->proc_id, "from IC_STAGE for cl 0x%llx at cycle %llu\n", ic->line_addr, cycle_count);
       STAT_EVENT(ic->proc_id, ICACHE_STAGE_MISS);
 
@@ -926,6 +934,19 @@ void execute_coupled_FSM() {
          stage earlier this cycle), and only on-path. */
       if (topdown_fe_reason == TD_FE_ICACHE_MISS && !ic->off_path && node->fe_starved)
         ifetch_req->fe_stall_cycles++;
+
+      /* REPL_ICARUS: decode saw nothing this cycle (cur_data->op_count == 0, the same
+         condition ICACHE_STAGE_STARVED above is derived from) because of this outstanding
+         ifetch miss, and nothing else was available to hide the stall -- train the CIT
+         entry for this line/branch-history pair as genuinely critical (once per request;
+         icarus_note_fetch_stall ignores the request's later starved cycles). */
+      if (!cur_data->op_count && issue_queue_is_empty())
+        icarus_note_fetch_stall(ic->proc_id, ic->line_addr, ifetch_req);
+      /* REPL_ICARUS --icarus_costly_fetch (§4.5): every cycle this request starves decode,
+         issue queue empty or not -- the redefinition is "causes decode starvation for more
+         than 40 cycles". */
+      if (ICARUS_COSTLY_FETCH && !cur_data->op_count)
+        icarus_note_costly_stall(ic->proc_id, ic->line_addr, ifetch_req);
     }
   }
 

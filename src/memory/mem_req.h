@@ -132,6 +132,17 @@ struct Mem_Req_struct {
   uns types;
   Counter fdip_emitted_cycle; /* cycle when the request is emitted. */
   uns64 ghist;
+  /* REPL_ICARUS: the branch history leading to the fetch that issued this request
+     (Op.fetch_ghist, set by icarus_tag_req; meaningful once icarus_hist_valid), and whether
+     this request has already trained the CIT (in costly-fetch mode: been counted as a §3.3
+     critical fetch). */
+  uns32 icarus_hist;
+  Flag icarus_hist_valid;
+  Flag icarus_trained;
+  /* REPL_ICARUS --icarus_costly_fetch: cycles this request has starved decode, and whether
+     it has trained the CIT as a costly fetch. */
+  uns icarus_starved_cycles;
+  Flag icarus_costly_trained;
   Counter demand_icache_emitted_cycle; /* cycle when the request is emitted. */
   Counter emitted_cycle;               /* cycle when request of any type was first initialized */
   Counter priority;                    /* priority of the miss */
