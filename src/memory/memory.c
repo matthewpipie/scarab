@@ -2514,6 +2514,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
 
   new_req->fe_window_cycles = 0;
   new_req->fe_bound_cycles = 0;
+  new_req->fe_starve_cycles = 0;
   new_req->icarus_hist = 0;
   new_req->icarus_hist_valid = FALSE;
   new_req->icarus_trained = FALSE;
@@ -2973,16 +2974,25 @@ static inline void l1_miss_is_satisfied(Mem_Req* req) {
    req->op_count > 1 on the data side (multiple loads sharing the miss), popcount32(req->types) > 1
    on the instruction side (e.g. a demand fetch merged into a request that started as a prefetch). */
 /* Whether a fill a demand fetch reached is marked instruction-bound, per mlp_instr_mark. Mode 0
-   uses req->fe_bound_cycles/fe_window_cycles, accumulated in icache_stage.c; mode 2 uses
+   uses req->fe_bound_cycles/fe_window_cycles, accumulated in icache_stage.c, with
+   req->fe_starve_cycles in place of fe_bound_cycles under mlp_instr_starve; mode 2 uses
    req->fe_abandoned, set in recover_icache_stage and cleared by a demand fetch merging in. */
-static Flag mlp_instr_marked(Mem_Req* req) {
+static Flag mlp_instr_mark_rule(Mem_Req* req) {
   ASSERTM(req->proc_id, MLP_INSTR_MARK <= 2, "mlp_instr_mark %u is not 0, 1 or 2\n", MLP_INSTR_MARK);
   if (MLP_INSTR_MARK == 1)
     return TRUE;
   if (MLP_INSTR_MARK == 2)
     return !req->fe_abandoned;
-  return req->fe_window_cycles &&
-         (double)req->fe_bound_cycles / (double)req->fe_window_cycles > (double)MLP_LIN_INSTR_THRESH;
+  Counter bound = MLP_INSTR_STARVE ? req->fe_starve_cycles : req->fe_bound_cycles;
+  return req->fe_window_cycles && (double)bound / (double)req->fe_window_cycles > (double)MLP_LIN_INSTR_THRESH;
+}
+
+/* mlp_instr_mark's rule, and with mlp_instr_starve, enough cycles fetch waited on the fill while
+   the backend had no useful work (req->fe_starve_cycles, accumulated in icache_stage.c). */
+static Flag mlp_instr_marked(Mem_Req* req) {
+  if (!mlp_instr_mark_rule(req))
+    return FALSE;
+  return !MLP_INSTR_STARVE || req->fe_starve_cycles >= MLP_INSTR_STARVE_MIN;
 }
 
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {

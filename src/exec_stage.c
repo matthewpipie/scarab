@@ -128,6 +128,7 @@ void init_exec_stage(uns8 proc_id, const char* name) {
   exec->sd.max_op_count = NUM_FUS;
   exec->sd.ops = (Op**)malloc(sizeof(Op*) * NUM_FUS);
   exec->fus_busy = 0;
+  exec->fus_unavailable = 0;
 
   reset_exec_stage();
 
@@ -369,6 +370,7 @@ void update_exec_stage(Stage_Data* src_sd) {
     }
   }
 
+  exec->fus_unavailable = (uns8)fu_busy_num;
   topdown_exec_update(exec->proc_id, fu_busy_num);
   memview_fus_busy(exec->proc_id, exec->fus_busy);
 }

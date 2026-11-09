@@ -821,6 +821,29 @@ Icache_State uop_cache_serving_actions(Break_Reason* break_fetch) {
   }
 }
 
+/* REPL_MLP (mlp_instr_starve): whether the backend had no useful work this cycle, as that param
+   defines it. The exec and node stages update before this stage each cycle, so what they hold is
+   this cycle's: the ROB after this cycle's retirement, and this cycle's functional-unit use. */
+static Flag mlp_backend_idle(void) {
+  Op* head = node->node_head;
+  switch (MLP_INSTR_STARVE) {
+    case 1:
+      return node->fe_starved;
+    case 2:  // the same test the ROB stall-cost stat uses for a head load waiting on memory
+      return node->fe_starved &&
+             !(head && head->uop->mem_type == MEM_LD && head->req && op_get_done_cycle(head) == MAX_CTR);
+    case 3:
+      return issue_queue_is_empty();
+    case 4:
+      return node->node_count == 0;
+    case 5:
+      return exec->fus_unavailable <= TOPDOWN_FU_EXEC_FEW;
+    default:
+      ASSERTM(ic->proc_id, FALSE, "mlp_instr_starve %u is not 0 to 5\n", MLP_INSTR_STARVE);
+      return FALSE;
+  }
+}
+
 void execute_coupled_FSM() {
   STAT_EVENT(ic->proc_id, ICACHE_CYCLE);
   STAT_EVENT(ic->proc_id, ICACHE_CYCLE_ONPATH + ic->off_path);
@@ -927,8 +950,11 @@ void execute_coupled_FSM() {
     Mem_Req* ifetch_req = mshr_line_first(ifetch_line);
     if (ifetch_req) {
       ifetch_req->fe_window_cycles++;
-      if (topdown_fe_reason == TD_FE_ICACHE_MISS)
+      if (topdown_fe_reason == TD_FE_ICACHE_MISS) {
         ifetch_req->fe_bound_cycles++;
+        if (MLP_INSTR_STARVE && mlp_backend_idle())
+          ifetch_req->fe_starve_cycles++;
+      }
       /* Miss-cost accounting (stats only): unlike fe_bound_cycles, which counts fetch bubbles the
          IDQ may still hide, charge only cycles the backend is actually starved (set by the node
          stage earlier this cycle), and only on-path. */

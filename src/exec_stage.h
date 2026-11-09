@@ -53,6 +53,8 @@ typedef struct Exec_Stage_struct {
 
   FILE* fu_util_plot_file;
   uns8 fus_busy; /* for FU util plot and performance prediction, does not include mem stalls */
+  uns8 fus_unavailable; /* FUs that cannot take a new op this cycle: the count topdown_exec_update
+                           gets, and REPL_MLP's mlp_instr_starve 5 reads */
 
   Flag is_issue_stall;
 } Exec_Stage;
