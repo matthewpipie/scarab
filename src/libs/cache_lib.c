@@ -45,6 +45,8 @@
 
 #include "frontend/frontend_intf.h"
 
+#include "statistics.h"
+
 // DeleteMe
 #define ideal_num_entries 256
 
@@ -59,6 +61,33 @@ static float g_next_fill_mlp_boost = 0.0;
 
 void cache_set_next_fill_mlp_boost(float boost) {
   g_next_fill_mlp_boost = boost;
+}
+
+/* REPL_MLP with mlp_boost_countdown: a marked line is protected for this many ticks of its set
+   (a 2-bit countdown), and a set ticks every round(mlp_boost / MLP_COUNTDOWN_TICKS) fills. */
+#define MLP_COUNTDOWN_TICKS 3
+
+/* REPL_MLP with mlp_boost_countdown: (re)start a marked line's countdown, on its fill or a hit. */
+static inline void mlp_countdown_start(Cache_Entry* entry) {
+  entry->mlp_ticks_left = MLP_BOOST_COUNTDOWN && entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+}
+
+/* REPL_MLP with mlp_boost_countdown: after a fill into `set` at fill_way, decrement the countdown
+   of each other protected line this fill is a tick for. A line whose countdown reaches 0 moves to
+   MRU, as mlp_boost_in_fills ranks a marked line mlp_boost fills after its last touch as if
+   touched then. */
+static void mlp_countdown_tick(Cache* cache, uns8 proc_id, uns set, uns fill_way) {
+  uns ii;
+  for (ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    if (ii == fill_way || !entry->valid || !entry->mlp_ticks_left)
+      continue;
+    Counter period = MAX2((Counter)1, (Counter)(entry->mlp_boost / MLP_COUNTDOWN_TICKS + 0.5));
+    if (cache->mlp_set_fills[set] % period || --entry->mlp_ticks_left)
+      continue; /* not a tick for this line, or ticks left */
+    entry->last_access_time = sim_time;
+    STAT_EVENT(proc_id, MLP_COUNTDOWN_EXPIRE);
+  }
 }
 
 /**************************************************************************************/
@@ -155,6 +184,9 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
   cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
+  if (repl_policy == REPL_MLP)
+    ASSERTM(0, !(MLP_BOOST_COUNTDOWN && MLP_BOOST_IN_FILLS),
+            "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
 
   /* allocate memory for all the sets (pointers to line arrays)  */
   cache->entries = (Cache_Entry**)malloc(sizeof(Cache_Entry*) * num_sets);
@@ -169,6 +201,7 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     /* allocate memory for all of the data elements in each line */
     for (jj = 0; jj < assoc; jj++) {
       cache->entries[ii][jj].valid = FALSE;
+      cache->entries[ii][jj].mlp_ticks_left = 0;
       if (data_size) {
         cache->entries[ii][jj].data = (void*)malloc(data_size);
         memset(cache->entries[ii][jj].data, 0, data_size);
@@ -364,6 +397,8 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
 
     if (cache->repl_policy == REPL_MLP)
       cache->mlp_set_fills[set]++;
+    if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && new_line->valid && new_line->mlp_ticks_left)
+      STAT_EVENT(proc_id, MLP_COUNTDOWN_EVICT_PROTECTED);
     DEBUG(0, "Replacing 2.2f(set %u, way %u, tag 0x%s, base 0x%s) in cache '%s' with base 0x%s\n", set, repl_index,
           hexstr64s(new_line->tag), hexstr64s(new_line->base), cache->name, hexstr64s(*line_addr));
   }
@@ -378,6 +413,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   new_line->mlp_boost = g_next_fill_mlp_boost;
   g_next_fill_mlp_boost = 0.0;
   new_line->mlp_stamp = cache->mlp_set_fills ? cache->mlp_set_fills[set] : 0;
+  mlp_countdown_start(new_line);
 
   new_line->pw_start_addr = addr;  // only means anything for uop cache
 
@@ -428,6 +464,8 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
     default:
       ASSERT(0, FALSE);  // should never come here
   }
+  if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN)
+    mlp_countdown_tick(cache, proc_id, set, repl_index);
   if (cache->repl_policy == REPL_IDEAL_STORAGE) {
     new_line->last_access_time = cache->assoc;
     /* debug */
@@ -644,6 +682,25 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
     }
 
     case REPL_MLP: {
+      if (MLP_BOOST_COUNTDOWN) {
+        /* Evict the least recently used unprotected line, or the least recently used line if
+           every line is protected. With every boost 0 nothing is protected: plain LRU. */
+        uns best_ind = 0;
+        for (ii = 0; ii < cache->assoc; ii++) {
+          Cache_Entry* entry = &cache->entries[set][ii];
+          if (!entry->valid) {
+            *way = ii;
+            return entry;
+          }
+          Cache_Entry* best = &cache->entries[set][best_ind];
+          Flag prot = entry->mlp_ticks_left > 0, best_prot = best->mlp_ticks_left > 0;
+          if (ii == 0 || (best_prot && !prot) ||
+              (prot == best_prot && entry->last_access_time < best->last_access_time))
+            best_ind = ii;
+        }
+        *way = best_ind;
+        return &cache->entries[set][best_ind];
+      }
       if (MLP_BOOST_IN_FILLS) {
         /* Evict argmin(mlp_stamp + mlp_boost), ties to the least recently used. mlp_stamp is the
            set's fill count at the line's last recency update, so a marked line ranks as if touched
@@ -756,6 +813,8 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
       cur_entry->last_access_time = sim_time;
       if (cache->mlp_set_fills)  // REPL_MLP only: the policies above share this case
         cur_entry->mlp_stamp = cache->mlp_set_fills[set];
+      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && cur_entry->mlp_boost > 0.0)
+        mlp_countdown_start(cur_entry); /* a fill or hit restarts a marked line's countdown */
       break;
     case REPL_RANDOM: {
       char* old_rand_state = (char*)setstate(rand_repl_state);

@@ -198,6 +198,16 @@ DEF_PARAM(mlp_instr_mark, MLP_INSTR_MARK, uns, uns, 2, )
    rank below lambda. Lambda 0 is plain LRU either way. The MID/LOWQTR prefetch insertion
    positions do not set the stamp (it stays at MRU). */
 DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
+/* mlp_boost_countdown: keep REPL_MLP's boost as a 2-bit countdown per line and a tick per set,
+   instead of mlp_boost_in_fills' fill-count age per line. A set ticks every round(lambda / 3)
+   fills into it. A marked line's countdown is set to 3 when it is filled and on every hit, and
+   each tick of its set decrements it. The line is protected while its countdown is nonzero, so
+   protection lasts between 2/3 lambda and lambda fills after its last touch. The victim is the
+   least recently used unprotected line, or the least recently used line if every line is
+   protected. A line whose countdown reaches 0 moves to MRU, as mlp_boost_in_fills ranks a marked
+   line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Cannot be
+   combined with mlp_boost_in_fills. */
+DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
