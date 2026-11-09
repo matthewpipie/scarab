@@ -198,6 +198,9 @@ struct Mem_Req_struct {
   Counter fe_window_cycles;                  /* REPL_MLP: cycles this icache miss has been outstanding */
   Counter fe_bound_cycles;                   /* REPL_MLP: subset of fe_window_cycles the frontend was
                                                  stalled specifically on this miss */
+  Counter fe_starve_cycles;                  /* REPL_MLP (mlp_instr_starve): subset of
+                                                 fe_bound_cycles the backend also had no useful
+                                                 work, as mlp_instr_starve defines it */
   Counter ld_window_cycles;                  /* REPL_MLP: cycles any op waiting on this request has been
                                                  in flight, summed across every op merged into it */
   Counter ld_bound_cycles;                   /* REPL_MLP: subset of ld_window_cycles the core was

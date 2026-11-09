@@ -253,8 +253,25 @@ DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
      1  all of them.
      2  all but the ones fetch was redirected away from while it was stalled on them (a resteer
         while the icache waited on the line), unless a demand fetch reached them again before the
-        fill. Uses only what the core sees; never req->off_path. */
+        fill. Uses only what the core sees; never req->off_path.
+   mlp_instr_starve narrows every mode further. */
 DEF_PARAM(mlp_instr_mark, MLP_INSTR_MARK, uns, uns, 2, )
+/* mlp_instr_starve: count a cycle fetch waited on an instruction fill (a cycle fe_bound_cycles
+   counts) as frontend-bound only if the backend also had no useful work, and mark the fill only if
+   fetch waited on it for at least mlp_instr_starve_min such cycles, on top of mlp_instr_mark. In
+   mlp_instr_mark 0 these cycles also replace fe_bound_cycles in the ratio; in 1 and 2 the count
+   does the filtering, and 2 also drops the fills fetch was redirected away from. This picks what
+   "no useful work" means:
+     0  off: every waiting cycle counts, and mlp_instr_mark alone decides.
+     1  backend starved: the ROB had room but got no ops, and rename was not stalled.
+     2  1, and the ROB head is not a load still waiting on memory, so the wait does not overlap a
+        data miss that would stall retirement anyway.
+     3  the issue queue is empty (ICARUS's critical fetch).
+     4  the ROB is empty.
+     5  at most topdown_fu_exec_few functional units are busy (topdown's exec-stall test).
+   Each uses only what the core sees; never req->off_path. */
+DEF_PARAM(mlp_instr_starve, MLP_INSTR_STARVE, uns, uns, 2, )
+DEF_PARAM(mlp_instr_starve_min, MLP_INSTR_STARVE_MIN, uns, uns, 1, )
 /* mlp_boost_in_fills: count REPL_MLP's boost in fills to the set instead of LRU stack positions.
    The victim is argmin(stamp + boost), stamp the set's fill count at the line's last recency
    update (fill or hit), ties to the least recently used: a marked line ranks as if touched
@@ -274,9 +291,10 @@ DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
    combined with mlp_boost_in_fills. */
 DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
-   18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark on the
-   instruction side), and a marked line's boost is mlp_lin_data_lambda / mlp_lin_instr_lambda, in
-   this mode's unit (mlp_boost_in_fills and mlp_boost_countdown are REPL_MLP's, and do nothing here):
+   18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
+   mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /
+   mlp_lin_instr_lambda, in this mode's unit (mlp_boost_in_fills and mlp_boost_countdown are
+   REPL_MLP's, and do nothing here):
      0  off: plain RRIP; the boost parameters are ignored.
      1  lambda, in ways, permanent: LIN over the RRIP eviction order. The victim is
         argmin(p + boost), p the number of lines the plain search would evict first, so marked lines
