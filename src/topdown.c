@@ -105,11 +105,6 @@ void topdown_fetch_update(uns proc_id, Flag off_path, Flag backend_stall, int co
                           Topdown_Fe_Bubble fe_reason) {
   INC_STAT_EVENT(proc_id, TOPDOWN_TOTAL_SLOTS, TOPDOWN_WIDTH);
 
-  // REPL_MLP: accumulate every in-flight load's window/mem-bound cycles unconditionally, since
-  // td_window_cycles is a denominator that must advance every cycle a load is in flight, not just
-  // on a backend-stall cycle.
-  lsq_tag_inflight_loads(backend_stall);
-
   if (off_path) {
     // off_path is stamped at fetch from bp.c's recovery-point classification (icache_stage.c:971), so
     // it covers uopc-served wrong-path too. Credit on-path ops served before the flip to retiring; the
@@ -151,7 +146,17 @@ void topdown_fetch_update(uns proc_id, Flag off_path, Flag backend_stall, int co
 }
 
 void topdown_exec_update(uns proc_id, uns8 fus_busy) {
-  if (fus_busy <= TOPDOWN_FU_EXEC_FEW && node->node_count != 0) {
+  Flag fu_wait = fus_busy <= TOPDOWN_FU_EXEC_FEW && node->node_count != 0;
+
+  // REPL_MLP: accumulate every in-flight load's window/bound cycles unconditionally, since
+  // ld_window_cycles is a denominator that must advance every cycle a load is in flight, not
+  // just a cycle the backend's functional units were starved. Lives here (keyed on the real
+  // FU-busy count from exec_stage.c) rather than on topdown_fetch_update's fetch-side
+  // backend_stall, since REPL_MLP's boost should reflect genuine backend/FU starvation, not a
+  // frontend stall proxy.
+  lsq_tag_inflight_loads(fu_wait);
+
+  if (fu_wait) {
     STAT_EVENT(proc_id, TOPDOWN_EXEC_STALLS_CYCLES);
   }
 }
