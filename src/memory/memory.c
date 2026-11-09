@@ -523,6 +523,15 @@ static inline void mem_record_served(Mem_Req* req, Stat_Enum level) {
   mem_stat_served(req->proc_id, req->type, level, cycle_count - req->start_cycle);
 }
 
+/* Stall cycles charged to the request while it was outstanding (see REQ_COST_* in
+   memory.stat.def), by the level that served it: 0 MLC, 1 LLC, 2 memory. */
+static inline void mem_record_cost(Mem_Req* req, uns level) {
+  INC_STAT_EVENT(req->proc_id, REQ_COST_ROB_MLC + level, req->rob_stall_cycles);
+  INC_STAT_EVENT(req->proc_id, REQ_COST_FE_MLC + level, req->fe_stall_cycles);
+  INC_STAT_EVENT(req->proc_id, REQ_BOUND_LD_MLC + level, req->ld_bound_cycles);
+  INC_STAT_EVENT(req->proc_id, REQ_BOUND_FE_MLC + level, req->fe_bound_cycles);
+}
+
 void mem_free_req(Mem_Req* req) {
   DEBUG(req->proc_id, "Freeing mem request  addr:0x%s rcount:%d\n", hexstr64s(req->addr), mem->req_count);
 
@@ -537,6 +546,7 @@ void mem_free_req(Mem_Req* req) {
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_ONPATH_WB);
   } else if (req->state == MRS_FILL_DONE) {
     mem_record_served(req, LD_SERVED_MEM);
+    mem_record_cost(req, 2);
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_IFETCH + MIN2(req->type, MRT_WB_NODIRTY));
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE);
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_MEM);
@@ -555,6 +565,7 @@ void mem_free_req(Mem_Req* req) {
 
   } else if (req->state == MRS_L1_HIT_DONE) {
     mem_record_served(req, LD_SERVED_LLC);
+    mem_record_cost(req, 1);
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_IFETCH + MIN2(req->type, MRT_WB_NODIRTY));
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE);
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_L1);
@@ -567,6 +578,7 @@ void mem_free_req(Mem_Req* req) {
 
   } else if (req->state == MRS_MLC_HIT_DONE) {
     mem_record_served(req, LD_SERVED_MLC);
+    mem_record_cost(req, 0);
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_IFETCH + MIN2(req->type, MRT_WB_NODIRTY));
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE);
     STAT_EVENT(req->proc_id, MEM_REQ_COMPLETE_MLC);
@@ -2492,6 +2504,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->fe_bound_cycles = 0;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
+  new_req->rob_stall_cycles = 0;
+  new_req->fe_stall_cycles = 0;
 
   if (op) {
     ASSERT(new_req->proc_id, new_req->proc_id == op->proc_id);
