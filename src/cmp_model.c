@@ -53,6 +53,7 @@
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
 #include "prefetcher/fdip.h"
+#include "prefetcher/pdip.h"
 #include "prefetcher/pref_common.h"
 
 #include "decoupled_frontend.h"
@@ -145,6 +146,7 @@ void cmp_init(uns mode) {
     }
     cmp_set_all_data(proc_id, 0);
     init_eip(proc_id);
+    init_pdip(proc_id);
     init_djolt(proc_id);
     init_fnlmma(proc_id);
   }
@@ -273,6 +275,9 @@ void cmp_cores(void) {
       }
       cmp_set_all_data(proc_id, 0);
       update_eip();
+      /* PDIP issues after demand fetch and FDIP have had the icache ports */
+      if (PDIP_ENABLE)
+        update_pdip(proc_id);
 
       cmp_measure_chip_util();
     }
@@ -489,6 +494,7 @@ void cmp_warmup(Op* op) {
       if (repl_line_addr2 && !line_info->read_count[0])
         inc_cnt_unuseful(proc_id, repl_line_addr2);
       line_info->read_count[0] = 0;
+      line_info->pdip_prefetch = FALSE;
     }
   } else {
     if (WP_COLLECT_STATS && FDIP_ENABLE) {

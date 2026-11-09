@@ -205,6 +205,8 @@ uint64_t decoupled_fe_ftq_iter_offset(Decoupled_FE* dfe, uns iter_idx);
 uint64_t decoupled_fe_ftq_iter_ft_offset(Decoupled_FE* dfe, uns iter_idx);
 uint64_t decoupled_fe_ftq_num_ops(Decoupled_FE* dfe);
 uint64_t decoupled_fe_ftq_num_fts(Decoupled_FE* dfe);
+/* Whether a fetch target for this icache line is in the core's main FTQ (PDIP dedup) */
+Flag decoupled_fe_ftq_has_line(uns proc_id, Addr line_addr);
 Flag lookahead_buffer_can_fetch_op(uns proc_id);
 FT* lookahead_buffer_get_FT(uns proc_id, uint64_t ptr_pos);
 uint64_t lookahead_buffer_rdptr(uns proc_id);
@@ -267,6 +269,7 @@ struct Decoupled_FE {
   void update();
   FT* pop_ft();
   uns new_ftq_iter();
+  bool ftq_has_line(Addr line_addr);
   Op* ftq_iter_get(uns iter_idx, bool* end_of_ft);
   Op* ftq_iter_get_next(uns iter_idx, bool* end_of_ft);
   uint64_t ftq_iter_offset(uns iter_idx);

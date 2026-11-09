@@ -201,6 +201,13 @@ struct Op_struct {
   Recovery_Info recovery_info;  // information that will be used to recover a mispredict by the op
   uns32 fetch_ghist;            // BP global history just before this op was predicted (newest outcome
                                 // in bit 31): the history leading to its fetch. Set in ft.cc.
+  /* PDIP: set on the first op served from a front-end-critical icache line (pdip_mark_op);
+     retiring it trains the PDIP table with trigger -> target. 0 when not stamped. */
+  Addr pdip_target;        // the FEC line
+  Addr pdip_trigger;       // line address of the trigger branch
+  uns8 pdip_trigger_kind;  // Pdip_Trigger_Kind
+  uns8 pdip_trigger_cf;    // Cf_Type of the trigger branch
+  uns pdip_stall_cycles;   // cycles the line's miss starved fetch
   // }}}
 
   // {{{ scheduler information

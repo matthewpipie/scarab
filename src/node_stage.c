@@ -45,11 +45,13 @@
 #include "bp/bp.param.h"
 #include "core.param.h"
 #include "memory/memory.param.h"
+#include "prefetcher/pref.param.h"
 
 #include "bp/bp.h"
 #include "bp/tagescl.h"
 #include "frontend/frontend.h"
 #include "memory/memory.h"
+#include "prefetcher/pdip.h"
 
 #include "decoupled_frontend.h"
 #include "exec_ports.h"
@@ -538,6 +540,10 @@ void node_retire() {
     node->ret_op++;
 
     STAT_EVENT(op->proc_id, RET_ALL_INST);
+
+    /* PDIP: a retired op is on the correct path; train on a stamped FEC line, track taken branches */
+    if (PDIP_ENABLE)
+      pdip_retire(op);
 
     remove_from_seq_op_list(td, op);
 

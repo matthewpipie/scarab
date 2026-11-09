@@ -151,6 +151,35 @@ DEF_PARAM(djolt_enable, DJOLT_ENABLE, uns, uns, 0, )
 /* FNL+MMA Frontend Prefetcher */
 DEF_PARAM(fnlmma_enable, FNLMMA_ENABLE, uns, uns, 0, )
 
+/* PDIP Frontend Prefetcher (Godala et al., ASPLOS'24), prefetcher/pdip.cc. Defaults are the
+   paper's PDIP(44): 512 sets x 8 ways, 10-bit tags, 2 targets each with a 4-line mask. */
+DEF_PARAM(pdip_enable, PDIP_ENABLE, Flag, Flag, FALSE, )
+/* 0: detect, train and look up, but never enqueue a prefetch (no timing effect) */
+DEF_PARAM(pdip_prefetch, PDIP_PREFETCH, Flag, Flag, TRUE, )
+DEF_PARAM(pdip_sets, PDIP_SETS, uns, uns, 512, )
+DEF_PARAM(pdip_ways, PDIP_WAYS, uns, uns, 8, )
+DEF_PARAM(pdip_tag_bits, PDIP_TAG_BITS, uns, uns, 10, )
+DEF_PARAM(pdip_targets, PDIP_TARGETS, uns, uns, 2, )
+DEF_PARAM(pdip_mask_bits, PDIP_MASK_BITS, uns, uns, 4, )
+/* FEC line: a demand miss that starved fetch for more than this many cycles... */
+DEF_PARAM(pdip_fec_cycles, PDIP_FEC_CYCLES, uns, uns, 10, )
+/* ...with the issue queue empty on at least one of them */
+DEF_PARAM(pdip_require_iq_empty, PDIP_REQUIRE_IQ_EMPTY, Flag, Flag, TRUE, )
+/* Insert each retired FEC line with probability 1/N */
+DEF_PARAM(pdip_insert_one_in, PDIP_INSERT_ONE_IN, uns, uns, 4, )
+/* Never insert a return as a trigger */
+DEF_PARAM(pdip_skip_ret, PDIP_SKIP_RET, Flag, Flag, TRUE, )
+/* 0: paper (resteering branch on the resteer path, else last retired taken branch);
+   1: resteering branch only; 2: last retired taken branch only */
+DEF_PARAM(pdip_trigger_mode, PDIP_TRIGGER_MODE, uns, uns, 0, )
+DEF_PARAM(pdip_pq_size, PDIP_PQ_SIZE, uns, uns, 40, )
+/* Prefetch-queue entries processed per cycle */
+DEF_PARAM(pdip_issue_width, PDIP_ISSUE_WIDTH, uns, uns, 2, )
+/* Enqueue and issue only while more than this many icache MSHRs are free */
+DEF_PARAM(pdip_mshr_reserve, PDIP_MSHR_RESERVE, uns, uns, 2, )
+/* Drop a prefetch whose line is already in the FTQ (FDIP will fetch it) */
+DEF_PARAM(pdip_ftq_dedup, PDIP_FTQ_DEDUP, Flag, Flag, TRUE, )
+
 /* FDIP Frontend Prefetcher */
 
 DEF_PARAM(fdip_enable, FDIP_ENABLE, uns, uns, 1, )

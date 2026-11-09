@@ -126,6 +126,7 @@ typedef struct Icache_Data_struct {
   Counter offpath_op_unique; /* unique of the off path op that fetched this line */
   uns read_count[2];
   Flag HW_prefetch;
+  Flag pdip_prefetch; /* filled by a PDIP prefetch no demand fetch has hit yet */
   uns FDIP_prefetch;
   uint64_t ghist;
 

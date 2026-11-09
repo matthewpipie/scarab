@@ -17,6 +17,7 @@ extern "C" {
 }
 #include "frontend/frontend_intf.h"
 #include "isa/isa_macros.h"
+#include "prefetcher/pdip.h"
 
 #include "ft.h"
 #include "lookahead_buffer.h"
@@ -157,6 +158,10 @@ uint64_t decoupled_fe_ftq_num_ops(Decoupled_FE* dfe) {
 
 uint64_t decoupled_fe_ftq_num_fts(Decoupled_FE* dfe) {
   return dfe->ftq_num_fts();
+}
+
+Flag decoupled_fe_ftq_has_line(uns proc_id, Addr line_addr) {
+  return per_core_dfe[proc_id][MAIN_BP]->ftq_has_line(line_addr);
 }
 
 void decoupled_fe_retire(Op* op, int op_proc_id, uns64 inst_uid) {
@@ -518,6 +523,8 @@ void Decoupled_FE::update() {
 
     if (ftq.size() == ftq_max_size()) {
       DEBUG(proc_id, "[DFE%u] Break due to full FTQ\n", bp_id);
+      if (PDIP_ENABLE && bp_id == MAIN_BP)
+        pdip_note_ftq_full(proc_id);
       STAT_EVENT(proc_id, FTQ_BREAK_FULL_FT_ONPATH + is_off_path_state());
       break;
     }
@@ -761,6 +768,13 @@ uint64_t Decoupled_FE::ftq_num_ops() {
   return num_ops;
 }
 
+bool Decoupled_FE::ftq_has_line(Addr line_addr) {
+  for (FT* ft : ftq)
+    if (ROUND_DOWN(ft->get_start_addr(), (Addr)ICACHE_LINE_SIZE) == line_addr)
+      return true;
+  return false;
+}
+
 void Decoupled_FE::bp_sync_from_main() {
   ASSERT(proc_id, bp_id != MAIN_BP);
   bp_sync(per_core_dfe[proc_id][MAIN_BP]->get_bp_data(), bp_data);
@@ -983,6 +997,10 @@ void Decoupled_FE::check_consecutivity_and_push_to_ftq() {
     ASSERT(proc_id, recovery_addr == current_ft_to_push->get_start_addr());
     recovery_addr = 0;
   }
+  // PDIP looks up its table once per FTQ entry; an FT never crosses an icache line
+  if (PDIP_ENABLE && bp_id == MAIN_BP)
+    pdip_ftq_push(proc_id, current_ft_to_push->get_start_addr(),
+                  current_ft_to_push->get_ft_info().dynamic_info.first_op_off_path);
   DEBUG(proc_id,
         "[DFE%u] Push FT to FTQ: ft_id:%llu ft_ops:%zu off_path:%u end_reason:%d ftq_size_before:%zu after:%zu\n",
         bp_id, (unsigned long long)current_ft_to_push->get_ft_info().dynamic_info.FT_id, current_ft_to_push->ops.size(),

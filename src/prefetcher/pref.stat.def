@@ -579,3 +579,62 @@ DEF_STAT(BERTI_PREF_QUEUE_FULL, COUNT, NO_RATIO)
 DEF_STAT(BERTI_PREF_L1_MSHR_BUSY, COUNT, NO_RATIO)
 DEF_STAT(BERTI_PREF_CROSS_PAGE, COUNT, NO_RATIO)
 DEF_STAT(BERTI_PREF_OUT_OF_RANGE, COUNT, NO_RATIO)
+
+/* PDIP (prefetcher/pdip.cc) */
+/* Resteers: exec-time (mispredicts), decode-time (BTB misses, misfetches), L0 early corrections
+   (not resteers for PDIP), and resteers by something other than a branch (no trigger) */
+DEF_STAT(PDIP_RESTEER_EXEC, COUNT, NO_RATIO)
+DEF_STAT(PDIP_RESTEER_DECODE, COUNT, NO_RATIO)
+DEF_STAT(PDIP_RESTEER_SKIP_FE, COUNT, NO_RATIO)
+DEF_STAT(PDIP_RESTEER_NOT_BRANCH, COUNT, NO_RATIO)
+/* FEC detection: demand misses tracked and the cycles they starved fetch; those not FEC (too
+   few starved cycles, issue queue never empty, no trigger); FEC lines by trigger kind; marks
+   lost (the first op served was not from the line); FEC lines that retired, and their starved
+   cycles */
+DEF_STAT(PDIP_MISS_TRACKED, COUNT, NO_RATIO)
+DEF_STAT(PDIP_MISS_STALL_CYCLES, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_REJECT_CYCLES, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_REJECT_IQ, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_REJECT_NO_TRIGGER, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_MARKED_RESTEER, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_MARKED_LASTTAKEN, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_MARK_LOST, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_RETIRED_RESTEER, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_RETIRED_LASTTAKEN, COUNT, NO_RATIO)
+DEF_STAT(PDIP_FEC_RETIRED_STALL_CYCLES, COUNT, NO_RATIO)
+/* Training on a retired FEC line: skipped (return trigger, coin flip), a new entry, already
+   covered, a mask bit, a new target into a free slot or over the oldest; entries evicted */
+DEF_STAT(PDIP_INSERT_SKIP_RET, COUNT, NO_RATIO)
+DEF_STAT(PDIP_INSERT_SKIP_PROB, COUNT, NO_RATIO)
+DEF_STAT(PDIP_INSERT_NEW_ENTRY, COUNT, NO_RATIO)
+DEF_STAT(PDIP_INSERT_SAME, COUNT, NO_RATIO)
+DEF_STAT(PDIP_INSERT_MASK, COUNT, NO_RATIO)
+DEF_STAT(PDIP_INSERT_NEW_TARGET, COUNT, NO_RATIO)
+DEF_STAT(PDIP_INSERT_REPL_TARGET, COUNT, NO_RATIO)
+DEF_STAT(PDIP_TABLE_EVICT, COUNT, NO_RATIO)
+/* Lookups, one per fetch target entering the FTQ (on/off path split is stats only) */
+DEF_STAT(PDIP_LOOKUP_ONPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_LOOKUP_OFFPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_LOOKUP_HIT_ONPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_LOOKUP_HIT_OFFPATH, COUNT, NO_RATIO)
+/* Prefetch queue: lines enqueued, dropped as already queued, queue full, MSHRs short */
+DEF_STAT(PDIP_PQ_ENQ, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PQ_DROP_DUP, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PQ_DROP_FULL, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PQ_DROP_MSHR, COUNT, NO_RATIO)
+/* Issue: dropped (MSHRs short, line in the FTQ, icache probe hit), retried for a busy icache
+   port, and sent: a new request, merged into one in flight, refused */
+DEF_STAT(PDIP_ISSUE_DROP_MSHR, COUNT, NO_RATIO)
+DEF_STAT(PDIP_ISSUE_DROP_FTQ, COUNT, NO_RATIO)
+DEF_STAT(PDIP_ISSUE_DROP_ICACHE_HIT, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PORT_RETRY, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_ISSUED, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_MERGED, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_FAILED, COUNT, NO_RATIO)
+/* Outcome of each issued prefetch (stats only): a demand fetch hit the filled line, a demand
+   fetch missed while it was in flight (late), or it was evicted unused */
+DEF_STAT(PDIP_PREF_USEFUL_ONPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_USEFUL_OFFPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_LATE_ONPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_LATE_OFFPATH, COUNT, NO_RATIO)
+DEF_STAT(PDIP_PREF_UNUSED_EVICT, COUNT, NO_RATIO)

@@ -40,6 +40,7 @@
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
 #include "prefetcher/fdip.h"
+#include "prefetcher/pdip.h"
 
 #include "cmp_model.h"
 #include "issue_queue.h"
@@ -73,6 +74,7 @@ void cmp_init_cmp_model() {
   alloc_mem_lookahead_buffer(NUM_CORES);
   // TODO: support NUM_BPS
   alloc_mem_eip(NUM_CORES);
+  alloc_mem_pdip(NUM_CORES);
   alloc_mem_djolt(NUM_CORES);
   alloc_mem_fnlmma(NUM_CORES);
   alloc_mem_uop_cache(NUM_CORES);
