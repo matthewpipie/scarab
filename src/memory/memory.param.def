@@ -141,6 +141,16 @@ DEF_PARAM(icarus_wmark_00, ICARUS_WMARK_00, uns, uns, 2, )
 DEF_PARAM(icarus_wmark_01, ICARUS_WMARK_01, uns, uns, 4, )
 DEF_PARAM(icarus_wmark_11, ICARUS_WMARK_11, uns, uns, 6, )
 DEF_PARAM(icarus_wmark_10, ICARUS_WMARK_10, uns, uns, 4, )
+/* §4.5 "costly fetch" mode, for workloads where many fetches are critical (the paper's case is
+   Verilator on a 1 MB L2): a fetch counts as critical only if it starves decode for more than
+   --icarus_costly_cycles cycles. 0 = off. 1 = auto: on for the next CIT reset interval if, in
+   the one that just ended, more than --icarus_costly_trigger_pct percent of the instruction
+   fetches reaching the MLC were critical by the §3.3 definition (each fetch that starved
+   decode with the issue queue empty, counted per fetch, not looked up in the CIT). 2 = always
+   on. */
+DEF_PARAM(icarus_costly_fetch, ICARUS_COSTLY_FETCH, uns, uns, 0, )
+DEF_PARAM(icarus_costly_cycles, ICARUS_COSTLY_CYCLES, uns, uns, 40, )
+DEF_PARAM(icarus_costly_trigger_pct, ICARUS_COSTLY_TRIGGER_PCT, uns, uns, 8, )
 
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )

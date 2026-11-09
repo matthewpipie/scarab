@@ -924,6 +924,11 @@ void execute_coupled_FSM() {
          icarus_note_fetch_stall ignores the request's later starved cycles). */
       if (!cur_data->op_count && issue_queue_is_empty())
         icarus_note_fetch_stall(ic->proc_id, ic->line_addr, ifetch_req);
+      /* REPL_ICARUS --icarus_costly_fetch (§4.5): every cycle this request starves decode,
+         issue queue empty or not -- the redefinition is "causes decode starvation for more
+         than 40 cycles". */
+      if (ICARUS_COSTLY_FETCH && !cur_data->op_count)
+        icarus_note_costly_stall(ic->proc_id, ic->line_addr, ifetch_req);
     }
   }
 
