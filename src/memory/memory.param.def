@@ -273,6 +273,20 @@ DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
    line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Cannot be
    combined with mlp_boost_in_fills. */
 DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
+/* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
+   18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark on the
+   instruction side), and a marked line's boost is mlp_lin_data_lambda / mlp_lin_instr_lambda, in
+   this mode's unit (mlp_boost_in_fills and mlp_boost_countdown are REPL_MLP's, and do nothing here):
+     0  off: plain RRIP; the boost parameters are ignored.
+     1  lambda, in ways, permanent: LIN over the RRIP eviction order. The victim is
+        argmin(p + boost), p the number of lines the plain search would evict first, so marked lines
+        can hold about `boost` ways of a set. The set ages until an unmarked line reaches the
+        distant RRPV.
+     2  gamma, in aging steps, lapsing: a marked line absorbs the first `boost` (whole) aging steps
+        after its fill or any hit without its RRPV rising, as if inserted or promoted that many
+        levels lower.
+   A boost of 0 is plain RRIP in every mode. See rrip_update_evict in libs/cache_lib.c. */
+DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.

@@ -2986,7 +2986,7 @@ static Flag mlp_instr_marked(Mem_Req* req) {
 }
 
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
-  if (cache->repl_policy != REPL_MLP)
+  if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
 
   float boost = 0.0;

@@ -226,6 +226,8 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     for (jj = 0; jj < assoc; jj++) {
       cache->entries[ii][jj].valid = FALSE;
       cache->entries[ii][jj].mlp_ticks_left = 0;
+      cache->entries[ii][jj].mlp_boost = 0.0;
+      cache->entries[ii][jj].mlp_rrip_credit = 0;
       if (data_size) {
         cache->entries[ii][jj].data = (void*)malloc(data_size);
         memset(cache->entries[ii][jj].data, 0, data_size);
@@ -1481,7 +1483,11 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
   else
     *repl_line_addr = 0;
   repl_policy_func_table[policy].action_repl(cache, new_line, proc_id, tag, tag_full, line_addr, repl_line_addr);
+  /* mlp_rrip_boost: the boost memory.c staged for this fill (0 if none) */
+  new_line->mlp_boost = g_next_fill_mlp_boost;
+  g_next_fill_mlp_boost = 0.0;
   repl_policy_func_table[policy].update_insert(cache, proc_id, set, repl_index, NULL);
+  new_line->mlp_rrip_credit = MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA ? (uns)new_line->mlp_boost : 0;
 
   return new_line->data;
 }
@@ -1508,8 +1514,12 @@ void* cache_access_strategy(Cache* cache, Addr addr, Addr* line_addr, Flag* tag_
     Cache_Entry* line = &cache->entries[set][ii];
 
     if (line->valid && line->tag == tag) {
-      if (update_repl)
+      if (update_repl) {
         repl_policy_func_table[policy].update_hit(cache, set, ii, NULL);
+        /* mlp_rrip_boost 2: a hit renews a marked line's credit along with its RRPV */
+        if (MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA)
+          line->mlp_rrip_credit = (uns)line->mlp_boost;
+      }
 
       *tag_aliasing = line->tag_full != tag_full;
       return line->data;
@@ -1712,8 +1722,64 @@ void srrip_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg
   cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
 }
 
+/* mlp_rrip_boost 1: LIN (Qureshi et al., ISCA 2006) over the RRIP eviction order, the stack-position
+   boost of REPL_MLP with RRIP in place of LRU. A line's position p is how many lines the plain search
+   would evict before it (higher RRPV first, then lower way); the victim is argmin(p + mlp_boost),
+   ties to the lower p. A marked line is passed over while an unmarked line sits fewer than mlp_boost
+   places behind it, so marked lines can hold about mlp_boost ways of a set, however stale.
+
+   The set ages until an UNmarked line reaches the distant RRPV (any line, if every line is marked):
+   a marked line parked at the distant RRPV must not stop the rest of the set from aging, or lines
+   hit once and never again would never climb back to be evicted. With every boost 0 this is the
+   plain search. Every way is valid here. */
+static Cache_Entry* rrip_evict_lin(Cache* cache, uns set, uns* way) {
+  uns ii, jj;
+  Flag any_unmarked = FALSE;
+  for (ii = 0; ii < cache->assoc; ii++)
+    if (cache->entries[set][ii].mlp_boost <= 0.0)
+      any_unmarked = TRUE;
+
+  for (;;) {
+    Flag found = FALSE;
+    for (ii = 0; ii < cache->assoc && !found; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      found = entry->reference_val == RRIP_DISTANT_VAL && (!any_unmarked || entry->mlp_boost <= 0.0);
+    }
+    if (found)
+      break;
+    for (ii = 0; ii < cache->assoc; ii++)
+      if (cache->entries[set][ii].reference_val < RRIP_DISTANT_VAL)
+        cache->entries[set][ii].reference_val++;
+  }
+
+  uns best_ind = 0, best_pos = 0;
+  double best_val = 0.0;
+  for (ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    uns pos = 0;
+    for (jj = 0; jj < cache->assoc; jj++) {
+      uns8 other = cache->entries[set][jj].reference_val;
+      if (other > entry->reference_val || (other == entry->reference_val && jj < ii))
+        pos++;
+    }
+    double val = (double)pos + (double)entry->mlp_boost;
+    if (ii == 0 || val < best_val || (val == best_val && pos < best_pos)) {
+      best_ind = ii;
+      best_pos = pos;
+      best_val = val;
+    }
+  }
+  *way = best_ind;
+  return &cache->entries[set][best_ind];
+}
+
 /* The RRIP victim search: a free way or a line at the distant RRPV, aging the set until there is one.
-   SRRIP, BRRIP, DRRIP and SHiP all evict through it; they differ only in how they insert and promote. */
+   SRRIP, BRRIP, DRRIP and SHiP all evict through it; they differ only in how they insert and promote.
+
+   mlp_rrip_boost 2: a line with mlp_rrip_credit left is not yet distant, and an aging step spends a
+   credit instead of raising its RRPV, as if the line had been inserted or promoted that many levels
+   lower. Its protection lapses once the credits are spent, unless a hit renews them. With no credits
+   (every other mode) this is the plain search. mlp_rrip_boost 1 picks the victim in rrip_evict_lin. */
 Cache_Entry* rrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
   int ii;
   Flag found = FALSE;
@@ -1730,22 +1796,33 @@ Cache_Entry* rrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
     }
   }
 
+  if (MLP_RRIP_BOOST == MLP_RRIP_BOOST_LAMBDA) {
+    rrip_evict_lin(cache, set, way);
+    cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+    return &cache->entries[set][*way];
+  }
+
   while (!found) {
     // eviction: search the distant line whose RRPV == 2^M - 1
     for (ii = 0; ii < cache->assoc; ii++) {
       Cache_Entry* entry = &cache->entries[set][ii];
-      if (entry->reference_val == RRIP_DISTANT_VAL) {
+      if (entry->reference_val == RRIP_DISTANT_VAL && entry->mlp_rrip_credit == 0) {
         *way = ii;
         found = TRUE;
         break;
       }
     }
 
-    // aging: increment until there is a RRPV == 2^M-1
+    // aging: increment until there is a RRPV == 2^M-1 (spending mlp_rrip_credit first)
     if (found)
       break;
-    for (ii = 0; ii < cache->assoc; ii++)
-      cache->entries[set][ii].reference_val++;
+    for (ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      if (entry->mlp_rrip_credit > 0)
+        entry->mlp_rrip_credit--;
+      else if (entry->reference_val < RRIP_DISTANT_VAL)
+        entry->reference_val++;
+    }
   }
 
   cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);

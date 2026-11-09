@@ -75,6 +75,16 @@ typedef enum Repl_Policy_enum {
   NUM_REPL
 } Repl_Policy;
 
+/* The policies whose victim search is rrip_update_evict, where mlp_rrip_boost applies */
+static inline Flag repl_is_rrip(Repl_Policy policy) {
+  return policy == REPL_SRRIP || policy == REPL_BRRIP || policy == REPL_DRRIP || policy == REPL_SHIP;
+}
+
+/* --mlp_rrip_boost: how a marked line's boost acts on an RRIP policy (see memory.param.def) */
+#define MLP_RRIP_BOOST_OFF 0
+#define MLP_RRIP_BOOST_LAMBDA 1
+#define MLP_RRIP_BOOST_GAMMA 2
+
 typedef enum Cache_Repl_Signiture_enum {
   CACHE_REPL_SIGH_PC,
   CACHE_REPL_SIGH_MEM,
@@ -104,6 +114,8 @@ typedef struct Cache_Entry_struct {
                         recency update (fill or hit) */
   uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown: set ticks until the line's protection
                           expires; it is protected while this is nonzero */
+  uns mlp_rrip_credit; /* RRIP with mlp_rrip_boost 2: aging steps the line still absorbs before its
+                          RRPV rises; set to its boost at its fill and at every hit */
 
   Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
                             time; always FALSE for data lines */
@@ -223,8 +235,9 @@ Addr get_cache_line_addr(Cache*, Addr);
 uns cache_get_invalid_line_count(Cache* cache, Addr addr);
 void update_repl_resteer_policy(Cache*, Addr);
 
-/* REPL_MLP: stage the boost the NEXT cache_insert_replpos call should stamp on the new line.
-   Call right before a fill-time cache_insert on a cache running REPL_MLP; reset to 0 after. */
+/* REPL_MLP, or an RRIP policy with mlp_rrip_boost: stage the boost the NEXT cache_insert_replpos
+   (or, for RRIP, cache_insert_strategy) call should stamp on the new line. Call right before a
+   fill-time cache_insert on such a cache; reset to 0 after. */
 void cache_set_next_fill_mlp_boost(float boost);
 
 /* REPL_LACS: stage the cost the NEXT cache_insert (strategy path) should stamp on the new
