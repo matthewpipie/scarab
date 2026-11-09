@@ -46,6 +46,17 @@
  * --icarus_reset_interval cycles, per the paper's finding that criticality is highly dynamic
  * (~28% of critical lines stay critical across intervals).
  *
+ * --icarus_costly_fetch (§4.5, for workloads where many fetches are critical, e.g. Verilator
+ * on a 1 MB L2) switches the CIT to the paper's redefinition of a critical fetch: one that
+ * starves decode for more than --icarus_costly_cycles cycles (icarus_note_costly_stall).
+ * While the mode is on, only those fetches train the CIT. Mode 2 is always on. Mode 1 decides
+ * at each reset, from the interval that just ended: on if more than
+ * --icarus_costly_trigger_pct percent of the instruction fetches that reached the MLC
+ * (icarus_mlc_lookup) were critical by the §3.3 definition. That is counted per fetch (did
+ * this fetch starve decode), not by looking up the CIT, so it doesn't depend on which
+ * definition the CIT is trained with, and the trigger can turn the mode back off. The CIT is
+ * flushed at every reset, so after a switch it only ever holds the new definition.
+ *
  * Only instruction-type requests ever train or consult the CIT; data-type fills always stage
  * "not critical," per the paper's instruction-caching-only scope. Unlike REPL_LACS/REPL_MLP
  * (which can run at the MLC or the LLC), REPL_ICARUS is MLC-only -- Scarab's MLC is this
@@ -79,6 +90,11 @@ typedef struct Icarus_State_struct {
   uns8* cit;
   uns cit_size;
   Counter last_reset_cycle;
+  Flag costly_active;  // the CIT is trained by §4.5 costly fetches, not §3.3 critical fetches
+  // --icarus_costly_fetch 1: this interval's instruction fetches that reached the MLC, and
+  // how many of them were critical by the §3.3 definition
+  Counter interval_fetches;
+  Counter interval_critical_fetches;
 } Icarus_State;
 
 static Icarus_State g_icarus[MAX_NUM_PROCS];
@@ -91,10 +107,13 @@ static Icarus_State* icarus_state(uns8 proc_id) {
   if (!s->initialized) {
     ASSERTM(proc_id, ICARUS_BHR_BITS >= 1 && ICARUS_BHR_BITS <= 32,
             "--icarus_bhr_bits must be in [1, 32] (global_hist is 32 bits), got %u\n", ICARUS_BHR_BITS);
+    ASSERTM(proc_id, ICARUS_COSTLY_FETCH <= 2, "--icarus_costly_fetch must be 0 (off), 1 (auto) or 2 (on), got %u\n",
+            ICARUS_COSTLY_FETCH);
     // Default size of 512 entries
     s->cit_size = 1u << ICARUS_CIT_BITS;
     // Initialize counter array and set base of reset counter
     s->cit = (uns8*)calloc(s->cit_size, sizeof(uns8));
+    s->costly_active = ICARUS_COSTLY_FETCH == 2;
     s->last_reset_cycle = cycle_count;
     s->initialized = TRUE;
   }
@@ -124,11 +143,39 @@ static inline Flag icarus_is_inst_req(Mem_Req* req) {
          mem_req_is_type(req, MRT_FDIPPRFOFF) || mem_req_is_type(req, MRT_FDIPPRFALT);
 }
 
-// Returns true if CIT table entry is > threshold for criticality
+static inline void icarus_cit_train(Icarus_State* s, Addr addr, uns32 hist) {
+  uns idx = icarus_cit_index(s, addr, hist);
+  if (s->cit[idx] < ICARUS_CIT_MAX)
+    s->cit[idx]++;
+}
+
+// Returns TRUE if the CIT entry for (addr, hist) is at or above the criticality threshold
 static Flag icarus_lookup_critical(uns8 proc_id, Addr addr, uns32 hist) {
   Icarus_State* s = icarus_state(proc_id);
   uns idx = icarus_cit_index(s, addr, hist);
   return s->cit[idx] >= ICARUS_CRIT_THRESH;
+}
+
+// Flushes the CIT every --icarus_reset_interval cycles, checked lazily from the training (and,
+// with --icarus_costly_fetch, lookup) hooks. With --icarus_costly_fetch 1 this is also where
+// the §4.5 trigger decides, from the interval that just ended, whether the mode is on for the
+// next one; flushing first means the CIT never mixes the two definitions.
+static void icarus_maybe_reset(uns8 proc_id, Icarus_State* s) {
+  if (cycle_count - s->last_reset_cycle < ICARUS_RESET_INTERVAL)
+    return;
+  memset(s->cit, 0, s->cit_size * sizeof(uns8));
+  if (s->costly_active)
+    STAT_EVENT(proc_id, MLC_ICARUS_COSTLY_INTERVAL);
+  if (ICARUS_COSTLY_FETCH == 1) {
+    Flag on = s->interval_critical_fetches * 100 > s->interval_fetches * ICARUS_COSTLY_TRIGGER_PCT;
+    if (on != s->costly_active)
+      STAT_EVENT(proc_id, MLC_ICARUS_COSTLY_SWITCH);
+    s->costly_active = on;
+  }
+  s->interval_fetches = 0;
+  s->interval_critical_fetches = 0;
+  s->last_reset_cycle = cycle_count;
+  STAT_EVENT(proc_id, MLC_ICARUS_CIT_RESET);
 }
 
 /**************************************************************************************/
@@ -147,13 +194,7 @@ void icarus_tag_req(uns8 proc_id, Addr line_addr, uns32 hist) {
 
 void icarus_note_fetch_stall(uns8 proc_id, Addr addr, Mem_Req* req) {
   Icarus_State* s = icarus_state(proc_id);
-
-  // Check if we should reset the CIT table
-  if (cycle_count - s->last_reset_cycle >= ICARUS_RESET_INTERVAL) {
-    memset(s->cit, 0, s->cit_size * sizeof(uns8));
-    s->last_reset_cycle = cycle_count;
-    STAT_EVENT(proc_id, MLC_ICARUS_CIT_RESET);
-  }
+  icarus_maybe_reset(proc_id, s);
 
   // Paper §3.3: one increment per critical fetch, not per starved cycle. Counting cycles
   // saturates the 2-bit entry within a single stall, so a line would be marked critical at
@@ -163,11 +204,43 @@ void icarus_note_fetch_stall(uns8 proc_id, Addr addr, Mem_Req* req) {
     return;
   req->icarus_trained = TRUE;
 
-  uns idx = icarus_cit_index(s, addr, req->icarus_hist);
-  if (s->cit[idx] < ICARUS_CIT_MAX)
-    s->cit[idx]++;
-
+  // A §3.3 critical fetch: the §4.5 trigger's numerator, counted in every mode
+  s->interval_critical_fetches++;
+  STAT_EVENT(proc_id, MLC_ICARUS_CRITICAL_FETCH);
+  if (s->costly_active)  // costly fetches train the CIT instead
+    return;
+  icarus_cit_train(s, addr, req->icarus_hist);
   STAT_EVENT(proc_id, MLC_ICARUS_CIT_TRAIN);
+}
+
+void icarus_note_costly_stall(uns8 proc_id, Addr addr, Mem_Req* req) {
+  Icarus_State* s = icarus_state(proc_id);
+  icarus_maybe_reset(proc_id, s);
+
+  // §4.5: "any instruction fetch that causes decode starvation for more than 40 cycles" --
+  // total starved cycles while the request is outstanding; trains once, on crossing the cost.
+  req->icarus_starved_cycles++;
+  if (!s->costly_active || req->icarus_costly_trained || !req->icarus_hist_valid ||
+      req->icarus_starved_cycles <= ICARUS_COSTLY_CYCLES)
+    return;
+  req->icarus_costly_trained = TRUE;
+
+  icarus_cit_train(s, addr, req->icarus_hist);
+  STAT_EVENT(proc_id, MLC_ICARUS_COSTLY_TRAIN);
+}
+
+void icarus_mlc_lookup(Cache* cache, Mem_Req* req) {
+  if (cache->repl_policy != REPL_ICARUS || !icarus_is_inst_req(req) || !req->icarus_hist_valid)
+    return;
+  // Don't start the CIT from here: its reset clock starts at the first training or fill, as it
+  // did before this hook existed, so --icarus_costly_fetch 0 behaves exactly as without it.
+  Icarus_State* s = &g_icarus[req->proc_id];
+  if (!s->initialized)
+    return;
+  if (ICARUS_COSTLY_FETCH)
+    icarus_maybe_reset(req->proc_id, s);
+  s->interval_fetches++;
+  STAT_EVENT(req->proc_id, MLC_ICARUS_FETCH);
 }
 
 // Computes the criticality from the CIT for req and stages globals for
