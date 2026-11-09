@@ -197,6 +197,10 @@ struct Mem_Req_struct {
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */
   Flag demand_match_prefetch;                /* is this a prefetch req matched by a demand? */
+  Counter demand_match_cycle;                /* when a demand folded into this prefetch, promoting it (0 if
+                                                none) */
+  Counter pref_queue_cycle;                  /* a prefetch from the prefetch framework: when its prefetcher
+                                                queued it (0 otherwise) */
   Flag bw_prefetch;                          /* is this request a bandwidth prefetch? */
   Flag bw_prefetchable;                      /* would this request be a bandwidth prefetch if there
                                                 was more BW? */

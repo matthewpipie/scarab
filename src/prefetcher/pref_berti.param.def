@@ -1,0 +1,76 @@
+/*
+ * Copyright 2026 University of California Santa Cruz
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+/* -*- Mode: c -*- */
+
+/* Berti prefetcher (prefetcher/pref_berti.c). Enable it as a dcache instance:
+     --pref_framework_on 1 --pref_num_dcache_prefetchers 1
+     --pref_dcache_prefetchers TYPE_BERTI,DEST_DCACHE
+   Berti picks each prefetch's level itself (the dcache or the MLC); DEST_DCACHE is required.
+   The defaults are the paper's (Navarro-Torres et al., MICRO 2022, Section III and Table I). */
+
+DEF_PARAM(debug_pref_berti, DEBUG_PREF_BERTI, Flag, Flag, FALSE, )
+/* History table: berti_hist_sets sets (a power of two) of berti_hist_ways ways, FIFO in each
+   set. A load is in the set its low IP bits pick, tagged by the next berti_hist_ip_tag_bits
+   IP bits, with the low berti_hist_line_bits bits of its line address and the low
+   berti_time_bits bits of the cycle. */
+DEF_PARAM(berti_hist_sets, BERTI_HIST_SETS, uns, uns, 8, )
+DEF_PARAM(berti_hist_ways, BERTI_HIST_WAYS, uns, uns, 16, )
+DEF_PARAM(berti_hist_ip_tag_bits, BERTI_HIST_IP_TAG_BITS, uns, uns, 7, )
+DEF_PARAM(berti_hist_line_bits, BERTI_HIST_LINE_BITS, uns, uns, 24, )
+DEF_PARAM(berti_time_bits, BERTI_TIME_BITS, uns, uns, 16, )
+/* Fetch latencies are kept in this many bits; a latency that does not fit counts as 0, and
+   then the load learns nothing */
+DEF_PARAM(berti_latency_bits, BERTI_LATENCY_BITS, uns, uns, 12, )
+/* A search of the history table collects at most this many timely deltas, those of the
+   youngest entries */
+DEF_PARAM(berti_max_timely_deltas, BERTI_MAX_TIMELY_DELTAS, uns, uns, 8, )
+/* Table of deltas: berti_table_size entries, fully associative and FIFO, each tagged by a
+   berti_table_tag_bits-bit hash of an IP and holding berti_deltas_per_entry deltas of
+   berti_delta_bits bits (signed) */
+DEF_PARAM(berti_table_size, BERTI_TABLE_SIZE, uns, uns, 16, )
+DEF_PARAM(berti_table_tag_bits, BERTI_TABLE_TAG_BITS, uns, uns, 10, )
+DEF_PARAM(berti_deltas_per_entry, BERTI_DELTAS_PER_ENTRY, uns, uns, 16, )
+DEF_PARAM(berti_delta_bits, BERTI_DELTA_BITS, uns, uns, 13, )
+/* A learning phase of an IP lasts this many searches. At its end each delta's coverage (the
+   share of the phase's searches that found it timely) sets its status for the next phase:
+   above berti_l1_watermark percent it prefetches into the dcache, above berti_l2_watermark
+   into the MLC, and otherwise not at all. An MLC delta below berti_repl_watermark may be
+   replaced by a new delta. At most berti_max_pref_deltas deltas of an IP prefetch, those of
+   the highest coverage. */
+DEF_PARAM(berti_phase_searches, BERTI_PHASE_SEARCHES, uns, uns, 16, )
+DEF_PARAM(berti_l1_watermark, BERTI_L1_WATERMARK, uns, uns, 65, )
+DEF_PARAM(berti_l2_watermark, BERTI_L2_WATERMARK, uns, uns, 35, )
+DEF_PARAM(berti_repl_watermark, BERTI_REPL_WATERMARK, uns, uns, 50, )
+DEF_PARAM(berti_max_pref_deltas, BERTI_MAX_PREF_DELTAS, uns, uns, 12, )
+/* Until an IP's first phase ends, it prefetches once it has berti_warmup_searches searches,
+   with the coverage so far and a dcache watermark of berti_warmup_l1_watermark percent */
+DEF_PARAM(berti_warmup_searches, BERTI_WARMUP_SEARCHES, uns, uns, 8, )
+DEF_PARAM(berti_warmup_l1_watermark, BERTI_WARMUP_L1_WATERMARK, uns, uns, 80, )
+/* A dcache prefetch goes to the MLC instead while the dcache MSHRs are at least this
+   percent full */
+DEF_PARAM(berti_mshr_watermark, BERTI_MSHR_WATERMARK, uns, uns, 70, )
+/* Berti trains on virtual addresses and may prefetch across a page (the paper drops such a
+   prefetch only on an STLB miss, which Scarab does not model). With berti_cross_page 0 a
+   prefetch outside the triggering load's page of berti_page_size bytes is dropped. */
+DEF_PARAM(berti_cross_page, BERTI_CROSS_PAGE, Flag, Flag, TRUE, )
+DEF_PARAM(berti_page_size, BERTI_PAGE_SIZE, uns, uns, 4096, )

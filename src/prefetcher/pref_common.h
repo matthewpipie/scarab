@@ -46,7 +46,8 @@ struct Pref_Mem_Req_struct {
   uns distance;
   Flag valid;
   Flag bw_limited;
-  Counter rdy_cycle;  // Move this out
+  Counter rdy_cycle;    // Move this out
+  Counter queue_cycle;  // cycle_count when its prefetcher queued it
 };
 
 typedef struct Pref_Polbv_Info_struct {
@@ -146,6 +147,15 @@ struct HWP_struct {
   // Same as ul1_cache_fill but for UMLC (L2) fills. Lets an L2 prefetcher count
   // its own fills (e.g. accuracy accounting). Kept LAST after ul1_cache_fill.
   void (*umlc_cache_fill)(uns8 proc_id, Addr fill_addr, Flag prefetch, Addr evicted_addr, uns32 metadata);
+  // Called when a dcache load that would have missed without prefetching gets its
+  // line: when its miss fills the dcache (a late prefetch it caught included), and
+  // when it is the first demand hit on a prefetched line (pref_hit). demand_cycle is
+  // when the load accessed the dcache; latency is how long the line took to arrive,
+  // from the miss, or from the prefetcher queueing the prefetch, to the fill. Lets a
+  // dcache prefetcher learn which earlier accesses were early enough to prefetch it
+  // (Berti). Kept LAST after umlc_cache_fill.
+  void (*dl0_load_fetched)(uns8 proc_id, Addr line_addr, Addr load_PC, Counter demand_cycle, Counter latency,
+                           Flag pref_hit);
 };
 
 /* Per core prefetching data */
@@ -213,6 +223,8 @@ void pref_ul1_pref_hit_late(uns8 proc_id, Addr line_addr, Addr load_PC, uns32 gl
 
 void pref_ul1_cache_fill(uns8 proc_id, Addr fill_addr, Flag prefetch, Addr evicted_addr, uns32 metadata);
 void pref_umlc_cache_fill(uns8 proc_id, Addr fill_addr, Flag prefetch, Addr evicted_addr, uns32 metadata);
+void pref_dl0_load_fetched(uns8 proc_id, Addr line_addr, Addr load_PC, Counter demand_cycle, Counter latency,
+                           Flag pref_hit);
 
 void pref_update_levels(void); /* MLC and LLC, with their demand passes */
 
