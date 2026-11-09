@@ -42,8 +42,9 @@ extern "C" {
 
 /**************************************************************************************/
 
-/* Every execution attempt of every op, on or off path -- increments the issuing core's
-   instruction-issue counter that lacs_note_miss/lacs_note_demand_merge snapshot from. */
+/* Every execution attempt of every op -- increments the issuing core's instruction-issue
+   counter (the paper's IIC) that lacs_note_miss/lacs_note_demand_merge snapshot from. Off-path
+   ops count too unless --lacs_onpath_only, an oracle knob. */
 void lacs_note_issue(Op* op);
 
 /* First miss of `req` at this slot's level: snapshot the issuing core's issue counter.
@@ -55,10 +56,17 @@ void lacs_note_miss(Lacs_Slot slot, Cache* cache, Mem_Req* req);
    a prefetch so far -- re-snapshot as a demand if so. */
 void lacs_note_demand_merge(Lacs_Slot slot, Cache* cache, Mem_Req* req, Mem_Req_Type new_type);
 
-/* Fill time: train this slot's history table from `req`'s snapshot (if any), adapt the
-   period threshold, and stage the resulting cost for the immediately-following
-   cache_insert via cache_set_lacs_next_insert. Must be the last thing called before that
-   insert. */
+/* `req`'s miss at this slot's level has returned (paper Steps D/E): train this slot's
+   history table from the snapshot, if `req` has one that trains, and close the period
+   (Op1/Op2) when it fills up. Call it when the data reaches the level, before deciding
+   whether to insert there: an exclusive level that skips the insert still learns the
+   miss's cost. Idempotent, so a fill that is refused and retried trains once. */
+void lacs_miss_return(Lacs_Slot slot, Cache* cache, Mem_Req* req);
+
+/* Paper Step F: stage the cost the immediately-following cache_insert stamps on `req`'s
+   line, via cache_set_lacs_next_insert. Must be the last thing called before that insert,
+   and only after lacs_miss_return for the same request. A no-op unless the cache runs
+   REPL_LACS. */
 void lacs_fill(Lacs_Slot slot, Cache* cache, Mem_Req* req);
 
 /* Once per core, at the end of that core's run: final-threshold and eviction-counter
