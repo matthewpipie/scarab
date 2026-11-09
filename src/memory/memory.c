@@ -2225,6 +2225,10 @@ Flag mem_adjust_matching_request(Mem_Req* req, Mem_Req_Type type, Addr addr, uns
 
   mem_req_set_types(req, type);  // Update record of types that merged into this memreq
   type_added = TRUE;
+  if (type == MRT_IFETCH && req->fe_abandoned) {
+    req->fe_abandoned = FALSE; /* fetch came back to the line it was redirected away from */
+    STAT_EVENT(req->proc_id, MLP_FE_ABANDON_REREACH);
+  }
 
   /* Adjust op related fields in the request */
   if (op) {
@@ -2509,6 +2513,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->ld_bound_cycles = 0;
   new_req->rob_stall_cycles = 0;
   new_req->fe_stall_cycles = 0;
+  new_req->fe_abandoned = FALSE;
 
   if (op) {
     ASSERT(new_req->proc_id, new_req->proc_id == op->proc_id);
@@ -2950,14 +2955,26 @@ static inline void l1_miss_is_satisfied(Mem_Req* req) {
    there's no op_ptrs walk that could read a pool-recycled op's unrelated state. No off-path gate --
    an off-path load is tracked and classified exactly like an on-path one.
 
-   Instruction side: req->fe_bound_cycles/fe_window_cycles, accumulated every cycle the icache
-   miss was outstanding (icache_stage.c). mem_req_is_type (the coalesced-type bitmask), not
-   req->type ==, so a late instruction prefetch a demand fetch merged into is classified
-   identically to a demand fetch -- the baseline prefetch-merge inclusion.
+   Instruction side: mlp_instr_marked, on fills a demand fetch reached. mem_req_is_type (the
+   coalesced-type bitmask), not req->type ==, so a late instruction prefetch a demand fetch merged
+   into is classified identically to a demand fetch -- the baseline prefetch-merge inclusion.
 
    Marked-load/fetch/merge stats: a "merge" is a request more than one op or type coalesced into --
    req->op_count > 1 on the data side (multiple loads sharing the miss), popcount32(req->types) > 1
    on the instruction side (e.g. a demand fetch merged into a request that started as a prefetch). */
+/* Whether a fill a demand fetch reached is marked instruction-bound, per mlp_instr_mark. Mode 0
+   uses req->fe_bound_cycles/fe_window_cycles, accumulated in icache_stage.c; mode 2 uses
+   req->fe_abandoned, set in recover_icache_stage and cleared by a demand fetch merging in. */
+static Flag mlp_instr_marked(Mem_Req* req) {
+  ASSERTM(req->proc_id, MLP_INSTR_MARK <= 2, "mlp_instr_mark %u is not 0, 1 or 2\n", MLP_INSTR_MARK);
+  if (MLP_INSTR_MARK == 1)
+    return TRUE;
+  if (MLP_INSTR_MARK == 2)
+    return !req->fe_abandoned;
+  return req->fe_window_cycles &&
+         (double)req->fe_bound_cycles / (double)req->fe_window_cycles > (double)MLP_LIN_INSTR_THRESH;
+}
+
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
   if (cache->repl_policy != REPL_MLP)
     return;
@@ -2975,11 +2992,8 @@ static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
         STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
     }
   } else if (mem_req_is_type(req, MRT_IFETCH)) {
-    if (req->fe_window_cycles) {
-      double frac = (double)req->fe_bound_cycles / (double)req->fe_window_cycles;
-      if (frac > (double)MLP_LIN_INSTR_THRESH)
-        boost = MLP_LIN_INSTR_LAMBDA;
-    }
+    if (mlp_instr_marked(req))
+      boost = MLP_LIN_INSTR_LAMBDA;
     if (boost > 0.0) {
       STAT_EVENT(req->proc_id, MLP_MARKED_FETCH);
       if (popcount32(req->types) > 1)
