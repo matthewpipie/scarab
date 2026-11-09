@@ -102,6 +102,8 @@ typedef struct Cache_Entry_struct {
                        threshold, else 0) */
   Counter mlp_stamp; /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
                         recency update (fill or hit) */
+  uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown: set ticks until the line's protection
+                          expires; it is protected while this is nonzero */
 
   Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
                             time; always FALSE for data lines */

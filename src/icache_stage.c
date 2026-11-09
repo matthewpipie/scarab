@@ -314,6 +314,17 @@ void recover_icache_stage() {
   // retirement.  Setting the signal here would cause execute_coupled_FSM() to
   // override the STALLED state and skip the barrier wait.
   ic->icache_stage_resteer_signaled = !ft_op_buffer_can_fetch_op(ic) && !ic->fetch_barrier_pending;
+
+  /* REPL_MLP (mlp_instr_mark 2): a resteer while fetch is stalled on an icache miss leaves that
+     miss behind. Flag it for its MLC fill; a demand fetch reaching the line again clears it. */
+  if (ic->icache_stage_resteer_signaled && ic->next_state == ICACHE_WAIT_FOR_MISS) {
+    Mshr_Line* miss_line = mshr_line(mem_core_file(ic->proc_id, MRT_IFETCH), ic->line_addr);
+    Mem_Req* miss_req = miss_line ? mshr_line_first(miss_line) : NULL;
+    if (miss_req && !miss_req->fe_abandoned) {
+      miss_req->fe_abandoned = TRUE;
+      STAT_EVENT(ic->proc_id, MLP_FE_ABANDON);
+    }
+  }
 }
 
 /**************************************************************************************/
@@ -901,9 +912,11 @@ void execute_coupled_FSM() {
            break_fetch == BREAK_ICACHE_WAIT_FOR_MISS)
     topdown_fe_reason = TD_FE_ICACHE_MISS;  // both uop cache and icache missed
 
-  /* REPL_MLP: fe_window_cycles counts every cycle this line's request is outstanding, regardless
-     of this cycle's fe_reason -- it's the denominator and must advance whether or not the stall is
-     this miss's fault. fe_bound_cycles only counts the subset where it is. No off-path gate and no
+  /* REPL_MLP (mlp_instr_mark 0): fe_window_cycles counts every cycle ic->line_addr names this
+     line's outstanding request, regardless of this cycle's fe_reason -- it's the denominator and
+     must advance whether or not the stall is this miss's fault. fe_bound_cycles only counts the
+     subset where it is. ic->line_addr changes only on an icache lookup, so after a resteer, or
+     while the uop cache serves, it can keep naming a miss fetch has left. No off-path gate and no
      gate on whether the line's own request started as a prefetch: mshr_line_first returns
      whichever request is resident for the line, demand or merged-into prefetch alike, and the
      fill-time check in memory.c is on req->types, not req->type, so a merge is picked up

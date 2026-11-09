@@ -228,14 +228,24 @@ DEF_PARAM(prioritize_pws_after_first_sticky_until_backend_stall, PRIORITIZE_PWS_
 DEF_PARAM(no_repl_after_queue_size, NO_REPL_AFTER_QUEUE_SIZE, uns, uns, 0,)
 
 /* REPL_MLP (--mlc_cache_repl_policy 9 / --l1_cache_repl_policy 9): evict
-   argmin(Recency + boost), Recency the LRU stack position (0 = LRU). A line filled by a load or
-   instruction fetch classified data-bound / instruction-bound (its stall-cycles-over-window-cycles
-   fraction cleared its own threshold) gets a flat boost of mlp_lin_data_lambda /
-   mlp_lin_instr_lambda; everything else gets 0, so both at their 0.0 default reproduces plain LRU. */
+   argmin(Recency + boost), Recency the LRU stack position (0 = LRU). A line filled by a load
+   classified data-bound (its stall-cycles-over-window-cycles fraction cleared mlp_lin_data_thresh)
+   gets a flat boost of mlp_lin_data_lambda, and one filled by an instruction fetch marked
+   instruction-bound (mlp_instr_mark) gets mlp_lin_instr_lambda; everything else gets 0, so both
+   at their 0.0 default reproduces plain LRU. */
 DEF_PARAM(mlp_lin_data_lambda, MLP_LIN_DATA_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.5, )
 DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
+/* mlp_instr_mark: which instruction fills REPL_MLP marks instruction-bound. Only a fill a demand
+   fetch reached can be marked: one a demand fetch created, or a prefetch a demand fetch merged
+   into before the fill. Of those, it marks:
+     0  the ones whose fe_bound_cycles / fe_window_cycles clears mlp_lin_instr_thresh.
+     1  all of them.
+     2  all but the ones fetch was redirected away from while it was stalled on them (a resteer
+        while the icache waited on the line), unless a demand fetch reached them again before the
+        fill. Uses only what the core sees; never req->off_path. */
+DEF_PARAM(mlp_instr_mark, MLP_INSTR_MARK, uns, uns, 2, )
 /* mlp_boost_in_fills: count REPL_MLP's boost in fills to the set instead of LRU stack positions.
    The victim is argmin(stamp + boost), stamp the set's fill count at the line's last recency
    update (fill or hit), ties to the least recently used: a marked line ranks as if touched
@@ -244,6 +254,16 @@ DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
    rank below lambda. Lambda 0 is plain LRU either way. The MID/LOWQTR prefetch insertion
    positions do not set the stamp (it stays at MRU). */
 DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
+/* mlp_boost_countdown: keep REPL_MLP's boost as a 2-bit countdown per line and a tick per set,
+   instead of mlp_boost_in_fills' fill-count age per line. A set ticks every round(lambda / 3)
+   fills into it. A marked line's countdown is set to 3 when it is filled and on every hit, and
+   each tick of its set decrements it. The line is protected while its countdown is nonzero, so
+   protection lasts between 2/3 lambda and lambda fills after its last touch. The victim is the
+   least recently used unprotected line, or the least recently used line if every line is
+   protected. A line whose countdown reaches 0 moves to MRU, as mlp_boost_in_fills ranks a marked
+   line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Cannot be
+   combined with mlp_boost_in_fills. */
+DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
