@@ -107,11 +107,13 @@ typedef enum Lacs_Slot_enum {
   LACS_NUM_SLOTS
 } Lacs_Slot;
 
-/* REPL_LACS: what a level's snapshot on a request was taken for (Mem_Req.lacs_snap). */
+/* REPL_LACS: where a request's miss at one level stands (Mem_Req.lacs_snap). */
 typedef enum Lacs_Snap_enum {
-  LACS_SNAP_NONE,     /* not missed at this level yet, a writeback, or already filled */
-  LACS_SNAP_DEMAND,   /* a demand was waiting when the snapshot was (re)taken */
-  LACS_SNAP_PREFETCH, /* a prefetch with no demand waiting */
+  LACS_SNAP_NONE,      /* not missed at this level, or a writeback */
+  LACS_SNAP_DEMAND,    /* outstanding; a demand was waiting when the snapshot was (re)taken */
+  LACS_SNAP_PREFETCH,  /* outstanding; a prefetch with no demand waiting */
+  LACS_SNAP_TRAINED,   /* returned and trained the history table (paper Steps D/E) */
+  LACS_SNAP_UNTRAINED, /* returned without training: a prefetch no demand merged into in time */
 } Lacs_Snap;
 
 #define DRAM_REQ_STATUS_LIST(elem) elem(CONFLICT) elem(MISS) elem(HIT)
@@ -132,6 +134,17 @@ struct Mem_Req_struct {
   uns types;
   Counter fdip_emitted_cycle; /* cycle when the request is emitted. */
   uns64 ghist;
+  /* REPL_ICARUS: the branch history leading to the fetch that issued this request
+     (Op.fetch_ghist, set by icarus_tag_req; meaningful once icarus_hist_valid), and whether
+     this request has already trained the CIT (in costly-fetch mode: been counted as a §3.3
+     critical fetch). */
+  uns32 icarus_hist;
+  Flag icarus_hist_valid;
+  Flag icarus_trained;
+  /* REPL_ICARUS --icarus_costly_fetch: cycles this request has starved decode, and whether
+     it has trained the CIT as a costly fetch. */
+  uns icarus_starved_cycles;
+  Flag icarus_costly_trained;
   Counter demand_icache_emitted_cycle; /* cycle when the request is emitted. */
   Counter emitted_cycle;               /* cycle when request of any type was first initialized */
   Counter priority;                    /* priority of the miss */

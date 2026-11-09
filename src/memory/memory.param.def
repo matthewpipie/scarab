@@ -129,30 +129,66 @@ DEF_PARAM(drrip_psel_bits, DRRIP_PSEL_BITS, uns, uns, 10, )
    & Sheikh, IEEE TC 2014) at any cache level: classifies each miss by how many instructions
    the issuing core issued while it was outstanding (numIssued). See the top-of-file comment
    in memory/lacs.c for the full adaptation algorithm these knobs drive. */
-/* Period length in trained fills (paper: 16K LLC misses, Step A) and history-table index
+/* Period length in trained misses (paper: 16K LLC misses, Step A) and history-table index
    width (paper section 4.3: 16K entries). */
 DEF_PARAM(lacs_period_log2, LACS_PERIOD_LOG2, uns, uns, 14, )
 DEF_PARAM(lacs_hist_bits, LACS_HIST_BITS, uns, uns, 14, )
+/* Starting thresh, in issued ops. The paper does not give one. */
 DEF_PARAM(lacs_thresh_init, LACS_THRESH_INIT, uns, uns, 50, )
-DEF_PARAM(lacs_thresh_step, LACS_THRESH_STEP, uns, uns, 4, )
-/* 0 = adaptive (default), 1 = always cost-sensitive, 2 = never (plain aging/RNG eviction). */
+/* Op1: how far thresh moves at the end of a period (paper Table 1: 8). */
+DEF_PARAM(lacs_thresh_step, LACS_THRESH_STEP, uns, uns, 8, )
+/* Op2: 0 = adaptive (paper), 1 = always cost-sensitive, 2 = never (every fill inserts at
+   cost 1, learning continues). */
 DEF_PARAM(lacs_cs_mode, LACS_CS_MODE, uns, uns, 0, )
 /* Op2: the largest change in a period's average numIssued, in instructions, from the
    previous period's that keeps cost-sensitivity on in adaptive mode (paper: 10). */
 DEF_PARAM(lacs_cs_tolerance, LACS_CS_TOLERANCE, uns, uns, 10, )
+/* Step F for fills that do not train the history table: prefetches (section 4.5) and
+   writebacks, which are how a victim-filled LLC receives its lines. With *_lookup on
+   (default), they insert at the block's cost_stored, as the paper does for every fill;
+   off, they insert at the fixed *_cost (0..3) instead. */
 DEF_PARAM(lacs_pref_insert_cost, LACS_PREF_INSERT_COST, uns, uns, 1, )
-DEF_PARAM(lacs_pref_insert_lookup, LACS_PREF_INSERT_LOOKUP, Flag, Flag, FALSE, )
+DEF_PARAM(lacs_pref_insert_lookup, LACS_PREF_INSERT_LOOKUP, Flag, Flag, TRUE, )
 DEF_PARAM(lacs_wb_insert_cost, LACS_WB_INSERT_COST, uns, uns, 0, )
-DEF_PARAM(lacs_wb_insert_lookup, LACS_WB_INSERT_LOOKUP, Flag, Flag, FALSE, )
-/* Train from a prefetch's own miss window even if no demand ever merged into it. */
+DEF_PARAM(lacs_wb_insert_lookup, LACS_WB_INSERT_LOOKUP, Flag, Flag, TRUE, )
+/* Train from a prefetch's own miss window even if no demand ever merged into it. Off in
+   the paper (section 4.5). */
 DEF_PARAM(lacs_train_prefetch, LACS_TRAIN_PREFETCH, Flag, Flag, FALSE, )
 /* Only data-type misses (loads/stores/data prefetches) train or use LACS; instruction-side
-   misses always get the plain default cost. */
+   misses always get the plain default cost. Not in the paper. */
 DEF_PARAM(lacs_data_only, LACS_DATA_ONLY, Flag, Flag, FALSE, )
-/* lacs_note_issue skips off-path ops. */
-DEF_PARAM(lacs_onpath_only, LACS_ONPATH_ONLY, Flag, Flag, TRUE, )
+/* Oracle, not realizable in hardware: lacs_note_issue skips off-path ops. The paper's IIC
+   counts every issued instruction, so this is off by default. */
+DEF_PARAM(lacs_onpath_only, LACS_ONPATH_ONLY, Flag, Flag, FALSE, )
 /* Run LACS's training/stats on a cache even if it isn't actually running REPL_LACS. */
 DEF_PARAM(lacs_profile, LACS_PROFILE, Flag, Flag, FALSE, )
+
+/* ICARUS (REPL_ICARUS, Kalbande, Jedhe Deshmukh, Ros & Panda, ASPLOS 2026) at the MLC (this
+   repo's L2-equivalent; see the note above REPL_DRRIP's l1/mlc naming) only: a per-core
+   branch-history-contextualized Critical Instruction Table (CIT) feeds a 4-bin
+   criticality+reuse eviction scheme. See memory/icarus.c's top-of-file comment and the
+   ICARUS section of libs/cache_lib.c for the full algorithm. */
+DEF_PARAM(icarus_cit_bits, ICARUS_CIT_BITS, uns, uns, 9, )
+DEF_PARAM(icarus_bhr_bits, ICARUS_BHR_BITS, uns, uns, 9, )
+DEF_PARAM(icarus_crit_thresh, ICARUS_CRIT_THRESH, uns, uns, 2, )
+DEF_PARAM(icarus_reset_interval, ICARUS_RESET_INTERVAL, Counter, uns64, 1000000, )
+/* Per-bin eviction watermarks [not-critical/not-reused, not-critical/reused,
+   critical/reused, critical/not-reused]; defaults are the paper's, tuned for their 16-way
+   L2 (they sum to 16). icarus_action_init asserts they sum to <= --mlc_assoc. */
+DEF_PARAM(icarus_wmark_00, ICARUS_WMARK_00, uns, uns, 2, )
+DEF_PARAM(icarus_wmark_01, ICARUS_WMARK_01, uns, uns, 4, )
+DEF_PARAM(icarus_wmark_11, ICARUS_WMARK_11, uns, uns, 6, )
+DEF_PARAM(icarus_wmark_10, ICARUS_WMARK_10, uns, uns, 4, )
+/* §4.5 "costly fetch" mode, for workloads where many fetches are critical (the paper's case is
+   Verilator on a 1 MB L2): a fetch counts as critical only if it starves decode for more than
+   --icarus_costly_cycles cycles. 0 = off. 1 = auto: on for the next CIT reset interval if, in
+   the one that just ended, more than --icarus_costly_trigger_pct percent of the instruction
+   fetches reaching the MLC were critical by the §3.3 definition (each fetch that starved
+   decode with the issue queue empty, counted per fetch, not looked up in the CIT). 2 = always
+   on. */
+DEF_PARAM(icarus_costly_fetch, ICARUS_COSTLY_FETCH, uns, uns, 0, )
+DEF_PARAM(icarus_costly_cycles, ICARUS_COSTLY_CYCLES, uns, uns, 40, )
+DEF_PARAM(icarus_costly_trigger_pct, ICARUS_COSTLY_TRIGGER_PCT, uns, uns, 8, )
 
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )

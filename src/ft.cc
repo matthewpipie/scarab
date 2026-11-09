@@ -211,6 +211,7 @@ FT_Event FT::build(std::function<bool(uns8, uns8)> can_fetch_op_fn, std::functio
     if (MAP_LOOKAHEAD && bp_id == MAIN_BP && !off_path)
       thread_map_op_lookahead(op);
     if (off_path) {
+      op->fetch_ghist = g_bp_data->global_hist;
       bp_predict_btb(g_bp_data, op);
       if (bp_l0_enabled())
         predict_op_ft_event(op, BP_PRED_L0);
@@ -383,6 +384,7 @@ FT_Event FT::predict_op_ft_event(Op* op, Bp_Pred_Level pred_level) {
 FT_PredictResult FT::predict_ft() {
   for (size_t idx = op_pos; idx < ops.size(); idx++) {
     Op* op = ops[idx];
+    op->fetch_ghist = g_bp_data->global_hist;  // history leading to this op (before predicting it)
     bp_predict_btb(g_bp_data, op);
     FT_Event event = FT_EVENT_NONE;
     if (bp_l0_enabled()) {

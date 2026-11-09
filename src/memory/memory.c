@@ -59,6 +59,7 @@
 #include "cache_part.h"
 #include "cmp_model.h"
 #include "icache_stage.h"
+#include "icarus.h"
 #include "lacs.h"
 #include "mem_req.h"
 #include "op.h"
@@ -1696,6 +1697,8 @@ static void mem_complete_mlc_access(Mem_Req* req) {
     update_mlc_lru = FALSE;
   data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);  // access MLC
   req->mlc_hit = data ? TRUE : FALSE;
+  if (data)
+    icarus_mlc_hit(&MLC(req->proc_id)->cache, req);
 
   if (data || PERFECT_MLC) { /* mlc hit */
     /* if exclusive cache, invalidate the line in L2 if there is a done function
@@ -1826,6 +1829,8 @@ static void mem_process_lookups(Mshr* file) {
       STAT_EVENT(req->proc_id, mem_req_type_is_prefetch(req->type) ? (llc ? L1_PREF_ACCESS : MLC_PREF_ACCESS)
                                                                    : (llc ? L1_DEMAND_ACCESS : MLC_DEMAND_ACCESS));
       req->state = llc ? MRS_L1_WAIT : MRS_MLC_WAIT;
+      if (!llc)  // REPL_ICARUS: once per request, unlike mem_complete_mlc_access, which retries
+        icarus_mlc_lookup(&MLC(req->proc_id)->cache, req);
     }
     if (llc)
       mem_complete_l1_access(req);
@@ -2509,6 +2514,11 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
 
   new_req->fe_window_cycles = 0;
   new_req->fe_bound_cycles = 0;
+  new_req->icarus_hist = 0;
+  new_req->icarus_hist_valid = FALSE;
+  new_req->icarus_trained = FALSE;
+  new_req->icarus_starved_cycles = 0;
+  new_req->icarus_costly_trained = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
   new_req->rob_stall_cycles = 0;
@@ -3004,6 +3014,9 @@ static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
 }
 
 Flag l1_fill_line(Mem_Req* req) {
+  /* REPL_LACS: the miss has returned to the LLC, so it trains here even if the line is not
+     inserted -- an exclusive LLC receives it later as an MLC victim, at the trained cost. */
+  lacs_miss_return(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
   if (!fill_inserts_at_l1(req)) {
     STAT_EVENT(req->proc_id, EXCL_FILL_SKIPPED_LLC);
     l1_miss_is_satisfied(req);
@@ -3370,6 +3383,8 @@ static inline void mlc_miss_is_satisfied(Mem_Req* req) {
 }
 
 Flag mlc_fill_line(Mem_Req* req) {
+  /* REPL_LACS: the miss has returned to the MLC; train before any skip below. */
+  lacs_miss_return(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   /* Exclusive MLC: only the destination level keeps the line; a core-destined fill
      passes through the MLC without inserting. */
   if (!fill_inserts_at_mlc(req)) {
@@ -3544,6 +3559,7 @@ Flag mlc_fill_line(Mem_Req* req) {
 
   mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
+  icarus_fill(&MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
