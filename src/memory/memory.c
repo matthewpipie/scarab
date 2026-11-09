@@ -2520,6 +2520,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->icarus_trained = FALSE;
   new_req->icarus_starved_cycles = 0;
   new_req->icarus_costly_trained = FALSE;
+  new_req->pdip_pref = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
   new_req->rob_stall_cycles = 0;

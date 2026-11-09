@@ -54,19 +54,19 @@
 #include "memory/icarus.h"
 #include "memory/memory.h"
 #include "memory/mshr.h"
-
-#include "issue_queue.h"
 #include "prefetcher/D_JOLT.h"
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
 #include "prefetcher/fdip.h"
 #include "prefetcher/l2l1pref.h"
+#include "prefetcher/pdip.h"
 #include "prefetcher/stream_pref.h"
 
 #include "cmp_model.h"
 #include "decode_stage.h"
 #include "ft.h"
 #include "ft_op_buffer.h"
+#include "issue_queue.h"
 #include "map.h"
 #include "op_pool.h"
 #include "sim.h"
@@ -109,6 +109,7 @@ static inline int32_t inst_lost_get_full_window_reason(void);
 static inline void log_stats_ic_miss(void);
 static inline void log_stats_ic_hit(void);
 static inline void log_stats_mshr_hit(Addr line_addr);
+static inline void pdip_icache_demand_miss(void);
 
 static inline FT_Arbitration_Result ft_arbitration(void);
 static inline Icache_State icache_mem_req_actions(Break_Reason*);
@@ -315,6 +316,10 @@ void recover_icache_stage() {
   // override the STALLED state and skip the barrier wait.
   ic->icache_stage_resteer_signaled = !ft_op_buffer_can_fetch_op(ic) && !ic->fetch_barrier_pending;
 
+  /* PDIP: record the resteering branch; if fetch leaves what it was fetching, its miss is abandoned */
+  if (PDIP_ENABLE)
+    pdip_recover(ic->proc_id, !ft_op_buffer_can_fetch_op(ic));
+
   /* REPL_MLP (mlp_instr_mark 2): a resteer while fetch is stalled on an icache miss leaves that
      miss behind. Flag it for its MLC fill; a demand fetch reaching the line again clears it. */
   if (ic->icache_stage_resteer_signaled && ic->next_state == ICACHE_WAIT_FOR_MISS) {
@@ -427,6 +432,11 @@ Inst_Info** lookup_icache() {
     if (line && (line != (Inst_Info**)INIT_CACHE_DATA_VALUE)) {
       ASSERT(ic->proc_id, line_info);
       wp_process_icache_hit(line_info, ic->fetch_addr);
+    }
+    /* PDIP (stats only): the icache keeps no line data, so a hit returns INIT_CACHE_DATA_VALUE */
+    if (line && line_info && line_info->pdip_prefetch) {
+      STAT_EVENT(ic->proc_id, PDIP_PREF_USEFUL_ONPATH + ic->off_path);
+      line_info->pdip_prefetch = FALSE;
     }
   }
 
@@ -578,6 +588,8 @@ FT_Arbitration_Result ft_arbitration() {
         STAT_EVENT(ic->proc_id, FT_UOP_CACHE_MISS_ICACHE_MISS_OFF_PATH);
       }
       icache_miss_events();
+      if (PDIP_ENABLE)
+        pdip_icache_demand_miss();
 
       ft_op_buffer_fill_from_ft(ic, ft);
 
@@ -935,6 +947,11 @@ void execute_coupled_FSM() {
            break_fetch == BREAK_ICACHE_WAIT_FOR_MISS)
     topdown_fe_reason = TD_FE_ICACHE_MISS;  // both uop cache and icache missed
 
+  /* PDIP: fetch delivered nothing this cycle because it is waiting on an icache miss (decode
+     starves); note whether the issue queue was empty too. No off-path gate: hardware can't tell. */
+  if (PDIP_ENABLE && topdown_fe_reason == TD_FE_ICACHE_MISS)
+    pdip_miss_stall_cycle(ic->proc_id, ic->line_addr, issue_queue_is_empty());
+
   /* REPL_MLP (mlp_instr_mark 0): fe_window_cycles counts every cycle ic->line_addr names this
      line's outstanding request, regardless of this cycle's fe_reason -- it's the denominator and
      must advance whether or not the stall is this miss's fault. fe_bound_cycles only counts the
@@ -1040,6 +1057,9 @@ static inline void icache_process_ops(Stage_Data* cur_data, Flag fetched_from_uo
     STAT_EVENT(op->proc_id, ORACLE_ON_PATH_INST_MEM + (op->uop->mem_type == NOT_MEM) + 2 * op->off_path);
 
     op_set_fetch_cycle(op, cycle_count);
+
+    if (PDIP_ENABLE && !fetched_from_uop_cache)
+      pdip_mark_op(ic->proc_id, op);
 
     /* add to sequential op list */
     add_to_seq_op_list(td, op);
@@ -1178,6 +1198,9 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
         wp_process_icache_evicted(line_info, req, &repl_line_addr2);
         if (EIP_ENABLE)
           eip_cache_fill(ic->proc_id, req->addr, repl_line_addr2);
+        if (repl_line_addr2 && line_info->pdip_prefetch)
+          STAT_EVENT(ic->proc_id, PDIP_PREF_UNUSED_EVICT);
+        line_info->pdip_prefetch = mem_req_is_type(req, MRT_IPRF) && req->pdip_pref;
         line_info->fetched_by_offpath = USE_CONFIRMED_OFF ? req->off_path_confirmed : req->off_path;
         line_info->offpath_op_addr = req->oldest_op_addr;
         line_info->offpath_op_unique = req->oldest_op_unique_num;
@@ -1203,6 +1226,8 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
 
     STAT_EVENT(ic->proc_id, ICACHE_FILL_CORRECT_REQ);
     ic->icache_miss_fulfilled = TRUE;
+    if (PDIP_ENABLE)
+      pdip_demand_fill(ic->proc_id, req->addr);
 
     if (req->demand_icache_emitted_cycle) {
       ASSERT(ic->proc_id, !req->fdip_emitted_cycle && (cycle_count - req->demand_icache_emitted_cycle > 0));
@@ -1246,6 +1271,9 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
         wp_process_icache_evicted(line_info, req, &repl_line_addr2);
         if (EIP_ENABLE)
           eip_cache_fill(ic->proc_id, req->addr, repl_line_addr2);
+        if (repl_line_addr2 && line_info->pdip_prefetch)
+          STAT_EVENT(ic->proc_id, PDIP_PREF_UNUSED_EVICT);
+        line_info->pdip_prefetch = mem_req_is_type(req, MRT_IPRF) && req->pdip_pref;
         line_info->fetched_by_offpath = USE_CONFIRMED_OFF ? req->off_path_confirmed : req->off_path;
         line_info->offpath_op_addr = req->oldest_op_addr;
         line_info->offpath_op_unique = req->oldest_op_unique_num;
@@ -1498,6 +1526,18 @@ static inline void log_stats_ic_miss() {
 static inline void log_stats_ic_hit() {
   STAT_EVENT(ic->proc_id, ICACHE_HIT);
   STAT_EVENT(ic->proc_id, ICACHE_HIT_ONPATH + ic->off_path);
+}
+
+/* PDIP: a demand fetch missed both the uop cache and the icache. If a PDIP prefetch for the
+   line is still in flight it was late (stats only); then start tracking the miss. */
+void pdip_icache_demand_miss() {
+  Mshr_Line* ifetch_line = mshr_line(mem_core_file(ic->proc_id, MRT_IFETCH), ic->line_addr);
+  Mem_Req* req = ifetch_line ? mshr_line_first(ifetch_line) : NULL;
+  if (req && req->pdip_pref) {
+    req->pdip_pref = FALSE;
+    STAT_EVENT(ic->proc_id, PDIP_PREF_LATE_ONPATH + ic->off_path);
+  }
+  pdip_demand_miss(ic->proc_id, ic->line_addr);
 }
 
 void log_stats_mshr_hit(Addr line_addr) {

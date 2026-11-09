@@ -145,6 +145,8 @@ struct Mem_Req_struct {
      it has trained the CIT as a costly fetch. */
   uns icarus_starved_cycles;
   Flag icarus_costly_trained;
+  /* PDIP: this request is a PDIP prefetch not yet reached by a demand fetch (stats only). */
+  Flag pdip_pref;
   Counter demand_icache_emitted_cycle; /* cycle when the request is emitted. */
   Counter emitted_cycle;               /* cycle when request of any type was first initialized */
   Counter priority;                    /* priority of the miss */
