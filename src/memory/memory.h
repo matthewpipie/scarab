@@ -187,6 +187,7 @@ typedef struct Pref_Req_Info_Struct {
   /* The prefetcher already looked this line up in dest's cache and missed, so the
      request is born one level below, holding an MSHR at dest. */
   Flag probed;
+  Counter queue_cycle; /* cycle_count when its prefetcher queued it */
 } Pref_Req_Info;
 
 typedef enum L1_Dyn_Partition_Policy_enum {
@@ -272,6 +273,10 @@ uns num_offchip_stall_reqs(uns proc_id);
 
 /* The MSHR file a miss of this type enters below the core. */
 Mshr* mem_core_file(uns8 proc_id, Mem_Req_Type type);
+
+/* REPL_LACS: the cache a slot names for this core (memory/lacs.c has no access to this
+   file's own MLC()/L1() macros). */
+Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot);
 
 /**************************************************************************************/
 /* Externs */

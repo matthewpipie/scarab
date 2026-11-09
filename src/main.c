@@ -151,6 +151,7 @@ Scarab's source code is organized as follows:
       + Common prefetching interface
         + prefetcher/pref_common.h
         + prefetcher/pref_2dc.h
+        + prefetcher/pref_berti.h
         + prefetcher/pref_ghb.h
         + prefetcher/pref_markov.h
         + prefetcher/pref_phase.h

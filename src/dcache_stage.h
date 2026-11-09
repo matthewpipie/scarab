@@ -78,6 +78,7 @@ typedef struct Dcache_Data_struct {
 
   Counter fetch_cycle;      /* when was this data fetched into the cache? */
   Counter onpath_use_cycle; /* when was this data last used by correct path? */
+  Counter pref_latency;     /* a prefetched line: cycles from its prefetch being queued to its fill */
 } Dcache_Data;
 
 /**************************************************************************************/

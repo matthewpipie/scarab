@@ -112,6 +112,12 @@ static inline void dcache_miss_extra_access(Op* op, Cache* cache, Addr line_addr
 static inline Dcache_Data* dcache_fill_get_cacheline(Mem_Req* req);
 static inline void dcache_fill_process_cacheline(Mem_Req* req, Dcache_Data* data);
 
+/* When a dcache fill's fetch began: when its prefetcher queued it, for a prefetch from the
+   prefetch framework (late ones included); otherwise when the request was made. */
+static inline Counter dcache_req_start(Mem_Req* req) {
+  return req->pref_queue_cycle ? req->pref_queue_cycle : req->emitted_cycle;
+}
+
 /**************************************************************************************/
 /* External Interfaces for CMP Model */
 
@@ -412,6 +418,14 @@ Flag dcache_fill_line(Mem_Req* req) {
 
   /* update cacheline fields and wake up dependent ops */
   dcache_fill_process_cacheline(req, data);
+  /* A load miss resolved, its own or a prefetch's that it caught in flight (promoted to a
+     load, so its fetch began when the prefetch was queued and its demand when it merged). */
+  if (req->type == MRT_DFETCH && (PREF_UPDATE_ON_WRONGPATH || !req->off_path)) {
+    Flag late = req->demand_match_prefetch;
+    pref_dl0_load_fetched(dc->proc_id, req->addr, late ? req->oldest_op_addr : req->loadPC,
+                          late ? req->demand_match_cycle : req->emitted_cycle, cycle_count - dcache_req_start(req),
+                          FALSE);
+  }
 
   cycle_count = old_cycle_count;
   return SUCCESS;
@@ -605,6 +619,8 @@ static inline void dcache_cacheline_hit(Op* op, Addr line_addr, Dcache_Data* lin
     // if framework is on use new prefetcher. otherwise old one
     if (line->HW_prefetch) {
       pref_dl0_pref_hit(dc->proc_id, line_addr, op->inst->addr, line->prefetcher_id);
+      if (op->uop->mem_type == MEM_LD)
+        pref_dl0_load_fetched(dc->proc_id, line_addr, op->inst->addr, cycle_count, line->pref_latency, TRUE);
       line->HW_prefetch = FALSE;
       STAT_EVENT(dc->proc_id, PREF_DCACHE_TOTAL_USED);
       STAT_EVENT(dc->proc_id, CORE_PREF_DCACHE_USED);
@@ -904,6 +920,7 @@ static inline void dcache_fill_process_cacheline(Mem_Req* req, Dcache_Data* data
   data->prefetcher_id = data->HW_prefetch ? req->prefetcher_id : 0;
   data->pref_loadPC = req->pref_loadPC;
   data->global_hist = req->global_hist;
+  data->pref_latency = data->HW_prefetch ? cycle_count - dcache_req_start(req) : 0;
 
   /* process req op */
   Op** op_p = (Op**)list_start_head_traversal(&req->op_ptrs);

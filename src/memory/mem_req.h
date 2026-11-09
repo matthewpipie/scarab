@@ -61,8 +61,8 @@ typedef enum Mem_Req_State_enum {
   MRS_BUS_IN_DONE,
   MRS_FILL_L1,
   MRS_FILL_MLC,
-  MRS_FILL_DONE, /* final state */
-  MRS_MERGED,    /* waiting on its line's entry at its deepest MSHR file */
+  MRS_FILL_DONE,   /* final state */
+  MRS_MERGED,      /* waiting on its line's entry at its deepest MSHR file */
   MRS_WB_HIT_DONE, /* served from a writeback still in flight */
 } Mem_Req_State;
 
@@ -97,20 +97,37 @@ typedef enum Destination_enum {
   DEST_MEM = 1 << 4
 } Destination;
 
+/* REPL_LACS: which level's cost-estimation state a hook in memory/lacs.c acts on. One slot
+   per level LACS can run at (the MLC and the LLC, which this codebase still calls "L1" --
+   see memory/memory.h); every Mem_Req that could miss at either level carries one snapshot
+   per slot, independent of which level(s) it actually runs LACS at. */
+typedef enum Lacs_Slot_enum {
+  LACS_SLOT_MLC,
+  LACS_SLOT_L1,
+  LACS_NUM_SLOTS
+} Lacs_Slot;
+
+/* REPL_LACS: what a level's snapshot on a request was taken for (Mem_Req.lacs_snap). */
+typedef enum Lacs_Snap_enum {
+  LACS_SNAP_NONE,     /* not missed at this level yet, a writeback, or already filled */
+  LACS_SNAP_DEMAND,   /* a demand was waiting when the snapshot was (re)taken */
+  LACS_SNAP_PREFETCH, /* a prefetch with no demand waiting */
+} Lacs_Snap;
+
 #define DRAM_REQ_STATUS_LIST(elem) elem(CONFLICT) elem(MISS) elem(HIT)
 
 DECLARE_ENUM(Dram_Req_Status, DRAM_REQ_STATUS_LIST, DRAM_REQ_ROW_);
 
 // typedef in globals/global_types.h
 struct Mem_Req_struct {
-  uns proc_id;             /* processor id that generates the request */
-  Flag off_path;           /* is the mem_req entirely off path? */
-  Flag off_path_confirmed; /* does the processor know that this is off-path -
-                              set after the branch resolves */
-  Flag conf_off_path;      /* is the mem_req off path by path confidence? */
+  uns proc_id;               /* processor id that generates the request */
+  Flag off_path;             /* is the mem_req entirely off path? */
+  Flag off_path_confirmed;   /* does the processor know that this is off-path -
+                                set after the branch resolves */
+  Flag conf_off_path;        /* is the mem_req off path by path confidence? */
   Mem_Req_Type memview_type; /* type as memview last counted it */
-  Mem_Req_State state;     /* what state is the miss in? */
-  Mem_Req_Type type;       /* what kind of miss is it? */
+  Mem_Req_State state;       /* what state is the miss in? */
+  Mem_Req_Type type;         /* what kind of miss is it? */
   /* Bit string recording all Mem_Req_Type(s) that were coalesced into this request. */
   uns types;
   Counter fdip_emitted_cycle; /* cycle when the request is emitted. */
@@ -165,6 +182,11 @@ struct Mem_Req_struct {
   Flag l1_miss_satisfied;                    /* did this request miss in L1 and it is already
                                                 satisfied? */
   Counter l1_miss_cycle;                     /* cycle when this req missed in L1 */
+  uns8 lacs_snap[LACS_NUM_SLOTS];            /* REPL_LACS: Lacs_Snap, per level -- reset in
+                                                mem_init_new_req since this struct is pool-
+                                                recycled across unrelated requests */
+  Counter lacs_iir[LACS_NUM_SLOTS];          /* REPL_LACS: issued-instruction-counter snapshot
+                                                taken when lacs_snap[slot] was last set */
   Counter mem_queue_cycle;                   /* cycle this request entered the mem_queue */
   Counter mem_crit_path_at_entry;            /* DVFS perf pred: the global critical path
                                                 estimate when the req entered the memory
@@ -178,10 +200,18 @@ struct Mem_Req_struct {
                                                  in flight, summed across every op merged into it */
   Counter ld_bound_cycles;                   /* REPL_MLP: subset of ld_window_cycles the core was
                                                  backend/memory-bound */
+  Counter rob_stall_cycles;                  /* Miss cost (stats only): cycles nothing retired
+                                                 because the ROB head was a load waiting on this */
+  Counter fe_stall_cycles;                   /* Miss cost (stats only): cycles the backend got no
+                                                 ops while the on-path icache waited on this */
   Counter unique_num;                        /* unique num that allocated this request - for icache
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */
   Flag demand_match_prefetch;                /* is this a prefetch req matched by a demand? */
+  Counter demand_match_cycle;                /* when a demand folded into this prefetch, promoting it (0 if
+                                                none) */
+  Counter pref_queue_cycle;                  /* a prefetch from the prefetch framework: when its prefetcher
+                                                queued it (0 otherwise) */
   Flag bw_prefetch;                          /* is this request a bandwidth prefetch? */
   Flag bw_prefetchable;                      /* would this request be a bandwidth prefetch if there
                                                 was more BW? */
