@@ -125,6 +125,35 @@ DEF_PARAM(prefetch_update_lru_l1, PREFETCH_UPDATE_LRU_L1, Flag, Flag, TRUE, )
 /* Width of the PSEL saturating counter that picks the followers' policy. */
 DEF_PARAM(drrip_psel_bits, DRRIP_PSEL_BITS, uns, uns, 10, )
 
+/* REPL_LACS (REPL_LACS value for --mlc_cache_repl_policy / --l1_cache_repl_policy; Kharbutli
+   & Sheikh, IEEE TC 2014) at any cache level: classifies each miss by how many instructions
+   the issuing core issued while it was outstanding (numIssued). See the top-of-file comment
+   in memory/lacs.c for the full adaptation algorithm these knobs drive. */
+/* Period length in trained fills (paper: 16K LLC misses, Step A) and history-table index
+   width (paper section 4.3: 16K entries). */
+DEF_PARAM(lacs_period_log2, LACS_PERIOD_LOG2, uns, uns, 14, )
+DEF_PARAM(lacs_hist_bits, LACS_HIST_BITS, uns, uns, 14, )
+DEF_PARAM(lacs_thresh_init, LACS_THRESH_INIT, uns, uns, 50, )
+DEF_PARAM(lacs_thresh_step, LACS_THRESH_STEP, uns, uns, 4, )
+/* 0 = adaptive (default), 1 = always cost-sensitive, 2 = never (plain aging/RNG eviction). */
+DEF_PARAM(lacs_cs_mode, LACS_CS_MODE, uns, uns, 0, )
+/* Op2: the largest change in a period's average numIssued, in instructions, from the
+   previous period's that keeps cost-sensitivity on in adaptive mode (paper: 10). */
+DEF_PARAM(lacs_cs_tolerance, LACS_CS_TOLERANCE, uns, uns, 10, )
+DEF_PARAM(lacs_pref_insert_cost, LACS_PREF_INSERT_COST, uns, uns, 1, )
+DEF_PARAM(lacs_pref_insert_lookup, LACS_PREF_INSERT_LOOKUP, Flag, Flag, FALSE, )
+DEF_PARAM(lacs_wb_insert_cost, LACS_WB_INSERT_COST, uns, uns, 0, )
+DEF_PARAM(lacs_wb_insert_lookup, LACS_WB_INSERT_LOOKUP, Flag, Flag, FALSE, )
+/* Train from a prefetch's own miss window even if no demand ever merged into it. */
+DEF_PARAM(lacs_train_prefetch, LACS_TRAIN_PREFETCH, Flag, Flag, FALSE, )
+/* Only data-type misses (loads/stores/data prefetches) train or use LACS; instruction-side
+   misses always get the plain default cost. */
+DEF_PARAM(lacs_data_only, LACS_DATA_ONLY, Flag, Flag, FALSE, )
+/* lacs_note_issue skips off-path ops. */
+DEF_PARAM(lacs_onpath_only, LACS_ONPATH_ONLY, Flag, Flag, TRUE, )
+/* Run LACS's training/stats on a cache even if it isn't actually running REPL_LACS. */
+DEF_PARAM(lacs_profile, LACS_PROFILE, Flag, Flag, FALSE, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be

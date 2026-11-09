@@ -59,6 +59,7 @@
 #include "cache_part.h"
 #include "cmp_model.h"
 #include "icache_stage.h"
+#include "lacs.h"
 #include "mem_req.h"
 #include "op.h"
 #include "statistics.h"
@@ -693,6 +694,16 @@ static inline Stat_Enum mem_reject_stat(Mshr* mshr) {
   return stat;
 }
 
+_Static_assert(MSHR_ICACHE == 0 && REJECTED_L1_WB_FULL - REJECTED_ICACHE_MSHR_FULL == MSHR_NUM_FILES - 1,
+               "REJECTED_*_FULL does not list every Mshr_File in order");
+
+/* Counts a request turned away because the file it would enter is full, under the level
+   that looks the file up and under the file itself. */
+static inline void mem_stat_reject(uns8 proc_id, Mshr* mshr) {
+  STAT_EVENT(proc_id, mem_reject_stat(mshr));
+  STAT_EVENT(proc_id, REJECTED_ICACHE_MSHR_FULL + mshr->file);
+}
+
 /* A level's writeback file is looked up by the same cache as its miss file. The icache
    never holds a dirty line, so it has none. */
 static inline Mshr* mem_wb_file(Mshr* miss) {
@@ -725,6 +736,12 @@ static inline Flag mem_req_type_is_inst(Mem_Req_Type type) {
    data, which changes nothing: the MLC inserts a writeback either way. */
 static inline Flag mem_exclusive_mlc_for(Mem_Req_Type type) {
   return mem_req_type_is_inst(type) ? mem_exclusive_mlc_icache() : mem_exclusive_mlc_dcache();
+}
+
+/* REPL_LACS: the cache a slot names for this core -- MLC()/L1() are this file's own
+   macros, not visible to memory/lacs.c. */
+Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot) {
+  return (slot == LACS_SLOT_MLC) ? &MLC(proc_id)->cache : &L1(proc_id)->cache;
 }
 
 /* The file a miss below the core enters: the icache's or the dcache's, each waiting at
@@ -928,6 +945,14 @@ void debug_memory() {
 /**************************************************************************************/
 /* update_memory: */
 
+/* Samples a file for this L1 cycle: the entries in use, and whether all of them are. */
+static inline void mem_stat_mshr_pressure(uns8 proc_id, Mshr* mshr, Stat_Enum occupancy, Stat_Enum full_cycles) {
+  uns in_use = mshr_count(mshr);
+  INC_STAT_EVENT(proc_id, occupancy, in_use);
+  if (in_use >= mshr->size)
+    STAT_EVENT(proc_id, full_cycles);
+}
+
 void update_on_chip_memory_stats() {
   STAT_EVENT_ALL(L1_CYCLE);
   STAT_EVENT(0, MIN2(MEM_REQ_DEMANDS__0 + mem_req_demand_entries / 4, MEM_REQ_DEMANDS_64));
@@ -941,7 +966,11 @@ void update_on_chip_memory_stats() {
     INC_STAT_EVENT(proc_id, CORE_MLP, mem->uncores[proc_id].num_outstanding_l1_misses);
     Counter l1_lines = GET_TOTAL_STAT_EVENT(proc_id, NORESET_L1_FILL) - GET_TOTAL_STAT_EVENT(proc_id, NORESET_L1_EVICT);
     INC_STAT_EVENT(proc_id, L1_LINES, l1_lines);
+    mem_stat_mshr_pressure(proc_id, &mem->uncores[proc_id].icache_mshr, ICACHE_MSHR_OCCUPANCY, ICACHE_MSHR_FULL_CYCLES);
+    mem_stat_mshr_pressure(proc_id, &mem->uncores[proc_id].dcache_mshr, DCACHE_MSHR_OCCUPANCY, DCACHE_MSHR_FULL_CYCLES);
   }
+  mem_stat_mshr_pressure(0, &mem->mlc_mshr, MLC_MSHR_OCCUPANCY, MLC_MSHR_FULL_CYCLES);
+  mem_stat_mshr_pressure(0, &mem->l1_mshr, L1_MSHR_OCCUPANCY, L1_MSHR_FULL_CYCLES);
 }
 
 /**
@@ -1329,6 +1358,7 @@ static Flag mem_process_l1_miss_access(Mem_Req* req, Addr* line_addr, L1_Data* d
   /* Mark the request as L1_miss */
   req->l1_miss = TRUE;
   req->l1_miss_cycle = cycle_count;
+  lacs_note_miss(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
 
   return TRUE;
 }
@@ -1372,6 +1402,7 @@ static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data*
   /* Mark the request as MLC_miss */
   req->mlc_miss = TRUE;
   req->mlc_miss_cycle = cycle_count;
+  lacs_note_miss(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
 
   if ((req->type == MRT_WB) || (req->type == MRT_WB_NODIRTY)) {
     // if the request is a write back request then the processor just insert the
@@ -1399,7 +1430,7 @@ static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data*
   /* Descending admits the request to the LLC, so it is the LLC's budget that gates;
      without room the request stays in the dcache_mshr and retries. */
   if (mshr_full(&mem->mlc_mshr, req->addr)) {
-    STAT_EVENT(req->proc_id, mem_reject_stat(&mem->mlc_mshr));
+    mem_stat_reject(req->proc_id, &mem->mlc_mshr);
     return FALSE;
   }
 
@@ -2145,6 +2176,11 @@ static void mem_merge_at_level(Mshr* level, Mem_Req* req) {
                              fetcher->prefetcher_id);
     }
     fetcher->demand_match_prefetch = TRUE;
+    /* REPL_LACS: whichever file this merge is at, the fetcher may already have missed the MLC,
+       the LLC, or both. Retake each level's snapshot that is still a prefetch's; a level not
+       missed yet snapshots as a demand at its own miss, since demand_match_prefetch is set. */
+    lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(fetcher->proc_id)->cache, fetcher, req->type);
+    lacs_note_demand_merge(LACS_SLOT_L1, &L1(fetcher->proc_id)->cache, fetcher, req->type);
   }
   fetcher->priority = MIN2(fetcher->priority, req->priority);
   mshr_add(level, req);
@@ -2246,6 +2282,11 @@ Flag mem_adjust_matching_request(Mem_Req* req, Mem_Req_Type type, Addr addr, uns
 
       pref_ul1_pref_hit_late(req->proc_id, req->addr, req->loadPC, req->global_hist, req->prefetcher_id);
       req->demand_match_prefetch = TRUE;
+      /* REPL_LACS: req->state names the next lookup, not the last miss, so req may already
+         have missed the MLC, the LLC, or both. Retake each level's snapshot that is still a
+         prefetch's; a level not missed yet snapshots as a demand at its own miss. */
+      lacs_note_demand_merge(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req, type);
+      lacs_note_demand_merge(LACS_SLOT_L1, &L1(req->proc_id)->cache, req, type);
       req->type = type;  // type promotion
       req->done_func = done_func;
       // if (DRAM_SCHED == DRAM_SCHED_FAIR_QUEUING_2LEVEL) {
@@ -2435,6 +2476,14 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->l1_miss = FALSE;
   new_req->l1_miss_satisfied = FALSE;
   new_req->l1_miss_cycle = MAX_CTR;
+  /* This struct is pool-recycled across unrelated requests (new_mem_req pulls it back out of
+     mem->req_pool_free_list); without resetting these, a recycled request would inherit a
+     stale lacs_snap from whatever request last occupied this slot, and lacs_note_miss's
+     "already snapshotted" guard would then skip taking a real snapshot for it. */
+  for (uns lacs_slot = 0; lacs_slot < LACS_NUM_SLOTS; lacs_slot++) {
+    new_req->lacs_snap[lacs_slot] = LACS_SNAP_NONE;
+    new_req->lacs_iir[lacs_slot] = 0;
+  }
   new_req->oldest_op_unique_num = (Counter)0;
   new_req->oldest_op_op_num = (Counter)0;
   new_req->oldest_op_addr = (Addr)0;
@@ -2530,8 +2579,11 @@ static Flag mem_enter_dram(Mem_Req* req) {
     ASSERT(req->proc_id, !dram_match || dram_match->type == MRT_WB || dram_match->type == MRT_WB_NODIRTY);
   }
   req->state = MRS_MEM_NEW;
-  if (mshr_full(&mem->l1_mshr, req->addr) || !ramulator_send(req)) {
+  Flag l1_full = mshr_full(&mem->l1_mshr, req->addr);
+  if (l1_full || !ramulator_send(req)) {
     STAT_EVENT(req->proc_id, mem_reject_stat(&mem->l1_mshr));
+    if (l1_full)
+      STAT_EVENT(req->proc_id, REJECTED_L1_MSHR_FULL);
     return FALSE;
   }
   mshr_add(&mem->l1_mshr, req);
@@ -2642,7 +2694,7 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
      one, and a prefetch leaves the icache's and dcache's demand reserve free. */
   Flag join = mshr_line(entering, addr) != NULL;
   if (mshr_full(entering, addr)) {
-    STAT_EVENT(proc_id, mem_reject_stat(entering));
+    mem_stat_reject(proc_id, entering);
     return FALSE;
   }
   uns reserve = entering->file == MSHR_ICACHE   ? ICACHE_MSHR_DEMAND_RESERVE
@@ -2736,10 +2788,12 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
       case DEST_MLC:
         new_req->mlc_miss = TRUE;
         new_req->mlc_miss_cycle = cycle_count;
+        lacs_note_miss(LACS_SLOT_MLC, &MLC(proc_id)->cache, new_req);
         break;
       case DEST_L1:
         new_req->l1_miss = TRUE;
         new_req->l1_miss_cycle = cycle_count;
+        lacs_note_miss(LACS_SLOT_L1, &L1(proc_id)->cache, new_req);
         break;
       default:
         printf("%s: unexpected destination %d\n", __func__, destination);
@@ -2791,7 +2845,7 @@ static Flag new_mem_wb_req(Mshr* target, Mem_Req_Type type, uns8 proc_id, Addr a
   ASSERTM(proc_id, !mshr_line(target, addr), "%s: a second writeback to line 0x%s\n", mshr_name(target),
           hexstr64s(addr));
   if (mshr_full(target, addr)) {
-    STAT_EVENT(proc_id, mem_reject_stat(target));
+    mem_stat_reject(proc_id, target);
     return FALSE;
   }
 
@@ -3157,6 +3211,7 @@ Flag l1_fill_line(Mem_Req* req) {
   }
 
   mlp_stage_fill_boost(&L1(req->proc_id)->cache, req);
+  lacs_fill(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3318,12 +3373,20 @@ Flag mlc_fill_line(Mem_Req* req) {
     mlc_miss_is_satisfied(req);
     return TRUE;
   }
+  /* An MLC prefetch that promoted a dirty line out of an exclusive LLC carries the only
+     copy. Whichever line ends up holding it below -- a new one, or one already resident
+     -- must be dirty, or its eviction drops the data. mem_invalidate_on_promote() put
+     the dirty bit in dirty_l0, the field a core-bound fill hands to the dcache; an MLC
+     prefetch has no op, so nothing else sets it. */
+  Flag promoted_dirty = req->destination == DEST_MLC && req->dirty_l0;
+  if (promoted_dirty)
+    STAT_EVENT(req->proc_id, EXCL_PROMOTE_DIRTY_TO_MLC);
   /* Another request already filled the line: inserting it again would evict a victim
      the insert then keeps (cache_insert reuses the line's own way). */
   Addr resident_addr;
   MLC_Data* resident = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &resident_addr, FALSE);
   if (resident) {
-    resident->dirty |= (req->type == MRT_WB);
+    resident->dirty |= (req->type == MRT_WB) || promoted_dirty;
     mlc_miss_is_satisfied(req);
     return TRUE;
   }
@@ -3334,7 +3397,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     L1_Data* dup = (L1_Data*)cache_access(&L1(req->proc_id)->cache, req->addr, &dup_addr, FALSE);
     if (dup) {
       /* A writeback is the newer copy: the resident line keeps its dirty bit. */
-      dup->dirty |= (req->type == MRT_WB);
+      dup->dirty |= (req->type == MRT_WB) || promoted_dirty;
       STAT_EVENT(req->proc_id, EXCL_FILL_DUP_SKIPPED_MLC);
       mlc_miss_is_satisfied(req);
       return TRUE;
@@ -3476,6 +3539,7 @@ Flag mlc_fill_line(Mem_Req* req) {
   }
 
   mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
+  lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3542,6 +3606,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     mshr_remove(&mem->mlc_wb, wb);
     mem_free_req(wb);
   }
+  data->dirty |= promoted_dirty;
   data->prefetch = req->type == MRT_DPRF || req->type == MRT_IPRF || req->type == MRT_UOCPRF ||
                    req->type == MRT_FDIPPRFON || req->type == MRT_FDIPPRFOFF || req->type == MRT_FDIPPRFALT ||
                    req->demand_match_prefetch;
