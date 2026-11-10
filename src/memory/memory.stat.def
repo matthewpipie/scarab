@@ -61,10 +61,10 @@ DEF_STAT(  ICACHE_MISS_ONPATH		   , DIST  , NO_RATIO  )
 DEF_STAT(  ICACHE_MISS_OFFPATH		   , DIST  , NO_RATIO  )
 
 DEF_STAT(  ICACHE_MISS_NOT_PREFETCHED                  , DIST , NO_RATIO  )
-DEF_STAT(  ICACHE_MISS_MSHR_HIT_FDIP_STALE_MAP        , COUNT, NO_RATIO  )
-DEF_STAT(  ICACHE_MISS_PREFETCHED_AND_EVICTED_BY_IFETCH, COUNT, NO_RATIO  )
-DEF_STAT(  ICACHE_MISS_PREFETCHED_AND_EVICTED_BY_FDIP  , COUNT, NO_RATIO  )
-DEF_STAT(  ICACHE_MISS_MSHR_HIT_PREFETCHED_OFFPATH    , COUNT, NO_RATIO  )
+DEF_STAT(  ICACHE_MISS_MSHR_HIT_FDIP_STALE_MAP        , COUNT , NO_RATIO  )
+DEF_STAT(  ICACHE_MISS_PREFETCHED_AND_EVICTED_BY_IFETCH, COUNT , NO_RATIO  )
+DEF_STAT(  ICACHE_MISS_PREFETCHED_AND_EVICTED_BY_FDIP  , COUNT , NO_RATIO  )
+DEF_STAT(  ICACHE_MISS_MSHR_HIT_PREFETCHED_OFFPATH    , COUNT , NO_RATIO  )
 DEF_STAT(  ICACHE_MISS_MSHR_HIT_PREFETCHED_ONPATH     , DIST , NO_RATIO  )
 
 DEF_STAT(  ICACHE_HIT_ONPATH		   , DIST  , NO_RATIO  )
@@ -373,33 +373,62 @@ DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
 
-// mlp_oracle (memory.param.def), per side (I instruction, D data). MARKED_LINES / MARKED_ACCESSES:
-// marks made (a line marked again after a lapse counts again), and MLC lookups of lines while
-// marked (merges into a miss in flight aside). CTRL_*: the same for the control's picks, _MARKED
-// the picks that were marked at the time, _NO_PICK picks that found no unpicked line. SHADOW_HIT:
-// misses on marked lines whose earlier miss had come back, which mlp_oracle 2 forces to hit
-// (counted in every mode). MARK_LAPSED / CTRL_LAPSED: marks and picks mlp_oracle_window let go;
-// CTRL_DROPPED: picks dropped to keep the control as large as the marked set.
+// mlp_oracle (memory.param.def), per side (I instruction, D data). A miss is as mlp_oracle defines
+// it. Line level, for the reuse stats: MARKED_LINES / MARKED_ACCESSES: lines marked, and MLC lookups
+// of lines since they were marked (merges into a miss in flight aside); CTRL_*: the same for mode
+// 1's line-level control, _MARKED the picks that were marked at the time, _NO_PICK picks that found
+// no unpicked line. MISSES: misses, forced ones included; MISSES_MARKED: the ones that came back
+// marked, which is what mode 2 forces when it replays this run. FORCED: misses this run forced;
+// FORCED_REF_HIT: of those, the ones mlp_oracle_install 0 forced because they hit in the
+// reference. Replay (mlp_oracle_ref): REF_MATCHED misses that lined up with a reference miss,
+// _MARKED / _CTRL those whose reference miss was marked / drawn for the control (in any mode);
+// REF_UNMATCHED misses that lined up with none; REF_SKIPPED reference misses passed over, counted
+// when the line next misses. REF_MISSES, REF_MARKED, REF_MARKED_LINES, REF_CTRL, REF_CTRL_LINES and
+// REF_CTRL_MARKED describe the whole reference (misses, marked ones and the lines they fall on, the
+// control's draw and its lines, and the draws that are marked): they are counted when the
+// reference is read, early in warmup, so they show only in the _total_ columns.
 DEF_STAT(  MLP_ORACLE_I_MARKED_LINES           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_MARKED_ACCESSES        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_LINES             , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_LINES_MARKED      , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_ACCESSES          , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_NO_PICK           , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_I_SHADOW_HIT             , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_I_MARK_LAPSED            , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_I_CTRL_LAPSED            , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_I_CTRL_DROPPED           , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_MISSES                 , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_MISSES_MARKED          , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_FORCED                 , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_FORCED_REF_HIT         , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MATCHED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MATCHED_MARKED     , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MATCHED_CTRL       , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_UNMATCHED          , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_SKIPPED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MISSES             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MARKED             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MARKED_LINES       , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_CTRL               , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_CTRL_LINES         , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_CTRL_MARKED        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_MARKED_LINES           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_MARKED_ACCESSES        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_LINES             , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_LINES_MARKED      , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_ACCESSES          , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_NO_PICK           , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_D_SHADOW_HIT             , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_D_MARK_LAPSED            , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_D_CTRL_LAPSED            , COUNT , NO_RATIO  )
-DEF_STAT(  MLP_ORACLE_D_CTRL_DROPPED           , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_MISSES                 , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_MISSES_MARKED          , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_FORCED                 , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_FORCED_REF_HIT         , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MATCHED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MATCHED_MARKED     , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MATCHED_CTRL       , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_UNMATCHED          , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_SKIPPED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MISSES             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MARKED             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MARKED_LINES       , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_CTRL               , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_CTRL_LINES         , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_CTRL_MARKED        , COUNT , NO_RATIO  )
 // FORCED_HIT: hits this run forced, _DEMAND those by demand requests. INSTALL_RETRY: forced hits
 // that waited a cycle for a port or writeback slot. LLC_INVAL / LLC_FILL: forced hits that took the
 // line out of an exclusive LLC / filled a non-exclusive one. NOT_INSTALLED: forced hits whose line
@@ -410,6 +439,37 @@ DEF_STAT(  MLP_ORACLE_INSTALL_RETRY            , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_LLC_INVAL                , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_LLC_FILL                 , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_NOT_INSTALLED            , COUNT , NO_RATIO  )
+// MLP_ORACLE_REF_OFFSET_*: how far apart, in retired instructions at the lookup, misses and the
+// reference misses they line up with are: bucket 0 is 0 apart, b in 1..24 [2^(b-1), 2^b), 25 2^24
+// and up. _EARLY / _LATE: those this run looked up before / after the reference did.
+DEF_STAT(  MLP_ORACLE_REF_EARLY                , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_LATE                 , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_0             , DIST  , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_1             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_2             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_3             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_4             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_5             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_6             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_7             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_8             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_9             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_10            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_11            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_12            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_13            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_14            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_15            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_16            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_17            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_18            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_19            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_20            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_21            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_22            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_23            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_24            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_REF_OFFSET_25            , DIST  , NO_RATIO  )
 // mlp_oracle reuse stats, per side (I, D) and class: MARKED and UNMARKED lines at the time of the
 // lookup, which together are all lines, and CTRL, the control's lines (counted in one of the other
 // two as well). A sample is an MLC lookup of a line looked up before (merges into a miss in flight

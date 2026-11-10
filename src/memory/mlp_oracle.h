@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-/* Sides of the hierarchy, as bits: what mlp_oracle_mark and mlp_oracle_pool take. */
+/* Sides of the hierarchy, as bits, as mlp_oracle_side and marked_sides take them. */
 #define MLP_SIDE_INSTR 1
 #define MLP_SIDE_DATA 2
 
@@ -52,13 +52,14 @@ uns mlp_req_side(Mem_Req* req);
 
 /* The MLC looked req's line up; hit is whether the line was there. Once per request, and never
    for a writeback. in_flight is whether an earlier miss on the line is still on its way back, so
-   this one will wait on it. Records the reuse stats, and returns whether mlp_oracle forces the
-   access to hit. */
+   this one will wait on it. Records the reuse stats, lines a miss up with the reference
+   (mlp_oracle_ref), and returns whether mlp_oracle forces the access to hit. */
 Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight);
 
 /* req's MLC miss has come back; marked_sides is what REPL_MLP's marking says about it
    (MLP_SIDE_* bits, 0 for unmarked). The line has now been seen, so later accesses are reuses.
-   Safe to repeat for the same request. */
+   The first return for a miss settles its mark for mlp_oracle_record. Safe to repeat for the same
+   request. */
 void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns marked_sides);
 
 /* The MLC inserted req's line: any fill, writebacks and forced installs included. */
