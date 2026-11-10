@@ -2996,6 +2996,17 @@ static Flag mlp_instr_marked(Mem_Req* req) {
   return !MLP_INSTR_STARVE || req->fe_starve_cycles >= MLP_INSTR_STARVE_MIN;
 }
 
+/* Count v in a 16-bucket log2 histogram starting at stat base: 0 in bucket 0, [2^(k-1), 2^k) in
+   bucket k, 2^14 and up in bucket 15. */
+static void mlp_stat_log2(uns proc_id, Stat_Enum base, Counter v) {
+  uns bucket = 0;
+  while (v && bucket < 15) {
+    v >>= 1;
+    bucket++;
+  }
+  STAT_EVENT(proc_id, base + bucket);
+}
+
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
   if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
@@ -3004,7 +3015,7 @@ static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
   if (req->op_count) {
     if (req->ld_window_cycles) {
       double frac = (double)req->ld_bound_cycles / (double)req->ld_window_cycles;
-      if (frac > (double)MLP_LIN_DATA_THRESH)
+      if (frac > (double)MLP_LIN_DATA_THRESH && req->ld_bound_cycles >= MLP_LIN_DATA_BOUND_MIN)
         boost = MLP_LIN_DATA_LAMBDA;
     }
     if (boost > 0.0) {
@@ -3568,6 +3579,10 @@ Flag mlc_fill_line(Mem_Req* req) {
     }
   }
 
+  if (req->ld_window_cycles) {  // stats only (MLP_LD_*_LOG2 in memory.stat.def)
+    mlp_stat_log2(req->proc_id, MLP_LD_BOUND_LOG2_0, req->ld_bound_cycles);
+    mlp_stat_log2(req->proc_id, MLP_LD_HEAD_LOG2_0, req->rob_stall_cycles);
+  }
   mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);

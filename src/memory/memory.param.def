@@ -238,14 +238,21 @@ DEF_PARAM(no_repl_after_queue_size, NO_REPL_AFTER_QUEUE_SIZE, uns, uns, 0,)
 
 /* REPL_MLP (--mlc_cache_repl_policy 9 / --l1_cache_repl_policy 9): evict
    argmin(Recency + boost), Recency the LRU stack position (0 = LRU). A line filled by a load
-   classified data-bound (its stall-cycles-over-window-cycles fraction cleared mlp_lin_data_thresh)
-   gets a flat boost of mlp_lin_data_lambda, and one filled by an instruction fetch marked
+   classified data-bound (its stall-cycles-over-window-cycles fraction cleared mlp_lin_data_thresh,
+   and its stall cycles reached mlp_lin_data_bound_min) gets a flat boost of mlp_lin_data_lambda,
+   and one filled by an instruction fetch marked
    instruction-bound (mlp_instr_mark) gets mlp_lin_instr_lambda; everything else gets 0, so both
    at their 0.0 default reproduces plain LRU. Recommended settings, and the runs behind them, are in
    docs/repl-mlp.md. */
 DEF_PARAM(mlp_lin_data_lambda, MLP_LIN_DATA_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.7, )
+/* mlp_lin_data_bound_min: also require ld_bound_cycles >= this to mark a data fill, an absolute
+   count next to the ratio, as mlp_instr_starve_min is on the instruction side. ld_bound_cycles is
+   summed over the loads merged into the request, so it counts load-cycles, not cycles. For the
+   count alone, set mlp_lin_data_thresh 0: the ratio then only asks for one bound cycle, which any
+   minimum of 1 or more already does. 0 = off. */
+DEF_PARAM(mlp_lin_data_bound_min, MLP_LIN_DATA_BOUND_MIN, uns, uns, 0, )
 DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
 /* mlp_instr_mark: which instruction fills REPL_MLP marks instruction-bound. Only a fill a demand
    fetch reached can be marked: one a demand fetch created, or a prefetch a demand fetch merged
