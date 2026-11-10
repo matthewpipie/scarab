@@ -331,6 +331,13 @@ DEF_PARAM(mlp_duel_step, MLP_DUEL_STEP, float, float, 4.0, )
 DEF_PARAM(mlp_duel_init_lambda, MLP_DUEL_INIT_LAMBDA, float, float, 8.0, )
 DEF_PARAM(mlp_duel_lambda_min, MLP_DUEL_LAMBDA_MIN, float, float, 0.0, )
 DEF_PARAM(mlp_duel_lambda_max, MLP_DUEL_LAMBDA_MAX, float, float, 64.0, )
+/* mlp_duel_marked_hit_metric: FALSE (default) scores each population by its mean
+   stall-cycles-per-fill (lower is better -- see mlp_duel_margin). TRUE instead scores each
+   population by its marked-hit rate -- hits on lines whose mlp_mark is non-NONE, divided by
+   all demand accesses to that population's sets (higher is better) -- and flips the ratio
+   direction accordingly, so mlp_duel_margin still means "the winning role must beat the
+   follower population by at least this ratio" either way. */
+DEF_PARAM(mlp_duel_marked_hit_metric, MLP_DUEL_MARKED_HIT_METRIC, Flag, Flag, FALSE, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.

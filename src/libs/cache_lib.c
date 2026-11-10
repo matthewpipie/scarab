@@ -341,6 +341,7 @@ void* cache_access_impl(Cache* cache, Addr addr, Addr* line_addr, Flag* tag_alia
     line_data = access_ideal_storage(cache, set, tag, tag_full, addr, tag_aliasing);
 
   else {
+    Flag mlp_hit_marked = FALSE;
     for (ii = 0; ii < cache->assoc; ii++) {
       Cache_Entry* line = &cache->entries[set][ii];
 
@@ -358,12 +359,18 @@ void* cache_access_impl(Cache* cache, Addr addr, Addr* line_addr, Flag* tag_alia
           update_repl_policy(cache, line, set, ii, FALSE);
           DEBUG(0, "(%s, %d) [0x%x, 0x%x]: in access\n\n", cache->name, cache->repl_policy, cache->num_sets,
                 cache->assoc);
+          if (cache->repl_policy == REPL_MLP)
+            mlp_hit_marked = line->mlp_mark != MLP_MARK_NONE;
         }
 
         *tag_aliasing = line->tag_full != tag_full;
         line_data = line->data;
       }
     }
+    /* mlp_duel_marked_hit_metric: record this demand access (hit or miss) once, regardless of
+       which way (if any) matched above -- a no-op when dueling is off for `cache`. */
+    if (update_repl && cache->repl_policy == REPL_MLP)
+      mlp_duel_record_access(cache, set, mlp_hit_marked);
   }
 
   /* Drive adaptive-index training/remapping on demand accesses. Done after the lookup

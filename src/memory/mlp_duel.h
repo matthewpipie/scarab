@@ -27,11 +27,13 @@
  *                 of 4 leader sets each (INS+, INS-, DATA+, DATA-, spread evenly across
  *                 the cache) probe +-mlp_duel_step on one dimension; every other set is a
  *                 follower running the currently-applied pair. Every period
- *                 (mlp_duel_period), the follower population's pooled stall-cycles-per-
- *                 request is compared against each probe role's mean per-set ratio; if the
- *                 follower/role ratio clears mlp_duel_margin, the single best-performing
- *                 candidate across both dimensions is rolled out to every set for the next
- *                 period.
+ *                 (mlp_duel_period), the follower population's score is compared against
+ *                 each probe role's mean per-set score; if the ratio between them clears
+ *                 mlp_duel_margin, the single best-performing candidate across both
+ *                 dimensions is rolled out to every set for the next period. The score is
+ *                 mean stall-cycles-per-fill by default (lower is better) or, with
+ *                 mlp_duel_marked_hit_metric, marked-hit rate (higher is better) --
+ *                 see mlp_duel.c's metric_ratio.
  *                 A no-op (dueling off, or this cache isn't running REPL_MLP): every
  *                 function below falls back to the raw CLI lambda or returns immediately.
  ***************************************************************************************/
@@ -68,6 +70,14 @@ float mlp_duel_effective_lambda(Cache* cache, uns set, Flag is_data);
    cycles count toward `set`'s accounting regardless of the fill's own type or the set's
    probe role. A no-op when dueling is off for `cache`. */
 void mlp_duel_record(Cache* cache, uns set, Counter bound_cycles);
+
+/* Record one demand cache access (hit or miss) into whichever population `set` belongs to --
+   dimension-blind, like mlp_duel_record. `hit_marked` is whether this access was a hit on a
+   line whose mlp_mark is non-NONE; it contributes to the population's marked-hit count only
+   when true, but every call (hit or miss) counts toward its access count, so marked-hit rate
+   is always hits-on-marked-lines over all accesses. Feeds mlp_duel_marked_hit_metric; a no-op
+   when dueling is off for `cache`. */
+void mlp_duel_record_access(Cache* cache, uns set, Flag hit_marked);
 
 /* Polled once per cycle (cmp_cycle, guarded by MLP_DUEL_ON): advances the shared period
    trigger and, when it fires, ends the period for every registered duel state. */

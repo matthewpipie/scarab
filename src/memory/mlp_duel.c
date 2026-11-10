@@ -62,6 +62,12 @@ typedef struct Mlp_Duel_State_struct {
   Counter follower_bound_sum; /* pooled, zeroed each period */
   Counter follower_req_count;
 
+  Counter* leader_access_count;     /* [4n], zeroed each period -- demand accesses, hit or miss */
+  Counter* leader_marked_hit_count; /* [4n], zeroed each period -- subset of the above that hit a
+                                        marked line */
+  Counter follower_access_count;    /* pooled, zeroed each period */
+  Counter follower_marked_hit_count;
+
   Flag have_prev_ref;
   double prev_follower_ref;   /* follower_metric as of the last committed lambda change */
   double follower_delta_sum;  /* accounting only: how far things drift since the last change */
@@ -88,7 +94,8 @@ static uns lambda_bucket(Mlp_Duel_State* s, float lambda);
 static Flag role_metric(Mlp_Duel_State* s, uns base, double* out_metric);
 static void mlp_duel_end_period(Mlp_Duel_State* s);
 static void mlp_duel_reset_period(Mlp_Duel_State* s);
-static double duel_ratio(double follower_metric, double role_metric);
+static double duel_ratio(double a, double b);
+static double metric_ratio(double follower_metric, double role_metric);
 
 /**************************************************************************************/
 
@@ -124,6 +131,8 @@ void mlp_duel_maybe_init(Cache* cache, Repl_Policy repl_policy) {
 
   s->leader_bound_sum = (Counter*)calloc(4 * n, sizeof(Counter));
   s->leader_req_count = (Counter*)calloc(4 * n, sizeof(Counter));
+  s->leader_access_count = (Counter*)calloc(4 * n, sizeof(Counter));
+  s->leader_marked_hit_count = (Counter*)calloc(4 * n, sizeof(Counter));
 
   s->have_prev_ref = FALSE;
   s->prev_follower_ref = 0.0;
@@ -179,6 +188,23 @@ void mlp_duel_record(Cache* cache, uns set, Counter bound_cycles) {
   }
 }
 
+void mlp_duel_record_access(Cache* cache, uns set, Flag hit_marked) {
+  Mlp_Duel_State* s = (Mlp_Duel_State*)cache->predictor;
+  if (!s)
+    return;
+
+  int slot = s->leader_slot[set];
+  if (slot < 0) {
+    s->follower_access_count++;
+    if (hit_marked)
+      s->follower_marked_hit_count++;
+  } else {
+    s->leader_access_count[slot]++;
+    if (hit_marked)
+      s->leader_marked_hit_count[slot]++;
+  }
+}
+
 void mlp_duel_cycle(void) {
   if (!g_duel_trigger || !trigger_fired(g_duel_trigger))
     return;
@@ -217,17 +243,21 @@ static uns lambda_bucket(Mlp_Duel_State* s, float lambda) {
   return (uns)b;
 }
 
-/* Mean of the per-set stall-cycles-per-request ratio over the n leader sets occupying
-   compact slots [base, base+n), skipping any slot with zero requests this period (not a
-   fair sample). FALSE (role ineligible this period) if every slot had zero requests. */
+/* Mean of the per-set score over the n leader sets occupying compact slots [base, base+n),
+   skipping any slot with zero accesses/requests this period (not a fair sample). The score
+   is mean stall-cycles-per-fill (leader_bound_sum/leader_req_count) by default, or marked-hit
+   rate (leader_marked_hit_count/leader_access_count) under mlp_duel_marked_hit_metric. FALSE
+   (role ineligible this period) if every slot had zero accesses/requests. */
 static Flag role_metric(Mlp_Duel_State* s, uns base, double* out_metric) {
+  Counter* sum_arr = MLP_DUEL_MARKED_HIT_METRIC ? s->leader_marked_hit_count : s->leader_bound_sum;
+  Counter* count_arr = MLP_DUEL_MARKED_HIT_METRIC ? s->leader_access_count : s->leader_req_count;
   double sum = 0.0;
   uns count = 0;
   for (uns g = 0; g < s->num_groups; g++) {
     uns slot = base + g;
-    if (s->leader_req_count[slot] == 0)
+    if (count_arr[slot] == 0)
       continue;
-    sum += (double)s->leader_bound_sum[slot] / (double)s->leader_req_count[slot];
+    sum += (double)sum_arr[slot] / (double)count_arr[slot];
     count++;
   }
   if (!count)
@@ -236,33 +266,48 @@ static Flag role_metric(Mlp_Duel_State* s, uns base, double* out_metric) {
   return TRUE;
 }
 
-/* follower_metric / role_metric: how many times worse (in stall-cycles-per-request) the
-   follower population is than this probe role. role_metric <= 0 (no stalls recorded in that
-   role's leader sets this period) can't be divided into, so it's handled specially: an actual
-   improvement (follower_metric > 0) is reported as an unbounded win, and "both zero" (no signal
-   either way) as a no-op ratio of 1.0, which no mlp_duel_margin > 1 will ever clear. */
-static double duel_ratio(double follower_metric, double role_metric) {
-  if (role_metric <= 0.0)
-    return follower_metric > 0.0 ? INFINITY : 1.0;
-  return follower_metric / role_metric;
+/* a / b, with b <= 0 (nothing to divide into) handled specially: an actual positive a is
+   reported as an unbounded win, and "both zero" (no signal either way) as a no-op ratio of
+   1.0, which no mlp_duel_margin > 1 will ever clear. */
+static double duel_ratio(double a, double b) {
+  if (b <= 0.0)
+    return a > 0.0 ? INFINITY : 1.0;
+  return a / b;
+}
+
+/* How many times better this probe role's score is than the follower population's, in
+   whichever direction "better" means for the active metric: lower stall-cycles-per-fill by
+   default (follower_metric / role_metric), or higher marked-hit rate under
+   mlp_duel_marked_hit_metric (role_metric / follower_metric). Either way, clearing
+   mlp_duel_margin means the same thing: this role is a clear enough win to adopt. */
+static double metric_ratio(double follower_metric, double role_metric) {
+  if (MLP_DUEL_MARKED_HIT_METRIC)
+    return duel_ratio(role_metric, follower_metric);
+  return duel_ratio(follower_metric, role_metric);
 }
 
 static void mlp_duel_reset_period(Mlp_Duel_State* s) {
   s->follower_bound_sum = 0;
   s->follower_req_count = 0;
+  s->follower_access_count = 0;
+  s->follower_marked_hit_count = 0;
   for (uns slot = 0; slot < 4 * s->num_groups; slot++) {
     s->leader_bound_sum[slot] = 0;
     s->leader_req_count[slot] = 0;
+    s->leader_access_count[slot] = 0;
+    s->leader_marked_hit_count[slot] = 0;
   }
 }
 
 static void mlp_duel_end_period(Mlp_Duel_State* s) {
-  if (!s->follower_req_count) {
+  Counter follower_sum = MLP_DUEL_MARKED_HIT_METRIC ? s->follower_marked_hit_count : s->follower_bound_sum;
+  Counter follower_count = MLP_DUEL_MARKED_HIT_METRIC ? s->follower_access_count : s->follower_req_count;
+  if (!follower_count) {
     /* Nothing to compare the leader populations against this period. */
     mlp_duel_reset_period(s);
     return;
   }
-  double follower_metric = (double)s->follower_bound_sum / (double)s->follower_req_count;
+  double follower_metric = (double)follower_sum / (double)follower_count;
 
   uns n = s->num_groups;
   double m_ins_plus, m_ins_minus, m_data_plus, m_data_minus;
@@ -274,7 +319,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
   Flag ins_candidate = FALSE, ins_plus_wins = FALSE;
   double ins_ratio = 0.0;
   if (have_ins_plus) {
-    double r = duel_ratio(follower_metric, m_ins_plus);
+    double r = metric_ratio(follower_metric, m_ins_plus);
     if (r > MLP_DUEL_MARGIN) {
       ins_candidate = TRUE;
       ins_ratio = r;
@@ -282,7 +327,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
     }
   }
   if (have_ins_minus) {
-    double r = duel_ratio(follower_metric, m_ins_minus);
+    double r = metric_ratio(follower_metric, m_ins_minus);
     if (r > MLP_DUEL_MARGIN && (!ins_candidate || r > ins_ratio)) {
       ins_candidate = TRUE;
       ins_ratio = r;
@@ -293,7 +338,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
   Flag data_candidate = FALSE, data_plus_wins = FALSE;
   double data_ratio = 0.0;
   if (have_data_plus) {
-    double r = duel_ratio(follower_metric, m_data_plus);
+    double r = metric_ratio(follower_metric, m_data_plus);
     if (r > MLP_DUEL_MARGIN) {
       data_candidate = TRUE;
       data_ratio = r;
@@ -301,7 +346,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
     }
   }
   if (have_data_minus) {
-    double r = duel_ratio(follower_metric, m_data_minus);
+    double r = metric_ratio(follower_metric, m_data_minus);
     if (r > MLP_DUEL_MARGIN && (!data_candidate || r > data_ratio)) {
       data_candidate = TRUE;
       data_ratio = r;
