@@ -317,21 +317,34 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
         would force.
      2  marked: once the marking has marked a fill of a line, every later MLC access to the line
         hits, demand or prefetch.
-     3  random control: as 2, for the control's lines instead of the marked ones. Each time the
-        marking marks a new line, the control picks one more line on the same side, at random from
-        that side's lines whose first miss has come back, with no filter (a marked line can be
-        picked too). So on each side both sets hold the same number of lines and grow at the same
-        times. mlp_oracle_ctrl_accesses also matches them in accesses.
+     3  random control: as 2, for the control's lines instead of the marked ones. The marking runs
+        in shadow, and on each side the control holds as many lines as are marked at every point:
+        each time a line is marked, the control picks one more line on the same side, at random
+        from that side's lines whose first miss has come back, with no filter (a marked line can be
+        picked too); each time a mark lapses (mlp_oracle_window), it drops one at random.
+        mlp_oracle_ctrl_accesses also matches the two in accesses.
      4  every line hits after its first miss: the ceiling for any policy on these sides.
-   A miss on a line whose earlier miss is still on its way waits for it as usual. A forced hit puts
-   the line back in the MLC at once, as its fill would have: an exclusive LLC gives its copy up, a
-   non-exclusive one is touched or filled, and the MLC inserts it with mlc_fill_line, victim and
-   all. So the caches hold about what LRU would, and only the miss latency is gone. */
+   A miss on a line whose earlier miss is still on its way waits for it as usual. */
 DEF_PARAM(mlp_oracle, MLP_ORACLE, uns, uns, 0, )
 /* mlp_oracle_side: which lines mlp_oracle covers: 1 instruction (fetches and instruction
    prefetches, marked by mlp_instr_mark and mlp_instr_starve), 2 data (loads, stores, data
    prefetches and writebacks, marked by mlp_lin_data_thresh), 3 both. Its stats are kept per side. */
 DEF_PARAM(mlp_oracle_side, MLP_ORACLE_SIDE, uns, uns, 1, )
+/* mlp_oracle_install: what a forced hit does to the caches.
+     1  puts the line back in the MLC at once, as its fill would have: an exclusive LLC gives its
+        copy up, a non-exclusive one is touched or filled, and the MLC inserts it with
+        mlc_fill_line, victim and all. The caches hold about what LRU would, and only the miss
+        latency is gone.
+     0  touches no cache, as perfect_mlc: once evicted, a forced line stays out of the MLC, and its
+        space goes to other lines. */
+DEF_PARAM(mlp_oracle_install, MLP_ORACLE_INSTALL, Flag, Flag, TRUE, )
+/* mlp_oracle_window: how long a mark lasts, in fills into the line's MLC set. 0: for good; every
+   later access to a marked line hits, however far apart. N: a miss more than N fills after the
+   line's last lookup, one REPL_MLP's fill-counted protection would have let go at a lambda of N, is
+   a real miss. The line loses its mark, and that miss's fill marks it again only if the miss
+   qualifies. A hit at any distance keeps the mark, as REPL_MLP keeps a resident line's. The
+   control's lines lapse the same way, and mode 4 forces only misses within N fills. */
+DEF_PARAM(mlp_oracle_window, MLP_ORACLE_WINDOW, uns, uns, 0, )
 /* mlp_oracle_ctrl_accesses: match the control's lines to the marked lines in MLC accesses as well
    as in number, roughly, per side. Each pick draws mlp_oracle_ctrl_choices lines at random and
    takes the one with the most accesses so far while the side's control lines (since they were

@@ -89,6 +89,9 @@ enum Oracle_Field {
   O_CTRL_ACCESSES,
   O_CTRL_NO_PICK,
   O_SHADOW_HIT,
+  O_MARK_LAPSED,
+  O_CTRL_LAPSED,
+  O_CTRL_DROPPED,
   O_FIELDS
 };
 
@@ -98,6 +101,7 @@ struct Line {
   bool seen = false;       /* a miss on it came back, or the MLC inserted it: later lookups are reuses */
   bool marked = false;     /* REPL_MLP's marking marked one of its fills */
   bool ctrl = false;       /* the control picked it */
+  uns ctrl_idx = 0;        /* where in its side's ctrl_set, while ctrl */
   Counter accesses = 0;    /* lookups since it was seen */
   Counter stamp_fills = 0; /* its set's fill count at its last lookup */
   Counter stamp_cycle = 0; /* and the cycle */
@@ -117,6 +121,8 @@ struct Core {
   std::vector<Counter> set_fills;      /* MLC inserts per set */
   Counter accesses = 0;                /* MLC lookups, writebacks and merges aside */
   Next next[SIDES + 1];                /* per side, and over both */
+  std::vector<Addr> ctrl_set[SIDES];   /* the control's lines */
+  Counter marked_live[SIDES] = {};     /* lines marked now */
   Counter marked_accesses[SIDES] = {}; /* lookups of lines since they were marked */
   Counter ctrl_accesses[SIDES] = {};   /* and since they were picked */
   uint64_t rng = 0;
@@ -176,31 +182,67 @@ void see(Core& c, Line& line, Addr line_addr) {
   c.pool[line.side].push_back(line_addr);
 }
 
+void add_ctrl(Core& c, Line& line, Addr line_addr) {
+  std::vector<Addr>& set = c.ctrl_set[line.side];
+  line.ctrl = true;
+  line.ctrl_idx = set.size();
+  set.push_back(line_addr);
+}
+
+void drop_ctrl(Core& c, Line& line) {
+  std::vector<Addr>& set = c.ctrl_set[line.side];
+  Addr last = set.back();
+  set[line.ctrl_idx] = last;
+  c.lines[last].ctrl_idx = line.ctrl_idx;
+  set.pop_back();
+  line.ctrl = false;
+}
+
 /* One more control line on this side, at random from the side's seen lines that are not picked
    yet. Matching accesses, it draws mlp_oracle_ctrl_choices of them and takes the one with the most
    accesses so far while the side's control lines trail its marked lines in accesses, and the
    fewest otherwise. */
-void pick_ctrl_line(Core& c, uns proc_id, uns side) {
+Flag pick_ctrl_line(Core& c, uns proc_id, uns side) {
   std::vector<Addr>& pool = c.pool[side];
   uns choices = MLP_ORACLE_CTRL_ACCESSES ? MAX2(MLP_ORACLE_CTRL_CHOICES, 1) : 1;
   Flag want_hot = c.ctrl_accesses[side] < c.marked_accesses[side];
   Line* best = nullptr;
+  Addr best_addr = 0;
   for (uns draw = 0, got = 0; got < choices && draw < 16 * choices && !pool.empty(); draw++) {
-    Line& cand = c.lines[pool[rand64(c) % pool.size()]];
+    Addr addr = pool[rand64(c) % pool.size()];
+    Line& cand = c.lines[addr];
     if (cand.ctrl)
       continue;
     got++;
-    if (!best || (want_hot ? cand.accesses > best->accesses : cand.accesses < best->accesses))
+    if (!best || (want_hot ? cand.accesses > best->accesses : cand.accesses < best->accesses)) {
       best = &cand;
+      best_addr = addr;
+    }
   }
   if (!best) {
     oracle_stat(proc_id, side, O_CTRL_NO_PICK);
-    return;
+    return FALSE;
   }
-  best->ctrl = true;
+  add_ctrl(c, *best, best_addr);
   oracle_stat(proc_id, side, O_CTRL_LINES);
   if (best->marked)
     oracle_stat(proc_id, side, O_CTRL_LINES_MARKED);
+  return TRUE;
+}
+
+/* mlp_oracle 1 and 3: keep the side's control as large as its marked set. Picks while it is
+   smaller; while it is larger, which only a lapsed mark makes it, drops one of its lines at
+   random. */
+void balance_ctrl(Core& c, uns proc_id, uns side) {
+  if (MLP_ORACLE != 1 && MLP_ORACLE != 3)
+    return;
+  std::vector<Addr>& set = c.ctrl_set[side];
+  while (set.size() < c.marked_live[side] && pick_ctrl_line(c, proc_id, side)) {
+  }
+  while (set.size() > c.marked_live[side]) {
+    drop_ctrl(c, c.lines[set[rand64(c) % set.size()]]);
+    oracle_stat(proc_id, side, O_CTRL_DROPPED);
+  }
 }
 
 /* The gap from the previous lookup of a marked line (on this side, or either) to this one. */
@@ -280,6 +322,7 @@ Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
   uns set;
   Addr line_addr;
   Line& line = line_of(c, mlc, req, &set, &line_addr);
+  Counter since = line.looked ? c.set_fills[set] - line.stamp_fills : 0;
   if (line.looked)
     record_reuse(c, req->proc_id, line, set, hit);
   line.looked = true;
@@ -289,6 +332,19 @@ Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
     return FALSE; /* its first miss has not come back: no reuse yet */
 
   uns side = line.side;
+  /* mlp_oracle_window: a miss more than the window's fills after the line's last lookup is one
+     REPL_MLP's protection would have let go. It is a real miss, the line loses its mark (and its
+     control pick), and the miss's fill can mark it again. */
+  Flag lapsed = !hit && MLP_ORACLE_WINDOW && since > MLP_ORACLE_WINDOW;
+  if (lapsed && line.marked) {
+    line.marked = false;
+    c.marked_live[side]--;
+    oracle_stat(req->proc_id, side, O_MARK_LAPSED);
+  }
+  if (lapsed && line.ctrl) {
+    drop_ctrl(c, line);
+    oracle_stat(req->proc_id, side, O_CTRL_LAPSED);
+  }
   line.accesses++;
   if (line.marked) {
     c.marked_accesses[side]++;
@@ -303,12 +359,15 @@ Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
 
   if (line.marked)
     oracle_stat(req->proc_id, side, O_SHADOW_HIT);
-  Flag force = (MLP_ORACLE == 2 && line.marked) || (MLP_ORACLE == 3 && line.ctrl) || MLP_ORACLE == 4;
+  Flag force = (MLP_ORACLE == 2 && line.marked) || (MLP_ORACLE == 3 && line.ctrl) || (MLP_ORACLE == 4 && !lapsed);
   if (force) {
     STAT_EVENT(req->proc_id, MLP_ORACLE_FORCED_HIT);
     if (mem_req_type_is_demand(req->type))
       STAT_EVENT(req->proc_id, MLP_ORACLE_FORCED_HIT_DEMAND);
   }
+  /* After this miss is decided, so a refill of the control cannot pick this line for it. */
+  if (lapsed)
+    balance_ctrl(c, req->proc_id, side);
   return force;
 }
 
@@ -323,10 +382,9 @@ void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns marked_sides) {
   see(c, line, line_addr);
   if ((marked_sides & side_bit) && !line.marked) {
     line.marked = true;
+    c.marked_live[line.side]++;
     oracle_stat(req->proc_id, line.side, O_MARKED_LINES);
-    /* The control holds as many lines as the marking has marked, picked as they are marked. */
-    if (MLP_ORACLE == 1 || MLP_ORACLE == 3)
-      pick_ctrl_line(c, req->proc_id, line.side);
+    balance_ctrl(c, req->proc_id, line.side);
   }
 }
 

@@ -374,10 +374,12 @@ DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
 
 // mlp_oracle (memory.param.def), per side (I instruction, D data). MARKED_LINES / MARKED_ACCESSES:
-// lines the marking marked, and MLC lookups of them since (merges into a miss in flight aside).
-// CTRL_*: the same for the control's lines, _MARKED the picks that were already marked, _NO_PICK
-// picks that found no unpicked line. SHADOW_HIT: misses on marked lines whose earlier miss had come
-// back, which mlp_oracle 2 forces to hit (counted in every mode).
+// marks made (a line marked again after a lapse counts again), and MLC lookups of lines while
+// marked (merges into a miss in flight aside). CTRL_*: the same for the control's picks, _MARKED
+// the picks that were marked at the time, _NO_PICK picks that found no unpicked line. SHADOW_HIT:
+// misses on marked lines whose earlier miss had come back, which mlp_oracle 2 forces to hit
+// (counted in every mode). MARK_LAPSED / CTRL_LAPSED: marks and picks mlp_oracle_window let go;
+// CTRL_DROPPED: picks dropped to keep the control as large as the marked set.
 DEF_STAT(  MLP_ORACLE_I_MARKED_LINES           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_MARKED_ACCESSES        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_LINES             , COUNT , NO_RATIO  )
@@ -385,6 +387,9 @@ DEF_STAT(  MLP_ORACLE_I_CTRL_LINES_MARKED      , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_ACCESSES          , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_NO_PICK           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_SHADOW_HIT             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_MARK_LAPSED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_CTRL_LAPSED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_CTRL_DROPPED           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_MARKED_LINES           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_MARKED_ACCESSES        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_LINES             , COUNT , NO_RATIO  )
@@ -392,6 +397,9 @@ DEF_STAT(  MLP_ORACLE_D_CTRL_LINES_MARKED      , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_ACCESSES          , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_NO_PICK           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_SHADOW_HIT             , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_MARK_LAPSED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_CTRL_LAPSED            , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_CTRL_DROPPED           , COUNT , NO_RATIO  )
 // FORCED_HIT: hits this run forced, _DEMAND those by demand requests. INSTALL_RETRY: forced hits
 // that waited a cycle for a port or writeback slot. LLC_INVAL / LLC_FILL: forced hits that took the
 // line out of an exclusive LLC / filled a non-exclusive one. NOT_INSTALLED: forced hits whose line

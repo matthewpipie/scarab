@@ -1703,15 +1703,16 @@ static void mem_complete_mlc_access(Mem_Req* req) {
     icarus_mlc_hit(&MLC(req->proc_id)->cache, req);
 
   /* mlp_oracle: decide once per request, as the lookup first sees it, whether this access is
-     forced to hit; a request that retries keeps the decision. A forced hit puts the line in the
-     MLC first and is then served as the hit it now is. */
+     forced to hit; a request that retries keeps the decision. With mlp_oracle_install, a forced
+     hit puts the line in the MLC first and is then served as the hit it now is; without, it is
+     served as a perfect_mlc hit. */
   if (MLP_ORACLE && !fill_req_is_wb(req)) {
     if (!req->mlp_oracle_looked) {
       req->mlp_oracle_looked = TRUE;
       req->mlp_oracle_force =
           mlp_oracle_lookup(&MLC(req->proc_id)->cache, req, data != NULL, mshr_line(&mem->mlc_mshr, req->addr) != NULL);
     }
-    if (!data && req->mlp_oracle_force) {
+    if (!data && req->mlp_oracle_force && MLP_ORACLE_INSTALL) {
       if (!mlp_oracle_install(req)) {
         STAT_EVENT(req->proc_id, MLP_ORACLE_INSTALL_RETRY);
         return;
