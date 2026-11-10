@@ -306,6 +306,40 @@ DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
         levels lower.
    A boost of 0 is plain RRIP in every mode. See rrip_update_evict in libs/cache_lib.c. */
 DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
+/* mlp_oracle: upper bounds for replacement that uses REPL_MLP's marking, and a random control for
+   them, at the MLC. Simulator-only: the marking reads only what the core sees, but no hardware can
+   force a hit. To bound what a policy can get from the marking, run it on LRU
+   (mlc_cache_repl_policy 0) and compare IPC with plain LRU. Lines on the sides mlp_oracle_side
+   names take part; the marking does not need REPL_MLP to be on.
+     0  off.
+     1  track only: the marking and the control run, and the reuse stats (MLP_REUSE_*) are
+        recorded, but nothing is forced. On LRU, MLP_ORACLE_*_SHADOW_HIT counts the hits mode 2
+        would force.
+     2  marked: once the marking has marked a fill of a line, every later MLC access to the line
+        hits, demand or prefetch.
+     3  random control: as 2, for the control's lines instead of the marked ones. Each time the
+        marking marks a new line, the control picks one more line on the same side, at random from
+        that side's lines whose first miss has come back, with no filter (a marked line can be
+        picked too). So on each side both sets hold the same number of lines and grow at the same
+        times. mlp_oracle_ctrl_accesses also matches them in accesses.
+     4  every line hits after its first miss: the ceiling for any policy on these sides.
+   A miss on a line whose earlier miss is still on its way waits for it as usual. A forced hit puts
+   the line back in the MLC at once, as its fill would have: an exclusive LLC gives its copy up, a
+   non-exclusive one is touched or filled, and the MLC inserts it with mlc_fill_line, victim and
+   all. So the caches hold about what LRU would, and only the miss latency is gone. */
+DEF_PARAM(mlp_oracle, MLP_ORACLE, uns, uns, 0, )
+/* mlp_oracle_side: which lines mlp_oracle covers: 1 instruction (fetches and instruction
+   prefetches, marked by mlp_instr_mark and mlp_instr_starve), 2 data (loads, stores, data
+   prefetches and writebacks, marked by mlp_lin_data_thresh), 3 both. Its stats are kept per side. */
+DEF_PARAM(mlp_oracle_side, MLP_ORACLE_SIDE, uns, uns, 1, )
+/* mlp_oracle_ctrl_accesses: match the control's lines to the marked lines in MLC accesses as well
+   as in number, roughly, per side. Each pick draws mlp_oracle_ctrl_choices lines at random and
+   takes the one with the most accesses so far while the side's control lines (since they were
+   picked) trail its marked lines (since they were marked) in accesses, and the one with the fewest
+   otherwise. Off, each pick is one line drawn at random. MLP_ORACLE_*_{MARKED,CTRL}_ACCESSES show
+   how close they came. */
+DEF_PARAM(mlp_oracle_ctrl_accesses, MLP_ORACLE_CTRL_ACCESSES, Flag, Flag, TRUE, )
+DEF_PARAM(mlp_oracle_ctrl_choices, MLP_ORACLE_CTRL_CHOICES, uns, uns, 8, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.

@@ -62,6 +62,7 @@
 #include "icarus.h"
 #include "lacs.h"
 #include "mem_req.h"
+#include "mlp_oracle.h"
 #include "op.h"
 #include "statistics.h"
 // #include "dram.h"
@@ -143,6 +144,7 @@ static void mem_process_completed_reqs(void);
 
 static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data* data);
 static void mem_complete_mlc_access(Mem_Req* req);
+static Flag mlp_oracle_install(Mem_Req* req);
 static void mem_serve_from_wb(Mem_Req* req, Mshr* entering);
 static Flag mem_process_l1_miss_access(Mem_Req* req, Addr* line_addr, L1_Data* data);
 static void mem_complete_l1_access(Mem_Req* req);
@@ -1700,7 +1702,27 @@ static void mem_complete_mlc_access(Mem_Req* req) {
   if (data)
     icarus_mlc_hit(&MLC(req->proc_id)->cache, req);
 
-  if (data || PERFECT_MLC) { /* mlc hit */
+  /* mlp_oracle: decide once per request, as the lookup first sees it, whether this access is
+     forced to hit; a request that retries keeps the decision. A forced hit puts the line in the
+     MLC first and is then served as the hit it now is. */
+  if (MLP_ORACLE && !fill_req_is_wb(req)) {
+    if (!req->mlp_oracle_looked) {
+      req->mlp_oracle_looked = TRUE;
+      req->mlp_oracle_force =
+          mlp_oracle_lookup(&MLC(req->proc_id)->cache, req, data != NULL, mshr_line(&mem->mlc_mshr, req->addr) != NULL);
+    }
+    if (!data && req->mlp_oracle_force) {
+      if (!mlp_oracle_install(req)) {
+        STAT_EVENT(req->proc_id, MLP_ORACLE_INSTALL_RETRY);
+        return;
+      }
+      data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);
+      if (!data)
+        STAT_EVENT(req->proc_id, MLP_ORACLE_NOT_INSTALLED);
+    }
+  }
+
+  if (data || PERFECT_MLC || req->mlp_oracle_force) { /* mlc hit */
     /* if exclusive cache, invalidate the line in L2 if there is a done function
      * to transfer the data to MLC -- also need to propagate the dirty to MLC */
     Flag mlc_hit_access = mem_process_mlc_hit_access(req, &line_addr, data, lru_position);
@@ -1711,8 +1733,8 @@ static void mem_complete_mlc_access(Mem_Req* req) {
           ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (PREF_I_TOGETHER && req->type == MRT_IFETCH) ||
            (PREF_TRAIN_ON_PREF_MISSES && req->type == MRT_DPRF))) {
         // Train the Data prefetcher
-        ASSERT(req->proc_id, PERFECT_MLC || data);
-        ASSERT(req->proc_id, PERFECT_MLC || req->proc_id == data->proc_id);
+        ASSERT(req->proc_id, PERFECT_MLC || req->mlp_oracle_force || data);
+        ASSERT(req->proc_id, !data || req->proc_id == data->proc_id);
         ASSERT(req->proc_id, req->proc_id == req->addr >> 58);
         pref_umlc_hit(req->proc_id, req->addr, req->loadPC, req->global_hist);
       }
@@ -2526,6 +2548,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->rob_stall_cycles = 0;
   new_req->fe_stall_cycles = 0;
   new_req->fe_abandoned = FALSE;
+  new_req->mlp_oracle_looked = FALSE;
+  new_req->mlp_oracle_force = FALSE;
 
   if (op) {
     ASSERT(new_req->proc_id, new_req->proc_id == op->proc_id);
@@ -2996,30 +3020,31 @@ static Flag mlp_instr_marked(Mem_Req* req) {
   return !MLP_INSTR_STARVE || req->fe_starve_cycles >= MLP_INSTR_STARVE_MIN;
 }
 
+/* The side that marks this fill (MLP_SIDE_DATA or MLP_SIDE_INSTR), or 0 for unmarked: a fill loads
+   are waiting on by its stall-cycles-over-window-cycles fraction, one a demand fetch reached by
+   mlp_instr_marked. REPL_MLP boosts by it, and mlp_oracle uses it. */
+static uns mlp_fill_mark(Mem_Req* req) {
+  if (req->op_count) {
+    if (!req->ld_window_cycles)
+      return 0;
+    double frac = (double)req->ld_bound_cycles / (double)req->ld_window_cycles;
+    return frac > (double)MLP_LIN_DATA_THRESH ? MLP_SIDE_DATA : 0;
+  }
+  if (mem_req_is_type(req, MRT_IFETCH))
+    return mlp_instr_marked(req) ? MLP_SIDE_INSTR : 0;
+  return 0;
+}
+
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
   if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
 
-  float boost = 0.0;
-  if (req->op_count) {
-    if (req->ld_window_cycles) {
-      double frac = (double)req->ld_bound_cycles / (double)req->ld_window_cycles;
-      if (frac > (double)MLP_LIN_DATA_THRESH)
-        boost = MLP_LIN_DATA_LAMBDA;
-    }
-    if (boost > 0.0) {
-      STAT_EVENT(req->proc_id, MLP_MARKED_LOAD);
-      if (req->op_count > 1)
-        STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
-    }
-  } else if (mem_req_is_type(req, MRT_IFETCH)) {
-    if (mlp_instr_marked(req))
-      boost = MLP_LIN_INSTR_LAMBDA;
-    if (boost > 0.0) {
-      STAT_EVENT(req->proc_id, MLP_MARKED_FETCH);
-      if (popcount32(req->types) > 1)
-        STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
-    }
+  uns mark = mlp_fill_mark(req);
+  float boost = mark == MLP_SIDE_DATA ? MLP_LIN_DATA_LAMBDA : mark == MLP_SIDE_INSTR ? MLP_LIN_INSTR_LAMBDA : 0.0;
+  if (boost > 0.0) {
+    STAT_EVENT(req->proc_id, mark == MLP_SIDE_DATA ? MLP_MARKED_LOAD : MLP_MARKED_FETCH);
+    if (mark == MLP_SIDE_DATA ? req->op_count > 1 : popcount32(req->types) > 1)
+      STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
   }
   cache_set_next_fill_mlp_boost(boost);
 }
@@ -3396,6 +3421,9 @@ static inline void mlc_miss_is_satisfied(Mem_Req* req) {
 Flag mlc_fill_line(Mem_Req* req) {
   /* REPL_LACS: the miss has returned to the MLC; train before any skip below. */
   lacs_miss_return(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
+  /* mlp_oracle: the same, for the marking. A forced hit's install never missed and is skipped. */
+  if (MLP_ORACLE && req->mlc_miss && !fill_req_is_wb(req))
+    mlp_oracle_miss_return(&MLC(req->proc_id)->cache, req, mlp_fill_mark(req));
   /* Exclusive MLC: only the destination level keeps the line; a core-destined fill
      passes through the MLC without inserting. */
   if (!fill_inserts_at_mlc(req)) {
@@ -3571,6 +3599,8 @@ Flag mlc_fill_line(Mem_Req* req) {
   mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);
+  if (MLP_ORACLE)
+    mlp_oracle_insert(&MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3667,6 +3697,29 @@ Flag mlc_fill_line(Mem_Req* req) {
   mlc_miss_is_satisfied(req);
 
   return SUCCESS;
+}
+
+/* mlp_oracle: put req's line in the MLC now, as the fill of its miss would have, so a forced hit
+   leaves the hierarchy about as the miss would and only the latency is gone. An exclusive LLC
+   gives its copy up, as a hit there would; a non-exclusive one is touched, or filled if it does
+   not have the line. Then mlc_fill_line inserts it, victim writeback and all, and its latency stats
+   read 0. Returns FALSE if a write port or writeback slot was busy; every step is safe to repeat,
+   so the lookup tries again next cycle. */
+static Flag mlp_oracle_install(Mem_Req* req) {
+  Cache* llc = &L1(req->proc_id)->cache;
+  Addr llc_line_addr;
+  L1_Data* below = (L1_Data*)cache_access(llc, req->addr, &llc_line_addr, !mem_exclusive_l1());
+  if (below) {
+    if (req->destination < DEST_L1)
+      mem_invalidate_on_promote(req, llc, mem_exclusive_l1(), below->dirty, MLP_ORACLE_LLC_INVAL);
+  } else if (!mem_exclusive_l1() && fill_inserts_at_l1(req)) {
+    req->l1_miss_cycle = cycle_count;
+    if (!l1_fill_line(req))
+      return FALSE;
+    STAT_EVENT(req->proc_id, MLP_ORACLE_LLC_FILL);
+  }
+  req->mlc_miss_cycle = cycle_count;
+  return mlc_fill_line(req);
 }
 
 /**************************************************************************************/

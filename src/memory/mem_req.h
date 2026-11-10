@@ -214,6 +214,8 @@ struct Mem_Req_struct {
   Flag fe_abandoned;                         /* REPL_MLP (mlp_instr_mark 2): fetch was redirected
                                                  away while stalled on this miss, and no demand
                                                  fetch has reached it since */
+  Flag mlp_oracle_looked;                    /* mlp_oracle: the MLC lookup has been accounted */
+  Flag mlp_oracle_force;                     /* mlp_oracle: the MLC lookup is forced to hit */
   Counter unique_num;                        /* unique num that allocated this request - for icache
                                                 this is the unique_count */
   Flag onpath_match_offpath;                 /* is this an offpath req matched by onpath op? */
