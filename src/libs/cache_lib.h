@@ -85,6 +85,13 @@ static inline Flag repl_is_rrip(Repl_Policy policy) {
 #define MLP_RRIP_BOOST_LAMBDA 1
 #define MLP_RRIP_BOOST_GAMMA 2
 
+/* REPL_MLP: a line's mlp_mark, set once at fill from the classification of the fill that caused
+   it, read fresh every time via mlp_current_boost (cache_lib.c) rather than stamped as a float, so
+   a dueling-driven lambda change takes effect on already-resident marked lines immediately. */
+#define MLP_MARK_NONE 0
+#define MLP_MARK_DATA 1
+#define MLP_MARK_INSTR 2
+
 typedef enum Cache_Repl_Signiture_enum {
   CACHE_REPL_SIGH_PC,
   CACHE_REPL_SIGH_MEM,
@@ -107,9 +114,12 @@ typedef struct Cache_Entry_struct {
   uns8 reference_val; /* for re-reference replacement policy */
   Flag outcome;       /* for replacement policy */
 
-  float mlp_boost; /* REPL_MLP: eviction-priority boost staged at fill (mlp_lin_data_lambda or
-                       mlp_lin_instr_lambda if the filling load/fetch cleared its boundness
-                       threshold, else 0) */
+  float mlp_boost; /* RRIP with mlp_rrip_boost: eviction-priority boost staged at fill (see
+                       cache_set_next_fill_mlp_boost). Not used by REPL_MLP itself -- see mlp_mark. */
+  uns8 mlp_mark; /* REPL_MLP: MLP_MARK_NONE/DATA/INSTR, the classification of the fill that caused
+                     this line, set once at fill (cache_set_next_fill_mlp_mark). The numeric boost
+                     for this mark is looked up fresh from the set's current state every time it's
+                     needed via mlp_current_boost, not stored here. */
   Counter mlp_stamp; /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
                         recency update (fill or hit) */
   uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown: set ticks until the line's protection
@@ -235,10 +245,15 @@ Addr get_cache_line_addr(Cache*, Addr);
 uns cache_get_invalid_line_count(Cache* cache, Addr addr);
 void update_repl_resteer_policy(Cache*, Addr);
 
-/* REPL_MLP, or an RRIP policy with mlp_rrip_boost: stage the boost the NEXT cache_insert_replpos
-   (or, for RRIP, cache_insert_strategy) call should stamp on the new line. Call right before a
-   fill-time cache_insert on such a cache; reset to 0 after. */
+/* An RRIP policy with mlp_rrip_boost: stage the boost the NEXT cache_insert_strategy call should
+   stamp on the new line. Call right before a fill-time cache_insert on such a cache; reset to 0
+   after. */
 void cache_set_next_fill_mlp_boost(float boost);
+
+/* REPL_MLP: stage the mark (MLP_MARK_NONE/DATA/INSTR) the NEXT cache_insert_replpos call should
+   stamp on the new line. Call right before a fill-time cache_insert on a cache running REPL_MLP;
+   reset to MLP_MARK_NONE after. */
+void cache_set_next_fill_mlp_mark(uns8 mark);
 
 /* REPL_LACS: stage the cost the NEXT cache_insert (strategy path) should stamp on the new
    line. Call right before a fill-time cache_insert on a cache running REPL_LACS; `valid`

@@ -62,6 +62,7 @@
 #include "icarus.h"
 #include "lacs.h"
 #include "mem_req.h"
+#include "mlp_duel.h"
 #include "op.h"
 #include "statistics.h"
 // #include "dram.h"
@@ -2997,15 +2998,24 @@ static Flag mlp_instr_marked(Mem_Req* req) {
 }
 
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
-  if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
+  Flag mlp = cache->repl_policy == REPL_MLP;
+  if (!mlp && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
 
+  Addr tag, line_addr;
+  uns set = mlp ? ext_cache_index(cache, req->addr, &tag, &line_addr) : 0;
+
   float boost = 0.0;
+  uns8 mark = MLP_MARK_NONE;
   if (req->op_count) {
     if (req->ld_window_cycles) {
       double frac = (double)req->ld_bound_cycles / (double)req->ld_window_cycles;
-      if (frac > (double)MLP_LIN_DATA_THRESH)
+      if (frac > (double)MLP_LIN_DATA_THRESH) {
         boost = MLP_LIN_DATA_LAMBDA;
+        mark = MLP_MARK_DATA;
+      }
+      if (mlp)
+        mlp_duel_record(cache, set, req->ld_bound_cycles);
     }
     if (boost > 0.0) {
       STAT_EVENT(req->proc_id, MLP_MARKED_LOAD);
@@ -3013,15 +3023,23 @@ static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
         STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
     }
   } else if (mem_req_is_type(req, MRT_IFETCH)) {
-    if (mlp_instr_marked(req))
+    if (mlp_instr_marked(req)) {
       boost = MLP_LIN_INSTR_LAMBDA;
+      mark = MLP_MARK_INSTR;
+    }
+    if (mlp)
+      mlp_duel_record(cache, set, MLP_INSTR_STARVE ? req->fe_starve_cycles : req->fe_bound_cycles);
     if (boost > 0.0) {
       STAT_EVENT(req->proc_id, MLP_MARKED_FETCH);
       if (popcount32(req->types) > 1)
         STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
     }
   }
-  cache_set_next_fill_mlp_boost(boost);
+
+  if (mlp)
+    cache_set_next_fill_mlp_mark(mark);
+  else
+    cache_set_next_fill_mlp_boost(boost);
 }
 
 Flag l1_fill_line(Mem_Req* req) {

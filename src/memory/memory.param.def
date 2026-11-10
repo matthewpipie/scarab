@@ -306,6 +306,30 @@ DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
    A boost of 0 is plain RRIP in every mode. See rrip_update_evict in libs/cache_lib.c. */
 DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
 
+/* mlp_duel_*: online set dueling (DRRIP-style) that tunes mlp_lin_data_lambda /
+   mlp_lin_instr_lambda instead of taking them fixed from the command line. See
+   memory/mlp_duel.h. Applies independently to whichever cache(s) (L1, MLC) are running
+   REPL_MLP. */
+DEF_PARAM(mlp_duel_on, MLP_DUEL_ON, Flag, Flag, FALSE, )
+/* mlp_duel_period: how often (a trigger.c spec, e.g. "i:1000000" for every 1M
+   instructions on core 0) every registered duel state ends a period and, if a probe
+   cleared mlp_duel_margin, updates its applied lambdas. */
+DEF_PARAM(mlp_duel_period, MLP_DUEL_PERIOD, char*, string, "i:1000000", )
+/* mlp_duel_num_groups: n, the number of 4-set leader groups (one INS+, one INS-, one
+   DATA+, one DATA- probe set each) spread evenly across the cache; every other set is a
+   follower. cache->num_sets must be at least 4*n. */
+DEF_PARAM(mlp_duel_num_groups, MLP_DUEL_NUM_GROUPS, uns, uns, 8, )
+/* mlp_duel_margin: the fixed threshold a probe role's (follower_metric - its own metric)
+   must clear to become a candidate for the period's lambda update. */
+DEF_PARAM(mlp_duel_margin, MLP_DUEL_MARGIN, float, float, 2.0, )
+/* mlp_duel_step: how much a committed lambda update moves ins_lambda / data_lambda (and
+   the +/- offset a probe set's own lambda carries while it's being tested). */
+DEF_PARAM(mlp_duel_step, MLP_DUEL_STEP, float, float, 4.0, )
+/* mlp_duel_init_lambda: ins_lambda / data_lambda's starting value when dueling is on. */
+DEF_PARAM(mlp_duel_init_lambda, MLP_DUEL_INIT_LAMBDA, float, float, 8.0, )
+DEF_PARAM(mlp_duel_lambda_min, MLP_DUEL_LAMBDA_MIN, float, float, 0.0, )
+DEF_PARAM(mlp_duel_lambda_max, MLP_DUEL_LAMBDA_MAX, float, float, 64.0, )
+
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
 DEF_PARAM(  fdip_uc_size                   , FDIP_UC_SIZE                    , uns    , uns     , 0                      ,       )

@@ -373,6 +373,12 @@ DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
 
+// mlp_duel: online set dueling for mlp_lin_data_lambda / mlp_lin_instr_lambda (memory/mlp_duel.c)
+DEF_STAT(  MLP_DUEL_PERIODS                , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_DUEL_INS_UPDATES            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_DUEL_DATA_UPDATES           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_DUEL_NOOP_PERIODS           , COUNT  , NO_RATIO  )
+
 // Request stall cost (stats only), summed over requests by the level that served them; each
 // family is laid out MLC, LLC, MEM. COST_ROB: cycles nothing retired because the ROB head was
 // a load waiting on the request. COST_FE: cycles the backend got no ops while the on-path

@@ -49,6 +49,7 @@
 #include "dvfs/perf_pred.h"
 #include "memory/cache_part.h"
 #include "memory/lacs.h"
+#include "memory/mlp_duel.h"
 #include "prefetcher/D_JOLT.h"
 #include "prefetcher/FNL+MMA.h"
 #include "prefetcher/eip.h"
@@ -204,6 +205,8 @@ void cmp_cycle() {
 
   if (DVFS_ON)
     dvfs_cycle();
+  if (MLP_DUEL_ON)
+    mlp_duel_cycle();
   cache_part_update();
 }
 
@@ -319,6 +322,8 @@ void cmp_done() {
     pref_done();
   if (DVFS_ON)
     dvfs_done();
+  if (MLP_DUEL_ON)
+    mlp_duel_finish();
 
   finalize_memory();
   for (uns proc_id = 0; proc_id < NUM_CORES; proc_id++) {

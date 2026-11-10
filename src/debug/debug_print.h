@@ -33,6 +33,8 @@
 
 #include "globals/global_types.h"
 
+#include "isa/isa.h"
+
 /**************************************************************************************/
 /* External Variables */
 
@@ -54,7 +56,7 @@ void print_op_field(FILE*, Op*, uns);
 void print_field_tail(FILE*, uns);
 void print_field_head(FILE*, uns);
 char* disasm_op(Op*, Flag wide);
-char* disasm_reg(uns);
+char* disasm_reg(Reg_Id);
 
 /**************************************************************************************/
 

@@ -42,6 +42,7 @@
 #include "core.param.h"
 #include "general.param.h"
 #include "memory/memory.param.h"
+#include "memory/mlp_duel.h"
 
 #include "frontend/frontend_intf.h"
 
@@ -55,12 +56,20 @@
 
 #define DEBUG(proc_id, args...) _DEBUG(proc_id, DEBUG_CACHE_LIB, ##args)
 
-/* REPL_MLP: staged by memory.c right before a fill-time cache_insert on a cache running
-   REPL_MLP, consumed by cache_insert_replpos when it stamps the new Cache_Entry. */
+/* RRIP with mlp_rrip_boost: staged by memory.c right before a fill-time cache_insert on a cache
+   running an RRIP policy, consumed by cache_insert_strategy when it stamps the new Cache_Entry. */
 static float g_next_fill_mlp_boost = 0.0;
 
 void cache_set_next_fill_mlp_boost(float boost) {
   g_next_fill_mlp_boost = boost;
+}
+
+/* REPL_MLP: staged by memory.c right before a fill-time cache_insert on a cache running REPL_MLP,
+   consumed by cache_insert_replpos when it stamps the new Cache_Entry's mlp_mark. */
+static uns8 g_next_fill_mlp_mark = MLP_MARK_NONE;
+
+void cache_set_next_fill_mlp_mark(uns8 mark) {
+  g_next_fill_mlp_mark = mark;
 }
 
 /* REPL_LACS: staged by memory/lacs.c right before a fill-time cache_insert on a cache
@@ -79,9 +88,19 @@ void cache_set_lacs_next_insert(Flag valid, uns cost) {
    (a 2-bit countdown), and a set ticks every round(mlp_boost / MLP_COUNTDOWN_TICKS) fills. */
 #define MLP_COUNTDOWN_TICKS 3
 
+/* REPL_MLP: the numeric boost `entry`'s mark currently carries in `set`, looked up fresh every
+   time from the set's current duel state (or the plain CLI lambda when dueling is off) rather
+   than a value frozen at fill time -- so a lambda change applies to every resident marked line
+   immediately, not just future fills. 0 for an unmarked line. */
+static inline float mlp_current_boost(Cache* cache, uns set, Cache_Entry* entry) {
+  if (entry->mlp_mark == MLP_MARK_NONE)
+    return 0.0;
+  return mlp_duel_effective_lambda(cache, set, entry->mlp_mark == MLP_MARK_DATA);
+}
+
 /* REPL_MLP with mlp_boost_countdown: (re)start a marked line's countdown, on its fill or a hit. */
-static inline void mlp_countdown_start(Cache_Entry* entry) {
-  entry->mlp_ticks_left = MLP_BOOST_COUNTDOWN && entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+static inline void mlp_countdown_start(Cache* cache, uns set, Cache_Entry* entry) {
+  entry->mlp_ticks_left = MLP_BOOST_COUNTDOWN && mlp_current_boost(cache, set, entry) > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
 }
 
 /* REPL_MLP with mlp_boost_countdown: after a fill into `set` at fill_way, decrement the countdown
@@ -94,7 +113,7 @@ static void mlp_countdown_tick(Cache* cache, uns8 proc_id, uns set, uns fill_way
     Cache_Entry* entry = &cache->entries[set][ii];
     if (ii == fill_way || !entry->valid || !entry->mlp_ticks_left)
       continue;
-    Counter period = MAX2((Counter)1, (Counter)(entry->mlp_boost / MLP_COUNTDOWN_TICKS + 0.5));
+    Counter period = MAX2((Counter)1, (Counter)(mlp_current_boost(cache, set, entry) / MLP_COUNTDOWN_TICKS + 0.5));
     if (cache->mlp_set_fills[set] % period || --entry->mlp_ticks_left)
       continue; /* not a tick for this line, or ticks left */
     entry->last_access_time = sim_time;
@@ -211,6 +230,8 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
   if (repl_policy == REPL_MLP)
     ASSERTM(0, !(MLP_BOOST_COUNTDOWN && MLP_BOOST_IN_FILLS),
             "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
+  cache->predictor = NULL;
+  mlp_duel_maybe_init(cache, repl_policy);
 
   /* allocate memory for all the sets (pointers to line arrays)  */
   cache->entries = (Cache_Entry**)malloc(sizeof(Cache_Entry*) * num_sets);
@@ -227,6 +248,7 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
       cache->entries[ii][jj].valid = FALSE;
       cache->entries[ii][jj].mlp_ticks_left = 0;
       cache->entries[ii][jj].mlp_boost = 0.0;
+      cache->entries[ii][jj].mlp_mark = MLP_MARK_NONE;
       cache->entries[ii][jj].mlp_rrip_credit = 0;
       if (data_size) {
         cache->entries[ii][jj].data = (void*)malloc(data_size);
@@ -438,8 +460,10 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   new_line->pref = isPrefetch;
   new_line->mlp_boost = g_next_fill_mlp_boost;
   g_next_fill_mlp_boost = 0.0;
+  new_line->mlp_mark = g_next_fill_mlp_mark;
+  g_next_fill_mlp_mark = MLP_MARK_NONE;
   new_line->mlp_stamp = cache->mlp_set_fills ? cache->mlp_set_fills[set] : 0;
-  mlp_countdown_start(new_line);
+  mlp_countdown_start(cache, set, new_line);
 
   new_line->pw_start_addr = addr;  // only means anything for uop cache
 
@@ -740,7 +764,7 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
             *way = ii;
             return entry;
           }
-          double val = (double)entry->mlp_stamp + (double)entry->mlp_boost;
+          double val = (double)entry->mlp_stamp + (double)mlp_current_boost(cache, set, entry);
           if (ii == 0 || val < best_val ||
               (val == best_val && entry->last_access_time < cache->entries[set][best_ind].last_access_time)) {
             best_val = val;
@@ -770,7 +794,7 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
           if (other->valid && other->last_access_time < entry->last_access_time)
             rank++;
         }
-        double val = (double)rank + (double)entry->mlp_boost;
+        double val = (double)rank + (double)mlp_current_boost(cache, set, entry);
         if (!have_best || val < best_val) {
           best_val = val;
           best_ind = ii;
@@ -839,8 +863,8 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
       cur_entry->last_access_time = sim_time;
       if (cache->mlp_set_fills)  // REPL_MLP only: the policies above share this case
         cur_entry->mlp_stamp = cache->mlp_set_fills[set];
-      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && cur_entry->mlp_boost > 0.0)
-        mlp_countdown_start(cur_entry); /* a fill or hit restarts a marked line's countdown */
+      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && mlp_current_boost(cache, set, cur_entry) > 0.0)
+        mlp_countdown_start(cache, set, cur_entry); /* a fill or hit restarts a marked line's countdown */
       break;
     case REPL_RANDOM: {
       char* old_rand_state = (char*)setstate(rand_repl_state);

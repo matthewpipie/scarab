@@ -26,6 +26,17 @@
  * Description  :
  ****************************************************************************************/
 
+/* PIN 3.3x/SDE's PinCRT chains signal.h -> sys/ucontext.h, whose anonymous
+ * REG_RAX..REG_RIP sigcontext-index enum collides with isa.h's unprefixed
+ * Reg_Id enum of the same names. This file never touches ucontext_t, so
+ * block that header's body under both the glibc and PinCRT guard macros. */
+#ifndef _SYS_UCONTEXT_H
+#define _SYS_UCONTEXT_H 1
+#endif
+#ifndef _SYS_UCONTEXT_H_
+#define _SYS_UCONTEXT_H_ 1
+#endif
+
 extern "C" {
 #include "globals/assert.h"
 #include "globals/global_defs.h"
