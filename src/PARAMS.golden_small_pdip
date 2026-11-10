@@ -1,9 +1,8 @@
 # File         : PARAMS.golden_small_pdip
 # Date         : 11/09/26
-# Description  : PARAMS.golden_small with FDIP plus PDIP (Priority-Directed Instruction
-#                Prefetching, Godala et al., ASPLOS 2024). PDIP is NOT IMPLEMENTED YET: this
-#                preset uses a placeholder flag that Scarab rejects, so runs fail at startup
-#                until PDIP lands. Everything else is identical to golden_small.
+# Description  : PARAMS.golden_small with PDIP (Priority Directed Instruction Prefetching,
+#                Godala et al., ASPLOS 2024) on top of FDIP, in the paper's PDIP(44)
+#                configuration. Everything else is identical to golden_small.
 # Author       : Surim Oh <soh31@ucsc.edu>
 #
 # Based on documentation found here:
@@ -194,11 +193,11 @@
 --pref_train_on_pref_misses     0
 --pref_oracle_train             0
 
-# Instruction prefetchers: FDIP (the default, set here explicitly) plus PDIP.
+# Instruction prefetchers: FDIP (the default, set here explicitly) plus PDIP, which
+# prefetches the icache misses FDIP cannot hide: those right after a resteer, while the
+# FTQ is still refilling, and those too long for a full FTQ. The pdip_* table and queue
+# sizes keep their defaults, which are the paper's PDIP(44) (prefetcher/pref.param.def).
 --fdip_enable                   1
-# PLACEHOLDER until PDIP is implemented. Scarab rejects unknown parameters, so this line
-# makes the preset fail at startup instead of silently running as golden_small. Rename it
-# to the implementation's flag(s) when PDIP lands.
 --pdip_enable                   1
 
 --stream_length                 16
