@@ -186,7 +186,7 @@ struct Core {
 
 std::vector<Core> cores;
 
-/* xorshift64*, fixed seed: the same run picks the same lines in every build mode. */
+/* xorshift64*, seeded from mlp_oracle_seed: the same run picks the same lines in every build mode. */
 uint64_t rand64(uint64_t& state) {
   state ^= state >> 12;
   state ^= state << 25;
@@ -404,8 +404,11 @@ Core& core_of(Cache* mlc, uns proc_id) {
     c.set_fills.assign(mlc->num_sets, 0);
     for (Next& next : c.next)
       next.set_last.assign(mlc->num_sets, MAX_CTR);
-    c.rng = 0x9E3779B97F4A7C15ULL * (proc_id + 1);
-    c.ref_rng = 0xD1B54A32D192ED03ULL * (proc_id + 1);
+    uint64_t seed = (uint64_t)MLP_ORACLE_SEED * 0xBF58476D1CE4E5B9ULL;
+    c.rng = 0x9E3779B97F4A7C15ULL * (proc_id + 1) + seed;
+    c.ref_rng = 0xD1B54A32D192ED03ULL * (proc_id + 1) + seed;
+    c.rng += !c.rng; /* xorshift never leaves 0 */
+    c.ref_rng += !c.ref_rng;
     if (MLP_ORACLE_RECORD) {
       std::string path = std::string(OUTPUT_DIR) + "/" + record_name(proc_id);
       c.record = fopen(path.c_str(), "wb");

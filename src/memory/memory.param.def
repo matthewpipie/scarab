@@ -380,6 +380,10 @@ DEF_PARAM(mlp_oracle_install, MLP_ORACLE_INSTALL, Flag, Flag, TRUE, )
    accesses, and the fewest otherwise. */
 DEF_PARAM(mlp_oracle_ctrl_lines, MLP_ORACLE_CTRL_LINES, Flag, Flag, TRUE, )
 DEF_PARAM(mlp_oracle_ctrl_choices, MLP_ORACLE_CTRL_CHOICES, uns, uns, 8, )
+/* mlp_oracle_seed: seeds the random draws (mode 3's control, mode 1's line-level control). Runs
+   that differ only in it draw independent controls of the same size, which shows how much the
+   control's gain depends on the draw. 0 keeps the draws of runs from before it existed. */
+DEF_PARAM(mlp_oracle_seed, MLP_ORACLE_SEED, uns, uns, 0, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
