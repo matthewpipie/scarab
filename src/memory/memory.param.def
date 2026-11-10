@@ -370,8 +370,10 @@ DEF_PARAM(mlp_oracle_install, MLP_ORACLE_INSTALL, Flag, Flag, TRUE, )
    marked misses fall on, per side, so the two match in lines as well as in misses. It takes lines
    one at a time, each the one of mlp_oracle_ctrl_choices drawn at random (from the side's lines
    with a reference miss) whose misses bring the running total closest to its share of the marked
-   misses, then keeps a random subset of their misses as large as the marked set. Off, it draws the
-   misses at random from all the side's reference misses, and only their number matches.
+   misses. Each line keeps one of its misses at random, and a random subset of the rest fills the
+   control up to the marked count, so lines match exactly and misses do too unless the drawn lines
+   come up short. Off, it draws the misses at random from all the side's reference misses, and
+   only their number matches.
    MLP_ORACLE_*_REF_{MARKED,CTRL}{,_LINES} show how close they came. mlp_oracle_ctrl_choices also
    sets how mode 1's line-level control matches marked lines in accesses: of that many lines drawn
    at random, it takes the one with the most accesses while its lines trail the marked lines in

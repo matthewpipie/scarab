@@ -286,7 +286,8 @@ void draw_ctrl(Core& c, uns proc_id, uns side) {
   uns lines = start.size();
   start.push_back(idx.size());
 
-  std::vector<uns> drawn;
+  std::vector<uns> drawn; /* misses the control keeps */
+  std::vector<uns> rest;  /* misses it may keep, to fill up to the marked count */
   if (MLP_ORACLE_CTRL_LINES) {
     std::vector<uns> avail(lines);
     for (uns l = 0; l < lines; l++)
@@ -311,18 +312,25 @@ void draw_ctrl(Core& c, uns proc_id, uns side) {
       uns l = avail[best];
       avail[best] = avail.back();
       avail.pop_back();
-      drawn.insert(drawn.end(), idx.begin() + start[l], idx.begin() + start[l + 1]);
+      /* The line keeps one of its misses, so the trim below cannot drop it. */
+      uns keep = start[l] + rand64(c.ref_rng) % (start[l + 1] - start[l]);
+      drawn.push_back(idx[keep]);
+      for (uns j = start[l]; j < start[l + 1]; j++)
+        if (j != keep)
+          rest.push_back(idx[j]);
       total += start[l + 1] - start[l];
     }
   } else {
-    drawn = idx;
+    rest = idx;
   }
-  /* Keep a random `marked` of them. */
-  if (drawn.size() > marked) {
-    for (uns i = 0; i < marked; i++)
-      std::swap(drawn[i], drawn[i + rand64(c.ref_rng) % (drawn.size() - i)]);
-    drawn.resize(marked);
+  /* Fill up to `marked` with a random subset of the rest. */
+  uns want = marked > drawn.size() ? marked - drawn.size() : 0;
+  if (rest.size() > want) {
+    for (uns i = 0; i < want; i++)
+      std::swap(rest[i], rest[i + rand64(c.ref_rng) % (rest.size() - i)]);
+    rest.resize(want);
   }
+  drawn.insert(drawn.end(), rest.begin(), rest.end());
   for (uns i : drawn)
     c.ref[i].ctrl = true;
 
