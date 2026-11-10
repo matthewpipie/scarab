@@ -431,7 +431,7 @@ DEF_STAT(  MLP_ORACLE_D_REF_CTRL_LINES         , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_REF_CTRL_MARKED        , COUNT , NO_RATIO  )
 // FORCED_HIT: hits this run forced, _DEMAND those by demand requests. INSTALL_RETRY: forced hits
 // that waited a cycle for a port or writeback slot. LLC_INVAL / LLC_FILL: forced hits that took the
-// line out of an exclusive LLC / filled a non-exclusive one. NOT_INSTALLED: forced hits whose line
+// line out of an exclusive LLC / put it in an LLC that did not have it. NOT_INSTALLED: forced hits whose line
 // the MLC did not take (the LLC kept it), served as a perfect_mlc hit.
 DEF_STAT(  MLP_ORACLE_FORCED_HIT               , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_FORCED_HIT_DEMAND        , COUNT , NO_RATIO  )

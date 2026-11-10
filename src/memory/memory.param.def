@@ -359,9 +359,12 @@ DEF_PARAM(mlp_oracle_ref_slack, MLP_ORACLE_REF_SLACK, uns, uns, 4096, )
         its copy up, a non-exclusive one is touched or filled, and the MLC inserts it with
         mlc_fill_line, victim and all. The caches hold about what LRU would, and only the miss
         latency is gone.
-     0  touches no cache, as perfect_mlc: a forced line stays out of the MLC, and its space goes to
-        other lines. In modes 2 and 3, the line's later misses that line up with no reference miss,
-        which hit in the reference, hit too, up to its next miss that lines up with one. */
+     0  leaves the MLC alone, as perfect_mlc does: a forced line takes no MLC space, which goes
+        to other lines. The line goes where the MLC would pass it on: an LLC that has it is
+        touched, a non-exclusive one without it is filled, and an exclusive one gets it as it gets
+        a clean MLC victim. In modes 2 and 3, the line's later misses that line up with no
+        reference miss, which hit in the reference, hit too, up to its next miss that lines up
+        with one. */
 DEF_PARAM(mlp_oracle_install, MLP_ORACLE_INSTALL, Flag, Flag, TRUE, )
 /* mlp_oracle_ctrl_lines: mode 3 draws the control's misses from as many lines as the reference's
    marked misses fall on, per side, so the two match in lines as well as in misses. It takes lines

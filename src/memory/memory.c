@@ -145,6 +145,7 @@ static void mem_process_completed_reqs(void);
 static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data* data);
 static void mem_complete_mlc_access(Mem_Req* req);
 static Flag mlp_oracle_install(Mem_Req* req);
+static Flag mlp_oracle_pass_on(Mem_Req* req);
 static void mem_serve_from_wb(Mem_Req* req, Mshr* entering);
 static Flag mem_process_l1_miss_access(Mem_Req* req, Addr* line_addr, L1_Data* data);
 static void mem_complete_l1_access(Mem_Req* req);
@@ -1720,6 +1721,9 @@ static void mem_complete_mlc_access(Mem_Req* req) {
       data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);
       if (!data)
         STAT_EVENT(req->proc_id, MLP_ORACLE_NOT_INSTALLED);
+    } else if (!data && req->mlp_oracle_force && !mlp_oracle_pass_on(req)) {
+      STAT_EVENT(req->proc_id, MLP_ORACLE_INSTALL_RETRY);
+      return;
     }
   }
 
@@ -3721,6 +3725,30 @@ static Flag mlp_oracle_install(Mem_Req* req) {
   }
   req->mlc_miss_cycle = cycle_count;
   return mlc_fill_line(req);
+}
+
+/* mlp_oracle_install 0: the MLC leaves req's line out, so a forced hit takes no MLC space, and the
+   line goes where the MLC would pass it on. An LLC that has it is touched; a non-exclusive one
+   without it is filled, and an exclusive one gets it as it gets a clean MLC victim. Returns FALSE
+   if a write port or writeback slot was busy; every step is safe to repeat, so the lookup tries
+   again next cycle. */
+static Flag mlp_oracle_pass_on(Mem_Req* req) {
+  Addr llc_line_addr;
+  if (cache_access(&L1(req->proc_id)->cache, req->addr, &llc_line_addr, TRUE))
+    return TRUE;
+  if (mem_exclusive_l1()) {
+    Addr line_addr = req->addr & ~(Addr)(MLC_LINE_SIZE - 1);
+    if (mshr_line(&mem->mlc_wb, line_addr))
+      return TRUE; /* already on its way down */
+    if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count))
+      return FALSE;
+  } else if (fill_inserts_at_l1(req)) {
+    req->l1_miss_cycle = cycle_count;
+    if (!l1_fill_line(req))
+      return FALSE;
+  }
+  STAT_EVENT(req->proc_id, MLP_ORACLE_LLC_FILL);
+  return TRUE;
 }
 
 /**************************************************************************************/
