@@ -26,6 +26,7 @@
 
 #include "memory/mlp_duel.h"
 
+#include <math.h>
 #include <stdlib.h>
 
 #include "globals/assert.h"
@@ -87,6 +88,7 @@ static uns lambda_bucket(Mlp_Duel_State* s, float lambda);
 static Flag role_metric(Mlp_Duel_State* s, uns base, double* out_metric);
 static void mlp_duel_end_period(Mlp_Duel_State* s);
 static void mlp_duel_reset_period(Mlp_Duel_State* s);
+static double duel_ratio(double follower_metric, double role_metric);
 
 /**************************************************************************************/
 
@@ -234,6 +236,17 @@ static Flag role_metric(Mlp_Duel_State* s, uns base, double* out_metric) {
   return TRUE;
 }
 
+/* follower_metric / role_metric: how many times worse (in stall-cycles-per-request) the
+   follower population is than this probe role. role_metric <= 0 (no stalls recorded in that
+   role's leader sets this period) can't be divided into, so it's handled specially: an actual
+   improvement (follower_metric > 0) is reported as an unbounded win, and "both zero" (no signal
+   either way) as a no-op ratio of 1.0, which no mlp_duel_margin > 1 will ever clear. */
+static double duel_ratio(double follower_metric, double role_metric) {
+  if (role_metric <= 0.0)
+    return follower_metric > 0.0 ? INFINITY : 1.0;
+  return follower_metric / role_metric;
+}
+
 static void mlp_duel_reset_period(Mlp_Duel_State* s) {
   s->follower_bound_sum = 0;
   s->follower_req_count = 0;
@@ -259,46 +272,46 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
   Flag have_data_minus = role_metric(s, 3 * n, &m_data_minus);
 
   Flag ins_candidate = FALSE, ins_plus_wins = FALSE;
-  double ins_delta = 0.0;
+  double ins_ratio = 0.0;
   if (have_ins_plus) {
-    double d = follower_metric - m_ins_plus;
-    if (d > MLP_DUEL_MARGIN) {
+    double r = duel_ratio(follower_metric, m_ins_plus);
+    if (r > MLP_DUEL_MARGIN) {
       ins_candidate = TRUE;
-      ins_delta = d;
+      ins_ratio = r;
       ins_plus_wins = TRUE;
     }
   }
   if (have_ins_minus) {
-    double d = follower_metric - m_ins_minus;
-    if (d > MLP_DUEL_MARGIN && (!ins_candidate || d > ins_delta)) {
+    double r = duel_ratio(follower_metric, m_ins_minus);
+    if (r > MLP_DUEL_MARGIN && (!ins_candidate || r > ins_ratio)) {
       ins_candidate = TRUE;
-      ins_delta = d;
+      ins_ratio = r;
       ins_plus_wins = FALSE;
     }
   }
 
   Flag data_candidate = FALSE, data_plus_wins = FALSE;
-  double data_delta = 0.0;
+  double data_ratio = 0.0;
   if (have_data_plus) {
-    double d = follower_metric - m_data_plus;
-    if (d > MLP_DUEL_MARGIN) {
+    double r = duel_ratio(follower_metric, m_data_plus);
+    if (r > MLP_DUEL_MARGIN) {
       data_candidate = TRUE;
-      data_delta = d;
+      data_ratio = r;
       data_plus_wins = TRUE;
     }
   }
   if (have_data_minus) {
-    double d = follower_metric - m_data_minus;
-    if (d > MLP_DUEL_MARGIN && (!data_candidate || d > data_delta)) {
+    double r = duel_ratio(follower_metric, m_data_minus);
+    if (r > MLP_DUEL_MARGIN && (!data_candidate || r > data_ratio)) {
       data_candidate = TRUE;
-      data_delta = d;
+      data_ratio = r;
       data_plus_wins = FALSE;
     }
   }
 
   Flag ins_updated = FALSE, data_updated = FALSE;
   float lo = MLP_DUEL_LAMBDA_MIN, hi = MLP_DUEL_LAMBDA_MAX;
-  if (ins_candidate && (!data_candidate || ins_delta >= data_delta)) {
+  if (ins_candidate && (!data_candidate || ins_ratio >= data_ratio)) {
     s->ins_lambda = MAX2(lo, MIN2(hi, s->ins_lambda + (ins_plus_wins ? MLP_DUEL_STEP : -MLP_DUEL_STEP)));
     ins_updated = TRUE;
   } else if (data_candidate) {

@@ -319,8 +319,10 @@ DEF_PARAM(mlp_duel_period, MLP_DUEL_PERIOD, char*, string, "i:1000000", )
    DATA+, one DATA- probe set each) spread evenly across the cache; every other set is a
    follower. cache->num_sets must be at least 4*n. */
 DEF_PARAM(mlp_duel_num_groups, MLP_DUEL_NUM_GROUPS, uns, uns, 8, )
-/* mlp_duel_margin: the fixed threshold a probe role's (follower_metric - its own metric)
-   must clear to become a candidate for the period's lambda update. */
+/* mlp_duel_margin: the fixed ratio threshold a probe role's (follower_metric / its own
+   metric) must clear to become a candidate for the period's lambda update -- e.g. 1.25
+   requires the follower population to be stalling 25% more than the probe role before
+   that role's lambda direction is adopted. */
 DEF_PARAM(mlp_duel_margin, MLP_DUEL_MARGIN, float, float, 2.0, )
 /* mlp_duel_step: how much a committed lambda update moves ins_lambda / data_lambda (and
    the +/- offset a probe set's own lambda carries while it's being tested). */

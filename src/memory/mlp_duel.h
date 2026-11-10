@@ -28,9 +28,10 @@
  *                 the cache) probe +-mlp_duel_step on one dimension; every other set is a
  *                 follower running the currently-applied pair. Every period
  *                 (mlp_duel_period), the follower population's pooled stall-cycles-per-
- *                 request is compared against each probe role's mean per-set ratio; if a
- *                 probe clears mlp_duel_margin, the single best-performing candidate
- *                 across both dimensions is rolled out to every set for the next period.
+ *                 request is compared against each probe role's mean per-set ratio; if the
+ *                 follower/role ratio clears mlp_duel_margin, the single best-performing
+ *                 candidate across both dimensions is rolled out to every set for the next
+ *                 period.
  *                 A no-op (dueling off, or this cache isn't running REPL_MLP): every
  *                 function below falls back to the raw CLI lambda or returns immediately.
  ***************************************************************************************/
