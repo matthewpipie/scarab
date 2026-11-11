@@ -75,13 +75,10 @@ void cache_set_lacs_next_insert(Flag valid, uns cost) {
   g_lacs_next_cost = cost;
 }
 
-/* REPL_MLP with mlp_boost_countdown: a marked line is protected for this many ticks of its set
-   (a 2-bit countdown), and a set ticks every round(mlp_boost / MLP_COUNTDOWN_TICKS) fills. */
-#define MLP_COUNTDOWN_TICKS 3
-
 /* REPL_MLP with mlp_boost_countdown: (re)start a marked line's countdown, on its fill or a hit. */
 static inline void mlp_countdown_start(Cache_Entry* entry) {
-  entry->mlp_ticks_left = MLP_BOOST_COUNTDOWN && entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+  entry->mlp_ticks_left =
+      MLP_BOOST_COUNTDOWN && entry->mlp_boost > 0.0 ? MLP_BOOST_COUNTDOWN_MAX_TICKS : 0;
 }
 
 /* REPL_MLP with mlp_boost_countdown: after a fill into `set` at fill_way, decrement the countdown
@@ -94,7 +91,7 @@ static void mlp_countdown_tick(Cache* cache, uns8 proc_id, uns set, uns fill_way
     Cache_Entry* entry = &cache->entries[set][ii];
     if (ii == fill_way || !entry->valid || !entry->mlp_ticks_left)
       continue;
-    Counter period = MAX2((Counter)1, (Counter)(entry->mlp_boost / MLP_COUNTDOWN_TICKS + 0.5));
+    Counter period = MAX2((Counter)1, (Counter)(entry->mlp_boost / MLP_BOOST_COUNTDOWN_MAX_TICKS + 0.5));
     if (cache->mlp_set_fills[set] % period || --entry->mlp_ticks_left)
       continue; /* not a tick for this line, or ticks left */
     entry->last_access_time = sim_time;

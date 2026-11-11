@@ -281,15 +281,16 @@ DEF_PARAM(mlp_instr_starve_min, MLP_INSTR_STARVE_MIN, uns, uns, 1, )
    rank below lambda. Lambda 0 is plain LRU either way. The MID/LOWQTR prefetch insertion
    positions do not set the stamp (it stays at MRU). */
 DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
-/* mlp_boost_countdown: keep REPL_MLP's boost as a 2-bit countdown per line and a tick per set,
-   instead of mlp_boost_in_fills' fill-count age per line. A set ticks every round(lambda / 3)
-   fills into it. A marked line's countdown is set to 3 when it is filled and on every hit, and
-   each tick of its set decrements it. The line is protected while its countdown is nonzero, so
-   protection lasts between 2/3 lambda and lambda fills after its last touch. The victim is the
-   least recently used unprotected line, or the least recently used line if every line is
-   protected. A line whose countdown reaches 0 moves to MRU, as mlp_boost_in_fills ranks a marked
-   line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Cannot be
-   combined with mlp_boost_in_fills. */
+/* mlp_boost_countdown: keep REPL_MLP's boost as a countdown per line (mlp_boost_countdown_max_ticks
+   ticks, 3 by default) and a tick per set, instead of mlp_boost_in_fills' fill-count age per line.
+   A set ticks every round(lambda / mlp_boost_countdown_max_ticks) fills into it. A marked line's
+   countdown is set to mlp_boost_countdown_max_ticks when it is filled and on every hit, and each
+   tick of its set decrements it. The line is protected while its countdown is nonzero, so
+   protection lasts between (mlp_boost_countdown_max_ticks - 1) / mlp_boost_countdown_max_ticks and
+   1 lambda fills after its last touch. The victim is the least recently used unprotected line, or
+   the least recently used line if every line is protected. A line whose countdown reaches 0 moves
+   to MRU, as mlp_boost_in_fills ranks a marked line lambda fills after its last touch as if touched
+   then. Lambda 0 is plain LRU. Cannot be combined with mlp_boost_in_fills. */
 DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
 /* mlp_boost_countdown_tiered: break mlp_boost_countdown's single protected tier into one tier per
    countdown value. The victim is the resident line with the lowest mlp_ticks_left (0 = unprotected
@@ -304,6 +305,12 @@ DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, FA
    never marked need no separate bit to tell apart. No effect unless mlp_boost_countdown is also
    on. */
 DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Flag, FALSE, )
+/* mlp_boost_countdown_max_ticks: the countdown value mlp_boost_countdown (re)starts a marked line
+   at, in place of the fixed 3. A set still ticks every round(lambda / mlp_boost_countdown_max_ticks)
+   fills, so raising this only lengthens how many distinct tiers mlp_boost_countdown_tiered can rank
+   a line through before it expires -- it does not change how many lambda fills protection lasts for.
+   No effect unless mlp_boost_countdown is also on. */
+DEF_PARAM(mlp_boost_countdown_max_ticks, MLP_BOOST_COUNTDOWN_MAX_TICKS, uns, uns, 3, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
    18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
    mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /
