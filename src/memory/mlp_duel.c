@@ -73,6 +73,14 @@ typedef struct Mlp_Duel_State_struct {
   double follower_delta_sum;  /* accounting only: how far things drift since the last change */
   Counter follower_delta_periods;
 
+  /* mlp_duel_confirm_consecutive: the winning candidate from the period before this one, held
+     back rather than committed -- only applied once the same role+direction wins again on an
+     immediately following period. Any period whose winner differs (or that has no winner at
+     all) resets this to "no streak", so confirmation always means *consecutive*. */
+  Flag pending_valid;
+  Flag pending_is_ins;
+  Flag pending_plus;
+
   float ins_lambda, data_lambda;    /* currently-applied, shared by every set this period */
   uns lambda_hist_size;
   Counter* ins_lambda_periods;      /* histogram: periods spent at each lambda bucket */
@@ -354,13 +362,43 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
     }
   }
 
+  Flag winner_exists = FALSE, winner_is_ins = FALSE, winner_plus = FALSE;
+  if (ins_candidate && (!data_candidate || ins_ratio >= data_ratio)) {
+    winner_exists = TRUE;
+    winner_is_ins = TRUE;
+    winner_plus = ins_plus_wins;
+  } else if (data_candidate) {
+    winner_exists = TRUE;
+    winner_is_ins = FALSE;
+    winner_plus = data_plus_wins;
+  }
+
+  Flag commit = winner_exists;
+  if (MLP_DUEL_CONFIRM_CONSECUTIVE) {
+    if (!winner_exists) {
+      /* No candidate cleared margin this period -- any streak in progress is broken. */
+      s->pending_valid = FALSE;
+    } else if (s->pending_valid && s->pending_is_ins == winner_is_ins && s->pending_plus == winner_plus) {
+      /* Same role+direction won on two consecutive periods -- commit now. */
+      commit = TRUE;
+      s->pending_valid = FALSE;
+    } else {
+      /* First period this role+direction has won (or it beat a different previous winner) --
+         hold it back and see if it repeats next period before committing. */
+      commit = FALSE;
+      s->pending_valid = TRUE;
+      s->pending_is_ins = winner_is_ins;
+      s->pending_plus = winner_plus;
+    }
+  }
+
   Flag ins_updated = FALSE, data_updated = FALSE;
   float lo = MLP_DUEL_LAMBDA_MIN, hi = MLP_DUEL_LAMBDA_MAX;
-  if (ins_candidate && (!data_candidate || ins_ratio >= data_ratio)) {
-    s->ins_lambda = MAX2(lo, MIN2(hi, s->ins_lambda + (ins_plus_wins ? MLP_DUEL_STEP : -MLP_DUEL_STEP)));
+  if (commit && winner_is_ins) {
+    s->ins_lambda = MAX2(lo, MIN2(hi, s->ins_lambda + (winner_plus ? MLP_DUEL_STEP : -MLP_DUEL_STEP)));
     ins_updated = TRUE;
-  } else if (data_candidate) {
-    s->data_lambda = MAX2(lo, MIN2(hi, s->data_lambda + (data_plus_wins ? MLP_DUEL_STEP : -MLP_DUEL_STEP)));
+  } else if (commit) {
+    s->data_lambda = MAX2(lo, MIN2(hi, s->data_lambda + (winner_plus ? MLP_DUEL_STEP : -MLP_DUEL_STEP)));
     data_updated = TRUE;
   }
 

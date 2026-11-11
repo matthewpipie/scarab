@@ -338,6 +338,13 @@ DEF_PARAM(mlp_duel_lambda_max, MLP_DUEL_LAMBDA_MAX, float, float, 64.0, )
    direction accordingly, so mlp_duel_margin still means "the winning role must beat the
    follower population by at least this ratio" either way. */
 DEF_PARAM(mlp_duel_marked_hit_metric, MLP_DUEL_MARKED_HIT_METRIC, Flag, Flag, FALSE, )
+/* mlp_duel_confirm_consecutive: FALSE (default) commits a candidate the first period it clears
+   mlp_duel_margin, same as always. TRUE instead requires the same role+direction to clear
+   margin on two periods in a row before it's committed -- a single noisy period can propose a
+   candidate but not move the lambda by itself; a different winner (or no winner at all) the
+   next period resets the streak, so confirmation always means *consecutive*. Filters period-to-
+   period sampling noise at the cost of reacting one period slower to genuine phase changes. */
+DEF_PARAM(mlp_duel_confirm_consecutive, MLP_DUEL_CONFIRM_CONSECUTIVE, Flag, Flag, FALSE, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
