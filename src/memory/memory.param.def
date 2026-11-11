@@ -297,6 +297,13 @@ DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
    nonzero countdown together and picking the least recently used regardless of how close to
    expiry it is. No effect unless mlp_boost_countdown is also on. */
 DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, FALSE, )
+/* mlp_boost_countdown_no_revive: only restart a marked line's countdown on a hit if it is still
+   mid-countdown (mlp_ticks_left > 0); a line whose countdown already reached 0 stays at 0 until
+   it is next filled, instead of a hit reviving it to MLP_COUNTDOWN_TICKS regardless. This makes
+   mlp_ticks_left == 0 mean "not protected" uniformly, so a lapsed marked line and a line that was
+   never marked need no separate bit to tell apart. No effect unless mlp_boost_countdown is also
+   on. */
+DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Flag, FALSE, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
    18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
    mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /

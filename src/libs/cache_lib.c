@@ -213,6 +213,8 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
             "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
     ASSERTM(0, !MLP_BOOST_COUNTDOWN_TIERED || MLP_BOOST_COUNTDOWN,
             "mlp_boost_countdown_tiered requires mlp_boost_countdown\n");
+    ASSERTM(0, !MLP_BOOST_COUNTDOWN_NO_REVIVE || MLP_BOOST_COUNTDOWN,
+            "mlp_boost_countdown_no_revive requires mlp_boost_countdown\n");
   }
 
   /* allocate memory for all the sets (pointers to line arrays)  */
@@ -851,8 +853,10 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
       cur_entry->last_access_time = sim_time;
       if (cache->mlp_set_fills)  // REPL_MLP only: the policies above share this case
         cur_entry->mlp_stamp = cache->mlp_set_fills[set];
-      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && cur_entry->mlp_boost > 0.0)
-        mlp_countdown_start(cur_entry); /* a fill or hit restarts a marked line's countdown */
+      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && cur_entry->mlp_boost > 0.0 &&
+          (!MLP_BOOST_COUNTDOWN_NO_REVIVE || cur_entry->mlp_ticks_left > 0))
+        mlp_countdown_start(cur_entry); /* a fill or hit restarts a marked line's countdown, unless
+                                            mlp_boost_countdown_no_revive and it already lapsed */
       break;
     case REPL_RANDOM: {
       char* old_rand_state = (char*)setstate(rand_repl_state);
