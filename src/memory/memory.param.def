@@ -321,8 +321,8 @@ DEF_PARAM(mlp_duel_period, MLP_DUEL_PERIOD, char*, string, "i:1000000", )
 DEF_PARAM(mlp_duel_num_groups, MLP_DUEL_NUM_GROUPS, uns, uns, 8, )
 /* mlp_duel_margin: the fixed ratio threshold a probe role's (follower_metric / its own
    metric) must clear to become a candidate for the period's lambda update -- e.g. 1.25
-   requires the follower population to be stalling 25% more than the probe role before
-   that role's lambda direction is adopted. */
+   requires the follower population to be stalling (per access) 25% more than the probe role
+   before that role's lambda direction is adopted. */
 DEF_PARAM(mlp_duel_margin, MLP_DUEL_MARGIN, float, float, 2.0, )
 /* mlp_duel_step: how much a committed lambda update moves ins_lambda / data_lambda (and
    the +/- offset a probe set's own lambda carries while it's being tested). */
@@ -332,10 +332,11 @@ DEF_PARAM(mlp_duel_init_lambda, MLP_DUEL_INIT_LAMBDA, float, float, 8.0, )
 DEF_PARAM(mlp_duel_lambda_min, MLP_DUEL_LAMBDA_MIN, float, float, 0.0, )
 DEF_PARAM(mlp_duel_lambda_max, MLP_DUEL_LAMBDA_MAX, float, float, 64.0, )
 /* mlp_duel_marked_hit_metric: FALSE (default) scores each population by its mean
-   stall-cycles-per-fill (lower is better -- see mlp_duel_margin). TRUE instead scores each
-   population by its marked-hit rate -- hits on lines whose mlp_mark is non-NONE, divided by
-   all demand accesses to that population's sets (higher is better) -- and flips the ratio
-   direction accordingly, so mlp_duel_margin still means "the winning role must beat the
+   stall-cycles-per-access -- bound cycles summed over this population's fills, divided by all
+   of its demand accesses, hit or miss (lower is better -- see mlp_duel_margin). TRUE instead
+   scores each population by its marked-hit rate -- hits on lines whose mlp_mark is non-NONE,
+   divided by that same all-demand-accesses denominator (higher is better) -- and flips the
+   ratio direction accordingly, so mlp_duel_margin still means "the winning role must beat the
    follower population by at least this ratio" either way. */
 DEF_PARAM(mlp_duel_marked_hit_metric, MLP_DUEL_MARKED_HIT_METRIC, Flag, Flag, FALSE, )
 /* mlp_duel_confirm_consecutive: FALSE (default) commits a candidate the first period it clears

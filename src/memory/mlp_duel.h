@@ -32,9 +32,11 @@
  *                 mlp_duel_margin, the single best-performing candidate across both
  *                 dimensions is rolled out to every set for the next period (immediately, or
  *                 only once the same role+direction wins twice in a row under
- *                 mlp_duel_confirm_consecutive). The score is mean stall-cycles-per-fill by
+ *                 mlp_duel_confirm_consecutive). The score is mean stall-cycles-per-access by
  *                 default (lower is better) or, with mlp_duel_marked_hit_metric, marked-hit
- *                 rate (higher is better) -- see mlp_duel.c's metric_ratio.
+ *                 rate (higher is better) -- see mlp_duel.c's metric_ratio. Both are a fraction
+ *                 over the same denominator: all demand accesses (hit or miss) to the
+ *                 population's sets, so the two metrics are directly comparable in scale.
  *                 A no-op (dueling off, or this cache isn't running REPL_MLP): every
  *                 function below falls back to the raw CLI lambda or returns immediately.
  ***************************************************************************************/
