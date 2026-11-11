@@ -291,6 +291,12 @@ DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
    line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Cannot be
    combined with mlp_boost_in_fills. */
 DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
+/* mlp_boost_countdown_tiered: break mlp_boost_countdown's single protected tier into one tier per
+   countdown value. The victim is the resident line with the lowest mlp_ticks_left (0 = unprotected
+   still goes first), ties to the least recently used within a tier -- instead of grouping every
+   nonzero countdown together and picking the least recently used regardless of how close to
+   expiry it is. No effect unless mlp_boost_countdown is also on. */
+DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, FALSE, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
    18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
    mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /

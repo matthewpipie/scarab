@@ -208,9 +208,12 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
   cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
-  if (repl_policy == REPL_MLP)
+  if (repl_policy == REPL_MLP) {
     ASSERTM(0, !(MLP_BOOST_COUNTDOWN && MLP_BOOST_IN_FILLS),
             "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
+    ASSERTM(0, !MLP_BOOST_COUNTDOWN_TIERED || MLP_BOOST_COUNTDOWN,
+            "mlp_boost_countdown_tiered requires mlp_boost_countdown\n");
+  }
 
   /* allocate memory for all the sets (pointers to line arrays)  */
   cache->entries = (Cache_Entry**)malloc(sizeof(Cache_Entry*) * num_sets);
@@ -710,7 +713,10 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
     case REPL_MLP: {
       if (MLP_BOOST_COUNTDOWN) {
         /* Evict the least recently used unprotected line, or the least recently used line if
-           every line is protected. With every boost 0 nothing is protected: plain LRU. */
+           every line is protected. With every boost 0 nothing is protected: plain LRU.
+           mlp_boost_countdown_tiered instead evicts the lowest mlp_ticks_left outright (0 still
+           first), ties to the least recently used within that tier, so a line one tick from
+           expiry goes before one freshly reset to 3 rather than being grouped with it. */
         uns best_ind = 0;
         for (ii = 0; ii < cache->assoc; ii++) {
           Cache_Entry* entry = &cache->entries[set][ii];
@@ -719,6 +725,12 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
             return entry;
           }
           Cache_Entry* best = &cache->entries[set][best_ind];
+          if (MLP_BOOST_COUNTDOWN_TIERED) {
+            if (ii == 0 || entry->mlp_ticks_left < best->mlp_ticks_left ||
+                (entry->mlp_ticks_left == best->mlp_ticks_left && entry->last_access_time < best->last_access_time))
+              best_ind = ii;
+            continue;
+          }
           Flag prot = entry->mlp_ticks_left > 0, best_prot = best->mlp_ticks_left > 0;
           if (ii == 0 || (best_prot && !prot) ||
               (prot == best_prot && entry->last_access_time < best->last_access_time))
