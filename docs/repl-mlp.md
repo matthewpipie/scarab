@@ -5,7 +5,7 @@ REPL_MLP (`--mlc_cache_repl_policy 9`) is L2 LRU plus protection for lines whose
 ## Recommended
 
 ```
---mlc_cache_repl_policy 9 --mlp_boost_in_fills 1 --mlp_lin_instr_lambda 64
+--mlc_cache_repl_policy 9 --mlp_boost_in_fills 1 --mlp_lin_instr_lambda 64 --mlp_lin_data_lambda 16
 ```
 
 | Parameter | Value | Default? | What it does |
@@ -16,11 +16,16 @@ REPL_MLP (`--mlc_cache_repl_policy 9`) is L2 LRU plus protection for lines whose
 | `mlp_instr_mark` | 2 | yes | Marks only fills a demand fetch reached, and drops those fetch was resteered away from while it waited on them |
 | `mlp_instr_starve` | 2 | yes | Counts a waiting cycle only if the backend was also starved and the ROB head was not a load waiting on memory |
 | `mlp_instr_starve_min` | 1 | yes | At least one such cycle |
-| `mlp_lin_data_lambda` | 0 | yes | No data-side boost |
+| `mlp_lin_data_lambda` | 16 | no (0, off) | γ for data lines. 64 is better on datacenter but worse on every other suite. |
+| `mlp_data_bound` | 2 | yes | Counts, per request, the cycles nothing retired because the ROB head was a load waiting on it |
+| `mlp_data_bound_min` | 16 | yes | At least 16 such cycles |
+| `mlp_lin_data_thresh` | 0 | yes | No ratio test. 0.7, together with `--mlp_data_bound_min 0`, gives the old ratio marking. |
 
 ### Which lines get marked
 
-A line is marked at its L2 fill if at least one earlier cycle met all of these at once:
+**Data lines.** A line is marked at its L2 fill if, between a load merging into its request and the fill, there were at least 16 cycles in which the ROB head was a load waiting on that request and nothing retired. Hardware needs a 5-bit saturating counter per MSHR, bumped from the ROB head. Every input is something the core can see.
+
+**Instruction lines.** A line is marked at its L2 fill if at least one earlier cycle met all of these at once:
 
 - **Fetch was stuck on this line.** Its request was still outstanding, fetch and the uop cache delivered no ops, and the icache stage stopped on the miss.
 - **The backend was starved.** Rename passed no ops to the ROB, the ROB was not full, and rename was not stalled on registers.
@@ -73,12 +78,40 @@ These numbers are from #20, which used the older threshold marking.
 - **The resteer filter matters in both settings.** With FDIP off, the old ratio mode marks the most lines but trails mark 2 by 0.58%. The likely cause is that it protects wrong-path lines.
 - **The ROB-head check is the right scope.** Requiring no outstanding load anywhere drops lines that still starved the backend, since a load miss behind the head does not block retirement.
 
+### Data marking
+
+**Setup:** `golden_small`, top 6 simpoints, the recommended instruction boost (γi 64) in every row, data marking changed at the L2 only, 0 simpoints dropped.
+
+- Google: 12 workloads (63 simpoints), 10M warmup + 50M measured instructions.
+- SPEC2006: 55 workloads (294 simpoints). SPEC2017: 36 (168). Geekbench: 13 (78). Datacenter: 7 (36). All at 10M warmup + 10M measured.
+
+Each number is the geomean IPC gain over L2 LRU. The last column is the geomean of the five suite gains, suites weighted equally. The marked share of load fills for the default is 38% (Google), 40% (SPEC2006), 23% (SPEC2017), 65% (Geekbench) and 55% (Datacenter).
+
+| Data marking, γd 16 | Google | SPEC2006 | SPEC2017 | Geekbench | Datacenter | 5 suites |
+|---|---|---|---|---|---|---|
+| **Default: ROB head ≥ 16** | **+2.64** | **+0.36** | **+0.12** | **−0.04** | **+6.19** | **+1.83** |
+| ROB head ≥ 32 | +2.64 | +0.35 | +0.14 | −0.05 | +6.18 | +1.82 |
+| ROB head ≥ 64 | +2.53 | +0.25 | +0.23 | −0.07 | +6.13 | +1.79 |
+| ROB head ≥ 1 (1 bit) | +2.40 | +0.26 | +0.08 | −0.03 | +6.22 | +1.76 |
+| Old ratio > 0.7 | +2.31 | +0.18 | −0.02 | −0.06 | +6.28 | +1.71 |
+| fu_wait cycles per request ≥ 32 (`--mlp_data_bound 1`) | +2.21 | +0.33 | −0.11 | −0.05 | +6.33 | +1.71 |
+| fu_wait load-cycles ≥ 128 (`--mlp_data_bound 0`) | +1.89 | +0.21 | +0.20 | −0.09 | +6.31 | +1.68 |
+| Every fill a load waited on (`--mlp_data_bound_min 0`) | +2.31 | −0.10 | −0.15 | −0.04 | +6.28 | +1.63 |
+| No data boost (γd 0) | +2.07 | 0.00 | +0.01 | +0.02 | +5.93 | +1.58 |
+| ROB head ≥ 16, γd 64 | +1.55 | +0.18 | −0.11 | −0.16 | +6.65 | +1.58 |
+
+The ratio row at γi 64, γd 16 is the best point of the 6×6 γi × γd sweep on `golden_small`. The ratio, γd 0 and LRU numbers come from that sweep (main f1fce3c). On smoke runs (sierra.a.4, sierra.a.6, sphinx3), this code with the old defaults matched it bit for bit.
+
+### Why the ROB-head count
+
+- **It charges each stall to one miss.** A cycle counts only for the request the ROB head is waiting on. The ratio and the fu_wait counts (`mlp_data_bound` 0 and 1) charge every miss in flight during a backend-bound cycle, so misses that overlap the one blocking retirement get marked too.
+- **The threshold is flat.** Minimums of 16, 32 and 64 are within 0.04 of each other, and even 1 (a single bit per MSHR) beats the ratio.
+- **The fu_wait counts cannot replace the ratio.** Their best settings tie or trail it, and they lose on Google.
+- **Where it gains and loses.** The biggest gains over the ratio are sphinx3 (+21.2 vs +13.3), mcf (+6.3 vs +3.1) and xalancbmk (+1.5 vs +0.8). The biggest losses are milc (−1.9 vs −1.5) and cactusADM (−1.9 vs −1.2).
+- **γd 16, not 64.** γd 64 is best on datacenter (+6.65), but it is worse on the other four suites (Google +1.55).
+
 ## Not recommended yet
 
-- **Data-side boost (`mlp_lin_data_lambda`)**
-  - SPEC2006: its best is +0.13 (γ16), or +0.29 with #25's FU-wait condition. Plain DRRIP gets +1.0.
-  - SPEC2017: it loses at every fixed setting tested.
-  - Datacenter: it gained +1.89 (γ64), but it has not been run together with the instruction boost.
 - **DRRIP as the base (`--mlp_rrip_boost`)**
   - On Google, DRRIP alone is −0.95 vs LRU.
   - DRRIP with instruction credits of 16 got +1.36 (mark 2 alone, top 2 simpoints), against +1.75 for LRU with γ64.
@@ -89,3 +122,6 @@ These numbers are from #20, which used the older threshold marking.
 - γ above 64 with FDIP off.
 - The countdown variant with `mlp_instr_starve 2`, and with FDIP off.
 - `mlp_instr_starve 2` on suites other than Google. Datacenter instruction boost was +8.52 with the old threshold marking.
+- `mlp_data_bound_min` between 1 and 16, and between 16 and 32. Only 1, 16, 32 and 64 have been run.
+- Data marking on `golden_small_incl`, where the γ sweep's best with the ratio was γi 256, γd 64.
+- The data boost with the countdown variant, or with DRRIP as the base.
