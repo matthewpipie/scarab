@@ -349,7 +349,7 @@ DEF_PARAM(mlp_duel_margin, MLP_DUEL_MARGIN, float, float, 2.0, )
    the +/- offset a probe set's own lambda carries while it's being tested). */
 DEF_PARAM(mlp_duel_step, MLP_DUEL_STEP, float, float, 4.0, )
 /* mlp_duel_init_lambda: ins_lambda / data_lambda's starting value when dueling is on. */
-DEF_PARAM(mlp_duel_init_lambda, MLP_DUEL_INIT_LAMBDA, float, float, 8.0, )
+DEF_PARAM(mlp_duel_init_lambda, MLP_DUEL_INIT_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_duel_lambda_min, MLP_DUEL_LAMBDA_MIN, float, float, 0.0, )
 DEF_PARAM(mlp_duel_lambda_max, MLP_DUEL_LAMBDA_MAX, float, float, 64.0, )
 /* mlp_duel_marked_hit_metric: FALSE (default) scores each population by its mean
