@@ -84,10 +84,6 @@ void cache_set_lacs_next_insert(Flag valid, uns cost) {
   g_lacs_next_cost = cost;
 }
 
-/* REPL_MLP with mlp_boost_countdown: a marked line is protected for this many ticks of its set
-   (a 2-bit countdown), and a set ticks every round(mlp_boost / MLP_COUNTDOWN_TICKS) fills. */
-#define MLP_COUNTDOWN_TICKS 3
-
 /* REPL_MLP: the numeric boost `entry`'s mark currently carries in `set`, looked up fresh every
    time from the set's current duel state (or the plain CLI lambda when dueling is off) rather
    than a value frozen at fill time -- so a lambda change applies to every resident marked line
@@ -100,7 +96,8 @@ static inline float mlp_current_boost(Cache* cache, uns set, Cache_Entry* entry)
 
 /* REPL_MLP with mlp_boost_countdown: (re)start a marked line's countdown, on its fill or a hit. */
 static inline void mlp_countdown_start(Cache* cache, uns set, Cache_Entry* entry) {
-  entry->mlp_ticks_left = MLP_BOOST_COUNTDOWN && mlp_current_boost(cache, set, entry) > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+  entry->mlp_ticks_left =
+      MLP_BOOST_COUNTDOWN && mlp_current_boost(cache, set, entry) > 0.0 ? MLP_BOOST_COUNTDOWN_MAX_TICKS : 0;
 }
 
 /* REPL_MLP with mlp_boost_countdown: after a fill into `set` at fill_way, decrement the countdown
@@ -113,7 +110,7 @@ static void mlp_countdown_tick(Cache* cache, uns8 proc_id, uns set, uns fill_way
     Cache_Entry* entry = &cache->entries[set][ii];
     if (ii == fill_way || !entry->valid || !entry->mlp_ticks_left)
       continue;
-    Counter period = MAX2((Counter)1, (Counter)(mlp_current_boost(cache, set, entry) / MLP_COUNTDOWN_TICKS + 0.5));
+    Counter period = MAX2((Counter)1, (Counter)(mlp_current_boost(cache, set, entry) / MLP_BOOST_COUNTDOWN_MAX_TICKS + 0.5));
     if (cache->mlp_set_fills[set] % period || --entry->mlp_ticks_left)
       continue; /* not a tick for this line, or ticks left */
     entry->last_access_time = sim_time;
@@ -227,9 +224,14 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
   cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
-  if (repl_policy == REPL_MLP)
+  if (repl_policy == REPL_MLP) {
     ASSERTM(0, !(MLP_BOOST_COUNTDOWN && MLP_BOOST_IN_FILLS),
             "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
+    ASSERTM(0, !MLP_BOOST_COUNTDOWN_TIERED || MLP_BOOST_COUNTDOWN,
+            "mlp_boost_countdown_tiered requires mlp_boost_countdown\n");
+    ASSERTM(0, !MLP_BOOST_COUNTDOWN_NO_REVIVE || MLP_BOOST_COUNTDOWN,
+            "mlp_boost_countdown_no_revive requires mlp_boost_countdown\n");
+  }
   cache->predictor = NULL;
   mlp_duel_maybe_init(cache, repl_policy);
 
@@ -741,7 +743,10 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
     case REPL_MLP: {
       if (MLP_BOOST_COUNTDOWN) {
         /* Evict the least recently used unprotected line, or the least recently used line if
-           every line is protected. With every boost 0 nothing is protected: plain LRU. */
+           every line is protected. With every boost 0 nothing is protected: plain LRU.
+           mlp_boost_countdown_tiered instead evicts the lowest mlp_ticks_left outright (0 still
+           first), ties to the least recently used within that tier, so a line one tick from
+           expiry goes before one freshly reset to 3 rather than being grouped with it. */
         uns best_ind = 0;
         for (ii = 0; ii < cache->assoc; ii++) {
           Cache_Entry* entry = &cache->entries[set][ii];
@@ -750,6 +755,12 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
             return entry;
           }
           Cache_Entry* best = &cache->entries[set][best_ind];
+          if (MLP_BOOST_COUNTDOWN_TIERED) {
+            if (ii == 0 || entry->mlp_ticks_left < best->mlp_ticks_left ||
+                (entry->mlp_ticks_left == best->mlp_ticks_left && entry->last_access_time < best->last_access_time))
+              best_ind = ii;
+            continue;
+          }
           Flag prot = entry->mlp_ticks_left > 0, best_prot = best->mlp_ticks_left > 0;
           if (ii == 0 || (best_prot && !prot) ||
               (prot == best_prot && entry->last_access_time < best->last_access_time))
@@ -870,8 +881,10 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
       cur_entry->last_access_time = sim_time;
       if (cache->mlp_set_fills)  // REPL_MLP only: the policies above share this case
         cur_entry->mlp_stamp = cache->mlp_set_fills[set];
-      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && mlp_current_boost(cache, set, cur_entry) > 0.0)
-        mlp_countdown_start(cache, set, cur_entry); /* a fill or hit restarts a marked line's countdown */
+      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && mlp_current_boost(cache, set, cur_entry) > 0.0 &&
+          (!MLP_BOOST_COUNTDOWN_NO_REVIVE || cur_entry->mlp_ticks_left > 0))
+        mlp_countdown_start(cache, set, cur_entry); /* a fill or hit restarts a marked line's countdown, unless
+                                                        mlp_boost_countdown_no_revive and it already lapsed */
       break;
     case REPL_RANDOM: {
       char* old_rand_state = (char*)setstate(rand_repl_state);
