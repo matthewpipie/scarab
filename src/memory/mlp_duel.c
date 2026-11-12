@@ -303,11 +303,20 @@ static void mlp_duel_reset_period(Mlp_Duel_State* s) {
   }
 }
 
+/* One line per period, timestamped by cycle_count, giving the then-applied lambdas -- lets the
+   lambda trajectory over the run be reconstructed and plotted against time, unlike
+   mlp_duel_finish's end-of-run histogram which only has the lifetime bucket totals. */
+static void mlp_duel_trace(Mlp_Duel_State* s) {
+  fprintf(mystderr, "mlp_duel: trace cycle=%llu ins_lambda=%.1f data_lambda=%.1f\n",
+          (unsigned long long)cycle_count, s->ins_lambda, s->data_lambda);
+}
+
 static void mlp_duel_end_period(Mlp_Duel_State* s) {
   Counter follower_sum = MLP_DUEL_MARKED_HIT_METRIC ? s->follower_marked_hit_count : s->follower_bound_sum;
   Counter follower_count = s->follower_access_count;
   if (!follower_count) {
     /* Nothing to compare the leader populations against this period. */
+    mlp_duel_trace(s);
     mlp_duel_reset_period(s);
     return;
   }
@@ -418,6 +427,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
 
   s->ins_lambda_periods[lambda_bucket(s, s->ins_lambda)]++;
   s->data_lambda_periods[lambda_bucket(s, s->data_lambda)]++;
+  mlp_duel_trace(s);
 
   mlp_duel_reset_period(s);
 }
