@@ -360,6 +360,15 @@ DEF_PARAM(mlp_duel_lambda_max, MLP_DUEL_LAMBDA_MAX, float, float, 64.0, )
    ratio direction accordingly, so mlp_duel_margin still means "the winning role must beat the
    follower population by at least this ratio" either way. */
 DEF_PARAM(mlp_duel_marked_hit_metric, MLP_DUEL_MARKED_HIT_METRIC, Flag, Flag, FALSE, )
+/* mlp_duel_window_denom: FALSE (default) keeps mlp_duel_marked_hit_metric's existing denominator
+   (demand accesses, hit or miss) under the non-marked-hit metric too, so the default metric is
+   stall-cycles-per-access. TRUE instead divides by ld_window_cycles/fe_window_cycles summed over
+   the same fills (only misses call mlp_duel_record; hits contribute neither), i.e. the same
+   bound/window fraction mlp_stage_fill_boost itself thresholds on -- unlike raw bound_cycles,
+   this fraction isn't inflated when several loads merge onto one outstanding request (both
+   numerator and denominator inflate by the same factor, so it cancels). No effect under
+   mlp_duel_marked_hit_metric, which keeps leader_access_count regardless. */
+DEF_PARAM(mlp_duel_window_denom, MLP_DUEL_WINDOW_DENOM, Flag, Flag, FALSE, )
 /* mlp_duel_confirm_consecutive: FALSE (default) commits a candidate the first period it clears
    mlp_duel_margin, same as always. TRUE instead requires the same role+direction to clear
    margin on two periods in a row before it's committed -- a single noisy period can propose a

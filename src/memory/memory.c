@@ -3015,7 +3015,7 @@ static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
         mark = MLP_MARK_DATA;
       }
       if (mlp)
-        mlp_duel_record(cache, set, req->ld_bound_cycles);
+        mlp_duel_record(cache, set, req->ld_bound_cycles, req->ld_window_cycles);
     }
     if (boost > 0.0) {
       STAT_EVENT(req->proc_id, MLP_MARKED_LOAD);
@@ -3028,7 +3028,8 @@ static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
       mark = MLP_MARK_INSTR;
     }
     if (mlp)
-      mlp_duel_record(cache, set, MLP_INSTR_STARVE ? req->fe_starve_cycles : req->fe_bound_cycles);
+      mlp_duel_record(cache, set, MLP_INSTR_STARVE ? req->fe_starve_cycles : req->fe_bound_cycles,
+                       req->fe_window_cycles);
     if (boost > 0.0) {
       STAT_EVENT(req->proc_id, MLP_MARKED_FETCH);
       if (popcount32(req->types) > 1)
