@@ -212,6 +212,9 @@ struct Mem_Req_struct {
   Counter ld_bound_last_cycle;               /* the last cycle ld_bound_req_cycles counted */
   Counter rob_stall_cycles;                  /* Miss cost (stats only): cycles nothing retired
                                                  because the ROB head was a load waiting on this */
+  Counter rob_iq_stall_cycles;                /* REPL_MLP (mlp_data_bound 3): subset of
+                                                 rob_stall_cycles where the issue queue had ops
+                                                 waiting but issued none that cycle */
   Counter fe_stall_cycles;                   /* Miss cost (stats only): cycles the backend got no
                                                  ops while the on-path icache waited on this */
   Flag fe_abandoned;                         /* REPL_MLP (mlp_instr_mark 2): fetch was redirected

@@ -2526,6 +2526,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->ld_bound_req_cycles = 0;
   new_req->ld_bound_last_cycle = MAX_CTR;
   new_req->rob_stall_cycles = 0;
+  new_req->rob_iq_stall_cycles = 0;
   new_req->fe_stall_cycles = 0;
   new_req->fe_abandoned = FALSE;
 
@@ -2976,6 +2977,12 @@ static inline void l1_miss_is_satisfied(Mem_Req* req) {
    Marked-load/fetch/merge stats: a "merge" is a request more than one op or type coalesced into --
    req->op_count > 1 on the data side (multiple loads sharing the miss), popcount32(req->types) > 1
    on the instruction side (e.g. a demand fetch merged into a request that started as a prefetch). */
+/* The instruction-side equivalent of mlp_data_bound_count: fe_starve_cycles under
+   mlp_instr_starve, else fe_bound_cycles. */
+static Counter mlp_instr_bound_count(Mem_Req* req) {
+  return MLP_INSTR_STARVE ? req->fe_starve_cycles : req->fe_bound_cycles;
+}
+
 /* Whether a fill a demand fetch reached is marked instruction-bound, per mlp_instr_mark. Mode 0
    uses req->fe_bound_cycles/fe_window_cycles, accumulated in icache_stage.c, with
    req->fe_starve_cycles in place of fe_bound_cycles under mlp_instr_starve; mode 2 uses
@@ -2986,7 +2993,7 @@ static Flag mlp_instr_mark_rule(Mem_Req* req) {
     return TRUE;
   if (MLP_INSTR_MARK == 2)
     return !req->fe_abandoned;
-  Counter bound = MLP_INSTR_STARVE ? req->fe_starve_cycles : req->fe_bound_cycles;
+  Counter bound = mlp_instr_bound_count(req);
   return req->fe_window_cycles && (double)bound / (double)req->fe_window_cycles > (double)MLP_LIN_INSTR_THRESH;
 }
 
@@ -3018,8 +3025,10 @@ static Counter mlp_data_bound_count(Mem_Req* req) {
       return req->ld_bound_req_cycles;
     case 2:
       return req->rob_stall_cycles;
+    case 3:
+      return req->rob_iq_stall_cycles;
     default:
-      ASSERTM(req->proc_id, FALSE, "mlp_data_bound %u is not 0, 1 or 2\n", MLP_DATA_BOUND);
+      ASSERTM(req->proc_id, FALSE, "mlp_data_bound %u is not 0, 1, 2 or 3\n", MLP_DATA_BOUND);
       return 0;
   }
 }
@@ -3035,7 +3044,25 @@ static Flag mlp_data_marked(Mem_Req* req) {
   return mlp_data_bound_count(req) >= MLP_DATA_BOUND_MIN;
 }
 
+/* Bound-count stats (stats only): recorded on every fill regardless of cache->repl_policy, since
+   the fields they read (lsq.cc, icache_stage.c, node_stage.c) accumulate the same way whether or
+   not REPL_MLP is the policy actually running -- unlike the boost/marked-stats logic below, which
+   is REPL_MLP/RRIP-boost-only and so stays behind the early return. */
+static void mlp_stage_fill_bound_count_stats(Mem_Req* req) {
+  if (req->op_count) {
+    INC_STAT_EVENT(req->proc_id, MLP_BOUND_COUNT_LD_BOUND_CYCLES, req->ld_bound_cycles);
+    INC_STAT_EVENT(req->proc_id, MLP_BOUND_COUNT_LD_BOUND_REQ_CYCLES, req->ld_bound_req_cycles);
+    INC_STAT_EVENT(req->proc_id, MLP_BOUND_COUNT_ROB_STALL_CYCLES, req->rob_stall_cycles);
+    INC_STAT_EVENT(req->proc_id, MLP_BOUND_COUNT_ROB_IQ_STALL_CYCLES, req->rob_iq_stall_cycles);
+  } else if (mem_req_is_type(req, MRT_IFETCH)) {
+    INC_STAT_EVENT(req->proc_id, MLP_BOUND_COUNT_FE_BOUND_CYCLES, req->fe_bound_cycles);
+    INC_STAT_EVENT(req->proc_id, MLP_BOUND_COUNT_FE_STARVE_CYCLES, req->fe_starve_cycles);
+  }
+}
+
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
+  mlp_stage_fill_bound_count_stats(req);
+
   if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
 

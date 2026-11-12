@@ -56,6 +56,8 @@ typedef struct Node_Stage_struct {
 
   Flag fe_starved;  // this cycle the ROB had room but got no ops, and rename was not stalled
                     // on registers: the backend is waiting on the frontend
+
+  Flag iq_stall_no_issue;  // this cycle the issue queue had ops waiting but issued none
 } Node_Stage;
 
 /**************************************************************************************/

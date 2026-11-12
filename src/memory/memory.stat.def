@@ -362,6 +362,14 @@ DEF_STAT(  L1_MSHR_FULL_CYCLES             , PERCENT, L1_CYCLE  )
 // REPL_MLP: fills classified as bound (boosted) at REPL_MLP cache insertion time
 DEF_STAT(  MLP_MARKED_LOAD		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_FETCH		           , COUNT  , NO_RATIO  )
+// REPL_MLP: sum of each bound-count field at fill time, regardless of mlp_data_bound/
+// mlp_instr_starve -- every field accumulates on every fill the data/instruction path reaches.
+DEF_STAT(  MLP_BOUND_COUNT_LD_BOUND_CYCLES         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BOUND_COUNT_LD_BOUND_REQ_CYCLES      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BOUND_COUNT_ROB_STALL_CYCLES         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BOUND_COUNT_ROB_IQ_STALL_CYCLES      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BOUND_COUNT_FE_BOUND_CYCLES          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BOUND_COUNT_FE_STARVE_CYCLES         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_MERGE		           , COUNT  , NO_RATIO  )
 // Stats only, under every policy: at each MLC fill a load waited on (ld_window_cycles > 0), what
 // the request had accrued by then, in log2 buckets: _0 is 0, _k is [2^(k-1), 2^k), _15 is 2^14 and

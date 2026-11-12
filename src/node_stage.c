@@ -331,6 +331,10 @@ void update_node_stage(Stage_Data* src_sd) {
   /* dispatch ops to the issue queue and issue ops into FUs */
   issue_queue_update();
 
+  /* REPL_MLP (mlp_data_bound 3): the issue queue had ops waiting but granted none to an FU this
+     cycle -- node->sd is schedule()'s output, so op_count is 0 iff nothing was issued. */
+  node->iq_stall_no_issue = !issue_queue_is_empty() && node->sd.op_count == 0;
+
   /* get rid of the ops that are finished */
   node_retire();
 
@@ -465,8 +469,13 @@ void node_retire() {
          load still waiting on its memory request, so charge the cycle to that request. Same
          liveness test as lsq_tag_inflight_loads: op->req is never cleared, but until the
          load's done_cycle is set it is still the request the load is waiting on. */
-      if (ret_count == 0 && op->uop->mem_type == MEM_LD && op->req && op_get_done_cycle(op) == MAX_CTR)
+      if (ret_count == 0 && op->uop->mem_type == MEM_LD && op->req && op_get_done_cycle(op) == MAX_CTR) {
         op->req->rob_stall_cycles++;
+        /* REPL_MLP (mlp_data_bound 3): same ROB-head load, but only while the issue queue had
+           ops waiting and issued none this cycle. */
+        if (node->iq_stall_no_issue)
+          op->req->rob_iq_stall_cycles++;
+      }
       break;
     }
 

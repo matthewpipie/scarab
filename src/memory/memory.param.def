@@ -254,6 +254,9 @@ DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
      1  the cycles of 0, counted once per request however many loads wait on it.
      2  rob_stall_cycles: cycles nothing retired because the ROB head was a load waiting on the
         request. Charges each stall cycle to one request, where fu_wait charges every miss in flight.
+     3  rob_iq_stall_cycles: subset of rob_stall_cycles (same ROB-head-load gating) where the
+        issue queue also had ops waiting but issued none that cycle -- a stall not explained by
+        the issue queue itself being drained.
    The default, ROB-head cycles >= 16 with no ratio, is a 5-bit saturating counter per MSHR. It
    replaced the 0.7 ratio (--mlp_data_bound 0 --mlp_data_bound_min 0 --mlp_lin_data_thresh 0.7),
    which it beat on five suites (docs/repl-mlp.md). With mlp_lin_data_thresh 0 and
