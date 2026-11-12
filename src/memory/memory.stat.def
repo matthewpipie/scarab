@@ -386,7 +386,11 @@ DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
 // when the line next misses. REF_MISSES, REF_MARKED, REF_MARKED_LINES, REF_CTRL, REF_CTRL_LINES and
 // REF_CTRL_MARKED describe the whole reference (misses, marked ones and the lines they fall on, the
 // control's draw and its lines, and the draws that are marked): they are counted when the
-// reference is read, early in warmup, so they show only in the _total_ columns.
+// reference is read, early in warmup, so they show only in the _total_ columns. With
+// mlp_oracle_reuse_only they count only the misses it leaves eligible. REF_COLD / REF_COLD_MARKED:
+// the reference's cold misses (each line's first) and the marked ones among them, over the whole
+// reference, eligible or not, also counted when it is read. REF_MATCHED_COLD / _MARKED: misses of
+// this run that lined up with a cold reference miss / a cold marked one, counted as they happen.
 DEF_STAT(  MLP_ORACLE_I_MARKED_LINES           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_MARKED_ACCESSES        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_CTRL_LINES             , COUNT , NO_RATIO  )
@@ -408,6 +412,10 @@ DEF_STAT(  MLP_ORACLE_I_REF_MARKED_LINES       , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_REF_CTRL               , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_REF_CTRL_LINES         , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_I_REF_CTRL_MARKED        , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_COLD               , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_COLD_MARKED        , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MATCHED_COLD       , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_I_REF_MATCHED_COLD_MARKED, COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_MARKED_LINES           , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_MARKED_ACCESSES        , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_CTRL_LINES             , COUNT , NO_RATIO  )
@@ -429,6 +437,10 @@ DEF_STAT(  MLP_ORACLE_D_REF_MARKED_LINES       , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_REF_CTRL               , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_REF_CTRL_LINES         , COUNT , NO_RATIO  )
 DEF_STAT(  MLP_ORACLE_D_REF_CTRL_MARKED        , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_COLD               , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_COLD_MARKED        , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MATCHED_COLD       , COUNT , NO_RATIO  )
+DEF_STAT(  MLP_ORACLE_D_REF_MATCHED_COLD_MARKED, COUNT , NO_RATIO  )
 // FORCED_HIT: hits this run forced, _DEMAND those by demand requests. INSTALL_RETRY: forced hits
 // that waited a cycle for a port or writeback slot. LLC_INVAL / LLC_FILL: forced hits that took the
 // line out of an exclusive LLC / put it in an LLC that did not have it. NOT_INSTALLED: forced hits whose line

@@ -112,6 +112,10 @@ enum Oracle_Field {
   O_REF_CTRL,
   O_REF_CTRL_LINES,
   O_REF_CTRL_MARKED,
+  O_REF_COLD,
+  O_REF_COLD_MARKED,
+  O_REF_MATCHED_COLD,
+  O_REF_MATCHED_COLD_MARKED,
   O_FIELDS
 };
 
@@ -154,6 +158,7 @@ struct Ref_Miss {
   bool marked;
   bool ctrl;   /* mode 3's draw took it */
   bool chosen; /* this run forces a miss that lines up with it */
+  bool cold;   /* the line's first miss in the reference */
 };
 
 /* A line's misses in the reference: Core::ref[next, end) are the ones no miss has lined up with or
@@ -270,7 +275,7 @@ void draw_ctrl(Core& c, uns proc_id, uns side) {
   Flag line_marked = FALSE;
   for (uns i = 0; i < c.ref.size(); i++) {
     const Ref_Miss& m = c.ref[i];
-    if (m.side != side)
+    if (m.side != side || (MLP_ORACLE_REUSE_ONLY && m.cold))
       continue;
     if (idx.empty() || c.ref[idx.back()].line != m.line) {
       start.push_back(idx.size());
@@ -370,7 +375,8 @@ void load_ref(Core& c, uns proc_id) {
 
   c.ref.reserve(records.size());
   for (const Record& r : records)
-    c.ref.push_back({(Addr)(r.key & ~(uint64_t)3), (Counter)r.inst, (uns8)(r.key & 1), (r.key & 2) != 0, false, false});
+    c.ref.push_back(
+        {(Addr)(r.key & ~(uint64_t)3), (Counter)r.inst, (uns8)(r.key & 1), (r.key & 2) != 0, false, false, false});
   std::stable_sort(c.ref.begin(), c.ref.end(), [](const Ref_Miss& a, const Ref_Miss& b) {
     return a.line != b.line ? a.line < b.line : a.inst < b.inst;
   });
@@ -379,12 +385,19 @@ void load_ref(Core& c, uns proc_id) {
       c.ref_lines[c.ref[i].line] = {i, i};
     c.ref_lines[c.ref[i].line].end = i + 1;
   }
+  for (auto& entry : c.ref_lines) {
+    Ref_Miss& m = c.ref[entry.second.next];
+    m.cold = true;
+    oracle_stat(proc_id, m.side, O_REF_COLD);
+    if (m.marked)
+      oracle_stat(proc_id, m.side, O_REF_COLD_MARKED);
+  }
   for (uns side = 0; side < SIDES; side++)
     draw_ctrl(c, proc_id, side);
-  for (Ref_Miss& m : c.ref)
-    m.chosen = (side_bit_of(m.side) & MLP_ORACLE_SIDE) && (MLP_ORACLE == 2   ? m.marked
-                                                           : MLP_ORACLE == 3 ? m.ctrl
-                                                                             : false);
+  for (Ref_Miss& m : c.ref) {
+    Flag eligible = (side_bit_of(m.side) & MLP_ORACLE_SIDE) && !(MLP_ORACLE_REUSE_ONLY && m.cold);
+    m.chosen = eligible && (MLP_ORACLE == 2 ? m.marked : MLP_ORACLE == 3 && m.ctrl);
+  }
   c.replay = true;
 }
 
@@ -583,6 +596,11 @@ Flag replay_miss(Core& c, uns proc_id, Addr line_addr, uns side) {
     oracle_stat(proc_id, side, O_REF_MATCHED_MARKED);
   if (m.ctrl)
     oracle_stat(proc_id, side, O_REF_MATCHED_CTRL);
+  if (m.cold) {
+    oracle_stat(proc_id, side, O_REF_MATCHED_COLD);
+    if (m.marked)
+      oracle_stat(proc_id, side, O_REF_MATCHED_COLD_MARKED);
+  }
   rl.forced = m.chosen;
   return m.chosen;
 }

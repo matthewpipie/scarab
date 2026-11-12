@@ -327,10 +327,12 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
         their CTRL class, and with mlp_oracle_record, writes a reference. With mlp_oracle_ref, it
         also lines its misses up with the reference's: replaying a run of the same configuration,
         every miss lines up, at an offset of 0.
-     2  critical: every miss that lines up with a marked miss of the reference hits.
+     2  critical: every miss that lines up with a marked miss of the reference hits (with
+        mlp_oracle_reuse_only, a marked miss after the line's first).
      3  random control: as 2, for a random sample of the reference's misses instead, drawn per side
         with no filter (a marked miss can be drawn), as many as the reference has marked on that
         side. mlp_oracle_ctrl_lines also matches the number of lines they fall on.
+        mlp_oracle_reuse_only leaves cold misses out of the draw and the count.
      4  ceiling: every miss to a line that has missed before hits. Needs no reference.
    Only misses on the sides mlp_oracle_side names are forced. */
 DEF_PARAM(mlp_oracle, MLP_ORACLE, uns, uns, 0, )
@@ -384,6 +386,11 @@ DEF_PARAM(mlp_oracle_ctrl_choices, MLP_ORACLE_CTRL_CHOICES, uns, uns, 8, )
    that differ only in it draw independent controls of the same size, which shows how much the
    control's gain depends on the draw. 0 keeps the draws of runs from before it existed. */
 DEF_PARAM(mlp_oracle_seed, MLP_ORACLE_SEED, uns, uns, 0, )
+/* mlp_oracle_reuse_only: modes 2 and 3 leave the reference's cold misses alone (each line's first
+   miss: the MLC starts empty, so no replacement policy can make it hit). Mode 2 forces only the
+   marked misses after a line's first, and mode 3 draws only from those, matching their count, so
+   both bound what replacement can do, as mode 4 does. Off, cold misses are forced like any other. */
+DEF_PARAM(mlp_oracle_reuse_only, MLP_ORACLE_REUSE_ONLY, Flag, Flag, FALSE, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
