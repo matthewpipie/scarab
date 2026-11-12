@@ -2958,24 +2958,6 @@ static inline void l1_miss_is_satisfied(Mem_Req* req) {
     mark_ops_as_l1_miss_satisfied(req);
 }
 
-/* REPL_MLP: classify the fill req is about to cause into `cache` as data-bound or
-   instruction-bound, and stage the resulting flat boost for the cache_insert[_replpos] call that
-   follows. No-ops (stages 0) when `cache` isn't running REPL_MLP, which is the common case and
-   costs one comparison.
-
-   Data side: req->ld_bound_cycles/ld_window_cycles, accumulated every cycle any op merged into
-   this request was in flight by lsq_tag_inflight_loads (lsq.cc), via op->req rather than the op
-   itself -- so a flushed op's contribution up to the point it was flushed still counts here, and
-   there's no op_ptrs walk that could read a pool-recycled op's unrelated state. No off-path gate --
-   an off-path load is tracked and classified exactly like an on-path one.
-
-   Instruction side: mlp_instr_marked, on fills a demand fetch reached. mem_req_is_type (the
-   coalesced-type bitmask), not req->type ==, so a late instruction prefetch a demand fetch merged
-   into is classified identically to a demand fetch -- the baseline prefetch-merge inclusion.
-
-   Marked-load/fetch/merge stats: a "merge" is a request more than one op or type coalesced into --
-   req->op_count > 1 on the data side (multiple loads sharing the miss), popcount32(req->types) > 1
-   on the instruction side (e.g. a demand fetch merged into a request that started as a prefetch). */
 /* Whether a fill a demand fetch reached is marked instruction-bound, per mlp_instr_mark. Mode 0
    uses req->fe_bound_cycles/fe_window_cycles, accumulated in icache_stage.c, with
    req->fe_starve_cycles in place of fe_bound_cycles under mlp_instr_starve; mode 2 uses
@@ -3035,27 +3017,76 @@ static Flag mlp_data_marked(Mem_Req* req) {
   return mlp_data_bound_count(req) >= MLP_DATA_BOUND_MIN;
 }
 
-static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
+/* The requests a fill of req's line serves, req first. On the fill walk (mem_fill_line_at), req is
+   the first request on its line in `file`, and any others joined the line behind it
+   (mem_merge_at_level): a request that reached this level while the line was already on its way,
+   for a requester whose request it could not fold into (a demand behind a prefetch issued to this
+   level, or a load behind an instruction fetch), keeps its own request, ops and counts. A fill not
+   on `file` (a writeback) serves only req. */
+static uns mem_fill_waiter_count(Mshr* file, Mem_Req* req) {
+  return mshr_holds(file, req) ? mshr_line_count(mshr_line(file, req->addr)) : 1;
+}
+
+static void mem_fill_waiters(Mshr* file, Mem_Req* req, Mem_Req** reqs) {
+  if (mshr_holds(file, req))
+    mshr_line_reqs(mshr_line(file, req->addr), reqs);
+  else
+    reqs[0] = req;
+  ASSERT(req->proc_id, reqs[0] == req);
+}
+
+/* REPL_MLP: the boost one request earns its fill, and the stat that counts it as marked. The data
+   side applies if any op merged into it (mlp_data_marked; a store-only request has no load
+   waiting and is never marked), else the instruction side if a demand fetch reached it
+   (mlp_instr_marked; mem_req_is_type, so a late instruction prefetch a demand fetch merged into
+   counts like a demand fetch). The data counts accrue on the request through op->req
+   (lsq_tag_inflight_loads, node_stage.c), so a load flushed before the fill keeps what it accrued. */
+static float mlp_req_boost(Mem_Req* req, Stat_Enum* marked_stat) {
+  if (req->op_count) {
+    *marked_stat = MLP_MARKED_LOAD;
+    return mlp_data_marked(req) ? MLP_LIN_DATA_LAMBDA : 0.0;
+  }
+  if (mem_req_is_type(req, MRT_IFETCH)) {
+    *marked_stat = MLP_MARKED_FETCH;
+    return mlp_instr_marked(req) ? MLP_LIN_INSTR_LAMBDA : 0.0;
+  }
+  return 0.0;
+}
+
+/* REPL_MLP: classify the fill req is about to cause into `cache` (whose request file is `file`)
+   and stage its flat boost for the cache_insert[_replpos] call that follows. Each request waiting
+   on the fill is judged by its own counts (mlp_req_boost), and the fill takes the largest boost:
+   a demand that joined the line behind a prefetch marks it only if that demand's own loads
+   stalled the core long enough. Does nothing when `cache` runs neither REPL_MLP nor an RRIP
+   policy with mlp_rrip_boost.
+
+   Stats count the request the boost came from. MLP_MARKED_MERGE: more than one op (data) or type
+   (instruction) coalesced into it. MLP_MARKED_JOINED: it joined the line behind another. */
+static void mlp_stage_fill_boost(Cache* cache, Mshr* file, Mem_Req* req) {
   if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
 
-  float boost = 0.0;
-  if (req->op_count) {
-    if (mlp_data_marked(req))
-      boost = MLP_LIN_DATA_LAMBDA;
-    if (boost > 0.0) {
-      STAT_EVENT(req->proc_id, MLP_MARKED_LOAD);
-      if (req->op_count > 1)
-        STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
+  uns n = mem_fill_waiter_count(file, req);
+  Mem_Req* reqs[n];
+  mem_fill_waiters(file, req, reqs);
+  Stat_Enum marked_stat = 0;
+  float boost = mlp_req_boost(req, &marked_stat);
+  Mem_Req* by = req;
+  for (uns i = 1; i < n; i++) {
+    Stat_Enum stat = 0;
+    float b = mlp_req_boost(reqs[i], &stat);
+    if (b > boost) {
+      boost = b;
+      by = reqs[i];
+      marked_stat = stat;
     }
-  } else if (mem_req_is_type(req, MRT_IFETCH)) {
-    if (mlp_instr_marked(req))
-      boost = MLP_LIN_INSTR_LAMBDA;
-    if (boost > 0.0) {
-      STAT_EVENT(req->proc_id, MLP_MARKED_FETCH);
-      if (popcount32(req->types) > 1)
-        STAT_EVENT(req->proc_id, MLP_MARKED_MERGE);
-    }
+  }
+  if (boost > 0.0) {
+    STAT_EVENT(by->proc_id, marked_stat);
+    if (marked_stat == MLP_MARKED_LOAD ? by->op_count > 1 : popcount32(by->types) > 1)
+      STAT_EVENT(by->proc_id, MLP_MARKED_MERGE);
+    if (by != req)
+      STAT_EVENT(by->proc_id, MLP_MARKED_JOINED);
   }
   cache_set_next_fill_mlp_boost(boost);
 }
@@ -3274,7 +3305,7 @@ Flag l1_fill_line(Mem_Req* req) {
     }
   }
 
-  mlp_stage_fill_boost(&L1(req->proc_id)->cache, req);
+  mlp_stage_fill_boost(&L1(req->proc_id)->cache, &mem->l1_mshr, req);
   lacs_fill(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
@@ -3604,12 +3635,22 @@ Flag mlc_fill_line(Mem_Req* req) {
     }
   }
 
-  if (req->ld_window_cycles) {  // stats only (MLP_LD_*_LOG2 in memory.stat.def)
-    mlp_stat_log2(req->proc_id, MLP_LD_BOUND_LOG2_0, req->ld_bound_cycles);
-    mlp_stat_log2(req->proc_id, MLP_LD_BOUNDREQ_LOG2_0, req->ld_bound_req_cycles);
-    mlp_stat_log2(req->proc_id, MLP_LD_HEAD_LOG2_0, req->rob_stall_cycles);
+  {  // stats only (MLP_LD_* in memory.stat.def), for each request a load waited on the fill from
+    uns n = mem_fill_waiter_count(&mem->mlc_mshr, req);
+    Mem_Req* waiters[n];
+    mem_fill_waiters(&mem->mlc_mshr, req, waiters);
+    for (uns i = 0; i < n; i++) {
+      Mem_Req* w = waiters[i];
+      if (!w->ld_window_cycles)
+        continue;
+      mlp_stat_log2(w->proc_id, MLP_LD_BOUND_LOG2_0, w->ld_bound_cycles);
+      mlp_stat_log2(w->proc_id, MLP_LD_BOUNDREQ_LOG2_0, w->ld_bound_req_cycles);
+      mlp_stat_log2(w->proc_id, MLP_LD_HEAD_LOG2_0, w->rob_stall_cycles);
+      if (i > 0)
+        STAT_EVENT(w->proc_id, MLP_LD_JOINED);
+    }
   }
-  mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
+  mlp_stage_fill_boost(&MLC(req->proc_id)->cache, &mem->mlc_mshr, req);
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);
 

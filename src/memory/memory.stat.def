@@ -363,10 +363,16 @@ DEF_STAT(  L1_MSHR_FULL_CYCLES             , PERCENT, L1_CYCLE  )
 DEF_STAT(  MLP_MARKED_LOAD		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_FETCH		           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_MARKED_MERGE		           , COUNT  , NO_RATIO  )
-// Stats only, under every policy: at each MLC fill a load waited on (ld_window_cycles > 0), what
-// the request had accrued by then, in log2 buckets: _0 is 0, _k is [2^(k-1), 2^k), _15 is 2^14 and
-// up. They are the counts mlp_data_bound picks from: LD_BOUND (0) ld_bound_cycles, LD_BOUNDREQ (1)
-// ld_bound_req_cycles, LD_HEAD (2) rob_stall_cycles.
+// Marked fills whose boost came from a request that joined the line behind its first (a demand
+// that reached the level while a prefetch or another type's request was already fetching it)
+DEF_STAT(  MLP_MARKED_JOINED               , COUNT  , NO_RATIO  )
+// Stats only, under every policy: MLC fills a load waited on from a request that joined the line
+// behind its first. These requests are in the MLP_LD_*_LOG2 histograms too.
+DEF_STAT(  MLP_LD_JOINED                   , COUNT  , NO_RATIO  )
+// Stats only, under every policy: at each MLC fill, for each request a load waited on it from
+// (ld_window_cycles > 0), what that request had accrued by then, in log2 buckets: _0 is 0, _k is
+// [2^(k-1), 2^k), _15 is 2^14 and up. They are the counts mlp_data_bound picks from: LD_BOUND (0)
+// ld_bound_cycles, LD_BOUNDREQ (1) ld_bound_req_cycles, LD_HEAD (2) rob_stall_cycles.
 DEF_STAT(  MLP_LD_BOUND_LOG2_0             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_LD_BOUND_LOG2_1             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_LD_BOUND_LOG2_2             , COUNT  , NO_RATIO  )
