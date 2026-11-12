@@ -320,18 +320,23 @@ static void mlp_duel_reset_period(Mlp_Duel_State* s) {
   }
 }
 
-/* Stall-cycles-per-access pooled over every request this period -- follower population plus
-   every leader probe slot alike, unlike follower_metric (mlp_duel_end_period's own comparison
-   basis) which is follower-only. Always bound_cycles/access_count regardless of
-   mlp_duel_marked_hit_metric -- this is a plain stall-rate reading, not the dueling decision
-   metric. 0.0 if nothing was accessed this period. Must be called before mlp_duel_reset_period
+/* Whichever metric is actually driving dueling decisions (role_metric/follower_metric's own
+   sum_arr/count_arr choice: stall-cycles-per-access by default, stall/window fraction under
+   mlp_duel_window_denom, or marked-hit rate under mlp_duel_marked_hit_metric), pooled over every
+   request this period -- follower population plus every leader probe slot alike, unlike
+   follower_metric (mlp_duel_end_period's own comparison basis) which is follower-only. 0.0 if
+   the denominator was zero for everyone this period. Must be called before mlp_duel_reset_period
    zeroes the sums it reads. */
-static double mlp_duel_total_stall_per_access(Mlp_Duel_State* s) {
-  Counter sum = s->follower_bound_sum;
-  Counter count = s->follower_access_count;
+static double mlp_duel_total_metric(Mlp_Duel_State* s) {
+  Counter* leader_sum_arr = MLP_DUEL_MARKED_HIT_METRIC ? s->leader_marked_hit_count : s->leader_bound_sum;
+  Counter* leader_count_arr =
+      !MLP_DUEL_MARKED_HIT_METRIC && MLP_DUEL_WINDOW_DENOM ? s->leader_window_sum : s->leader_access_count;
+  Counter sum = MLP_DUEL_MARKED_HIT_METRIC ? s->follower_marked_hit_count : s->follower_bound_sum;
+  Counter count =
+      !MLP_DUEL_MARKED_HIT_METRIC && MLP_DUEL_WINDOW_DENOM ? s->follower_window_sum : s->follower_access_count;
   for (uns slot = 0; slot < 4 * s->num_groups; slot++) {
-    sum += s->leader_bound_sum[slot];
-    count += s->leader_access_count[slot];
+    sum += leader_sum_arr[slot];
+    count += leader_count_arr[slot];
   }
   return count ? (double)sum / (double)count : 0.0;
 }
@@ -339,15 +344,15 @@ static double mlp_duel_total_stall_per_access(Mlp_Duel_State* s) {
 /* One line per period, timestamped by inst_count[0] -- the same counter mlp_duel_period's
    default "i:" trigger spec is paced off (trigger.c maps "i:" to
    global_stat_array[proc_id][NODE_INST_COUNT], incremented in lockstep with inst_count[proc_id]
-   in node_stage.c) -- giving the then-applied lambdas and this period's pooled
-   stall-cycles-per-access. Lets both trajectories be reconstructed and plotted against time,
-   unlike mlp_duel_finish's end-of-run histogram which only has the lifetime bucket totals. Using
-   the trigger's own clock, rather than cycle_count, means periods land on evenly-spaced
-   x-values and different workloads/simpoints share the same axis instead of being stretched
-   apart by their own IPC. */
-static void mlp_duel_trace(Mlp_Duel_State* s, double stall_per_access) {
-  fprintf(mystderr, "mlp_duel: trace inst=%llu ins_lambda=%.1f data_lambda=%.1f stall_per_access=%.4f\n",
-          (unsigned long long)inst_count[0], s->ins_lambda, s->data_lambda, stall_per_access);
+   in node_stage.c) -- giving the then-applied lambdas and this period's pooled dueling metric
+   (mlp_duel_total_metric -- whichever one is actually active). Lets both trajectories be
+   reconstructed and plotted against time, unlike mlp_duel_finish's end-of-run histogram which
+   only has the lifetime bucket totals. Using the trigger's own clock, rather than cycle_count,
+   means periods land on evenly-spaced x-values and different workloads/simpoints share the same
+   axis instead of being stretched apart by their own IPC. */
+static void mlp_duel_trace(Mlp_Duel_State* s, double dueling_metric) {
+  fprintf(mystderr, "mlp_duel: trace inst=%llu ins_lambda=%.1f data_lambda=%.1f dueling_metric=%.4f\n",
+          (unsigned long long)inst_count[0], s->ins_lambda, s->data_lambda, dueling_metric);
 }
 
 static void mlp_duel_end_period(Mlp_Duel_State* s) {
@@ -356,7 +361,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
       !MLP_DUEL_MARKED_HIT_METRIC && MLP_DUEL_WINDOW_DENOM ? s->follower_window_sum : s->follower_access_count;
   if (!follower_count) {
     /* Nothing to compare the leader populations against this period. */
-    mlp_duel_trace(s, mlp_duel_total_stall_per_access(s));
+    mlp_duel_trace(s, mlp_duel_total_metric(s));
     mlp_duel_reset_period(s);
     return;
   }
@@ -467,7 +472,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
 
   s->ins_lambda_periods[lambda_bucket(s, s->ins_lambda)]++;
   s->data_lambda_periods[lambda_bucket(s, s->data_lambda)]++;
-  mlp_duel_trace(s, mlp_duel_total_stall_per_access(s));
+  mlp_duel_trace(s, mlp_duel_total_metric(s));
 
   mlp_duel_reset_period(s);
 }
