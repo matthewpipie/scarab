@@ -303,17 +303,34 @@ static void mlp_duel_reset_period(Mlp_Duel_State* s) {
   }
 }
 
+/* Stall-cycles-per-access pooled over every request this period -- follower population plus
+   every leader probe slot alike, unlike follower_metric (mlp_duel_end_period's own comparison
+   basis) which is follower-only. Always bound_cycles/access_count regardless of
+   mlp_duel_marked_hit_metric -- this is a plain stall-rate reading, not the dueling decision
+   metric. 0.0 if nothing was accessed this period. Must be called before mlp_duel_reset_period
+   zeroes the sums it reads. */
+static double mlp_duel_total_stall_per_access(Mlp_Duel_State* s) {
+  Counter sum = s->follower_bound_sum;
+  Counter count = s->follower_access_count;
+  for (uns slot = 0; slot < 4 * s->num_groups; slot++) {
+    sum += s->leader_bound_sum[slot];
+    count += s->leader_access_count[slot];
+  }
+  return count ? (double)sum / (double)count : 0.0;
+}
+
 /* One line per period, timestamped by inst_count[0] -- the same counter mlp_duel_period's
    default "i:" trigger spec is paced off (trigger.c maps "i:" to
    global_stat_array[proc_id][NODE_INST_COUNT], incremented in lockstep with inst_count[proc_id]
-   in node_stage.c) -- giving the then-applied lambdas. Lets the lambda trajectory over the run be
-   reconstructed and plotted against time, unlike mlp_duel_finish's end-of-run histogram which
-   only has the lifetime bucket totals. Using the trigger's own clock, rather than cycle_count,
-   means periods land on evenly-spaced x-values and different workloads/simpoints share the same
-   axis instead of being stretched apart by their own IPC. */
-static void mlp_duel_trace(Mlp_Duel_State* s) {
-  fprintf(mystderr, "mlp_duel: trace inst=%llu ins_lambda=%.1f data_lambda=%.1f\n",
-          (unsigned long long)inst_count[0], s->ins_lambda, s->data_lambda);
+   in node_stage.c) -- giving the then-applied lambdas and this period's pooled
+   stall-cycles-per-access. Lets both trajectories be reconstructed and plotted against time,
+   unlike mlp_duel_finish's end-of-run histogram which only has the lifetime bucket totals. Using
+   the trigger's own clock, rather than cycle_count, means periods land on evenly-spaced
+   x-values and different workloads/simpoints share the same axis instead of being stretched
+   apart by their own IPC. */
+static void mlp_duel_trace(Mlp_Duel_State* s, double stall_per_access) {
+  fprintf(mystderr, "mlp_duel: trace inst=%llu ins_lambda=%.1f data_lambda=%.1f stall_per_access=%.4f\n",
+          (unsigned long long)inst_count[0], s->ins_lambda, s->data_lambda, stall_per_access);
 }
 
 static void mlp_duel_end_period(Mlp_Duel_State* s) {
@@ -321,7 +338,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
   Counter follower_count = s->follower_access_count;
   if (!follower_count) {
     /* Nothing to compare the leader populations against this period. */
-    mlp_duel_trace(s);
+    mlp_duel_trace(s, mlp_duel_total_stall_per_access(s));
     mlp_duel_reset_period(s);
     return;
   }
@@ -432,7 +449,7 @@ static void mlp_duel_end_period(Mlp_Duel_State* s) {
 
   s->ins_lambda_periods[lambda_bucket(s, s->ins_lambda)]++;
   s->data_lambda_periods[lambda_bucket(s, s->data_lambda)]++;
-  mlp_duel_trace(s);
+  mlp_duel_trace(s, mlp_duel_total_stall_per_access(s));
 
   mlp_duel_reset_period(s);
 }
