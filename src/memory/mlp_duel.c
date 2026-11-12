@@ -303,12 +303,17 @@ static void mlp_duel_reset_period(Mlp_Duel_State* s) {
   }
 }
 
-/* One line per period, timestamped by cycle_count, giving the then-applied lambdas -- lets the
-   lambda trajectory over the run be reconstructed and plotted against time, unlike
-   mlp_duel_finish's end-of-run histogram which only has the lifetime bucket totals. */
+/* One line per period, timestamped by inst_count[0] -- the same counter mlp_duel_period's
+   default "i:" trigger spec is paced off (trigger.c maps "i:" to
+   global_stat_array[proc_id][NODE_INST_COUNT], incremented in lockstep with inst_count[proc_id]
+   in node_stage.c) -- giving the then-applied lambdas. Lets the lambda trajectory over the run be
+   reconstructed and plotted against time, unlike mlp_duel_finish's end-of-run histogram which
+   only has the lifetime bucket totals. Using the trigger's own clock, rather than cycle_count,
+   means periods land on evenly-spaced x-values and different workloads/simpoints share the same
+   axis instead of being stretched apart by their own IPC. */
 static void mlp_duel_trace(Mlp_Duel_State* s) {
-  fprintf(mystderr, "mlp_duel: trace cycle=%llu ins_lambda=%.1f data_lambda=%.1f\n",
-          (unsigned long long)cycle_count, s->ins_lambda, s->data_lambda);
+  fprintf(mystderr, "mlp_duel: trace inst=%llu ins_lambda=%.1f data_lambda=%.1f\n",
+          (unsigned long long)inst_count[0], s->ins_lambda, s->data_lambda);
 }
 
 static void mlp_duel_end_period(Mlp_Duel_State* s) {
