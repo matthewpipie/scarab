@@ -194,8 +194,14 @@ All of these are in `memory.stat.<core>.out`.
 | `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request (the count `mlp_data_bound 2` uses), by the level that served it. Stats only. |
 | `REQ_COST_FE_{MLC,LLC,MEM}` | Cycles the backend got no ops while the on-path icache waited on a request, by the level that served it. Stats only. |
 | `REQ_BOUND_LD_*`, `REQ_BOUND_FE_*` | REPL_MLP's fu_wait load-cycles and instruction stuck cycles, split the same way, for comparison with the costs |
+| `MLP_MLC_ACC_*`, `MLP_MLC_HIT_{D,I}MARK_*` | L2 lookups by kind (load, store, fetch, prefetch, writeback), and those that hit a line marked at its fill |
+| `MLP_MLC_HIT_{D,I}MARK_LAPSED` | Demand hits on a boosted line whose protection had already run out |
+| `MLP_EVICT_{ALL,DMARK,IMARK}{,_UNUSED}` | L2 evictions, of marked lines, and those no demand hit since their fill |
+| `MLP_RD1_*`, `MLP_RDN_*` | Reuse distances per line, in fills to its set, by the kind of the line's first fill (data-marked, data unmarked, instruction-marked, instruction unmarked, other). `RD1` is the first reuse, measured from that fill; `RDN` is every later reuse, measured from the previous one. Same log2 buckets as above. |
+| `MLP_RDNEXT_{DMARK,IMARK,MARK}_{LOOKUPS,FILLS}_LOG2_*` | The gap from one demand lookup of a marked line to the next (data, instruction, either), in L2 demand lookups on the core and in fills to the set |
+| `MLP_LINES_*`, `MLP_OCC_*` | Distinct lines over the measured region, and a census of the L2 every 4096 cycles: valid, marked, and boosted lines still protected |
 
-The `MLP_MARKED_*` stats count only marks that carry a boost. With `mlp_lin_data_lambda 0`, `MLP_MARKED_LOAD` stays 0 whatever the data rule would decide. Each cache running REPL_MLP counts its own fills.
+The L2 marks every fill under any policy and whatever the λs. Marking just labels the line; only REPL_MLP (or RRIP with `mlp_rrip_boost`) boosts it. So `MLP_MARKED_*` and every stat split by mark count what the rules decide, under LRU too, and with `mlp_lin_data_lambda 0` `MLP_MARKED_LOAD` still counts data marks. Only boosted lines are ever protected, so `_LAPSED` and `MLP_OCC_INWINDOW` count only those. The LLC marks, and counts its fills in `MLP_MARKED_*`, only when it runs REPL_MLP itself.
 
 ## Results
 

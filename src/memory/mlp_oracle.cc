@@ -24,12 +24,11 @@
  * File         : memory/mlp_oracle.cc
  * Author       : Litz Lab
  * Date         : 11/2026
- * Description  : mlp_oracle (see mlp_oracle.h and memory.param.def). Per core, it keeps
- *                every line the MLC has looked up on an mlp_oracle_side side, for the
- *                reuse stats: whether REPL_MLP's marking has marked it, whether mode 1's
- *                control picked it, and when it was last looked up. It writes the misses
- *                and their marks for mlp_oracle_record, and lines misses up with a
- *                reference's for mlp_oracle_ref. memory.c does the forced hit itself.
+ * Description  : mlp_oracle (see mlp_oracle.h and memory.param.def). Per core, it writes
+ *                the misses and their marks for mlp_oracle_record, reads a reference's for
+ *                mlp_oracle_ref, draws mode 3's control from it and lines this run's misses
+ *                up with it, and for mode 4 keeps the lines the MLC has held. memory.c does
+ *                the forced hit itself.
  ***************************************************************************************/
 
 #include <algorithm>
@@ -40,6 +39,7 @@
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 extern "C" {
@@ -59,44 +59,13 @@ extern "C" {
 
 namespace {
 
-/* Histograms: bucket 0 is a distance of 0, bucket b in 1..24 is [2^(b-1), 2^b), and the last
-   bucket is everything from 2^24 up. */
-constexpr uns REUSE_BUCKETS = 26;
+/* MLP_ORACLE_REF_OFFSET_*: bucket 0 is a distance of 0, bucket b in 1..24 is [2^(b-1), 2^b), and
+   the last bucket is everything from 2^24 up. */
+constexpr uns OFFSET_BUCKETS = 26;
 /* Per-side stats and state: 0 instruction, 1 data. */
 constexpr uns SIDES = 2;
-/* Line classes for the reuse stats. MARKED and UNMARKED split the lines of a side; CTRL counts
-   the control's lines again, whichever of the two they are in. */
-enum Reuse_Class {
-  MARKED,
-  UNMARKED,
-  CTRL,
-  CLASSES
-};
-/* MLP_REUSE_<side>_<class>_*: samples, those that hit, and the sums of their distances. */
-enum Reuse_Field {
-  R_N,
-  R_HIT,
-  R_FILLS,
-  R_CYCLES,
-  R_FIELDS
-};
-/* MLP_REUSE_NEXT_<side>_*: gaps, their sums in cycles and MLC lookups, and the per-set gaps. */
-enum Next_Field {
-  N_N,
-  N_CYCLES,
-  N_ACCESSES,
-  N_FILLS_N,
-  N_FILLS,
-  N_FIELDS
-};
 /* MLP_ORACLE_<side>_*, in memory.stat.def's order. */
 enum Oracle_Field {
-  O_MARKED_LINES,
-  O_MARKED_ACCESSES,
-  O_CTRL_LINES,
-  O_CTRL_LINES_MARKED,
-  O_CTRL_ACCESSES,
-  O_CTRL_NO_PICK,
   O_MISSES,
   O_MISSES_MARKED,
   O_FORCED,
@@ -117,24 +86,6 @@ enum Oracle_Field {
   O_REF_MATCHED_COLD,
   O_REF_MATCHED_COLD_MARKED,
   O_FIELDS
-};
-
-struct Line {
-  uns8 side = 0;           /* 0 instruction, 1 data, from the request that first named it */
-  bool looked = false;     /* the MLC has looked it up, so stamp_* are set */
-  bool seen = false;       /* a miss on it came back, or the MLC inserted it: later lookups are reuses */
-  bool marked = false;     /* REPL_MLP's marking marked one of its fills */
-  bool ctrl = false;       /* mode 1's control picked it */
-  Counter accesses = 0;    /* lookups since it was seen */
-  Counter stamp_fills = 0; /* its set's fill count at its last lookup */
-  Counter stamp_cycle = 0; /* and the cycle */
-};
-
-/* The previous lookup of a marked line, for the gap to the next one. */
-struct Next {
-  Counter last_cycle = MAX_CTR;
-  Counter last_access = 0;
-  std::vector<Counter> set_last; /* set_fills at the set's last one; MAX_CTR: none */
 };
 
 /* A miss as mlp_oracle_record writes it: the line address, with the side in bit 0 and the mark in
@@ -171,16 +122,7 @@ struct Ref_Line {
 
 struct Core {
   bool init = false;
-  std::unordered_map<Addr, Line> lines;
-  std::vector<Addr> pool[SIDES];             /* every seen line, to pick control lines from */
-  std::vector<Counter> set_fills;            /* MLC inserts per set */
-  Counter accesses = 0;                      /* MLC lookups, writebacks and merges aside */
-  Next next[SIDES + 1];                      /* per side, and over both */
-  std::vector<Addr> ctrl_set[SIDES];         /* mode 1's control lines */
-  Counter marked_lines[SIDES] = {};          /* lines marked */
-  Counter marked_accesses[SIDES] = {};       /* lookups of lines since they were marked */
-  Counter ctrl_accesses[SIDES] = {};         /* and since they were picked */
-  uint64_t rng = 0;                          /* mode 1's control */
+  std::unordered_set<Addr> seen;             /* mode 4: lines a miss came back on or the MLC inserted */
   uint64_t ref_rng = 0;                      /* mode 3's draw */
   std::unordered_map<Addr, Pending> pending; /* misses out, by line */
   FILE* record = nullptr;
@@ -208,16 +150,16 @@ uns side_bit_of(uns side) {
 }
 
 void oracle_stat(uns proc_id, uns side, uns field) {
-  STAT_EVENT(proc_id, MLP_ORACLE_I_MARKED_LINES + side * O_FIELDS + field);
+  STAT_EVENT(proc_id, MLP_ORACLE_I_MISSES + side * O_FIELDS + field);
 }
 
 void oracle_inc(uns proc_id, uns side, uns field, Counter inc) {
-  INC_STAT_EVENT(proc_id, MLP_ORACLE_I_MARKED_LINES + side * O_FIELDS + field, inc);
+  INC_STAT_EVENT(proc_id, MLP_ORACLE_I_MISSES + side * O_FIELDS + field, inc);
 }
 
 void hist(uns proc_id, uns first, Counter dist) {
   uns bucket = dist ? 64 - __builtin_clzll(dist) : 0;
-  STAT_EVENT(proc_id, first + MIN2(bucket, REUSE_BUCKETS - 1));
+  STAT_EVENT(proc_id, first + MIN2(bucket, OFFSET_BUCKETS - 1));
 }
 
 std::string record_name(uns proc_id) {
@@ -401,7 +343,7 @@ void load_ref(Core& c, uns proc_id) {
   c.replay = true;
 }
 
-Core& core_of(Cache* mlc, uns proc_id) {
+Core& core_of(uns proc_id) {
   if (cores.empty())
     cores.resize(NUM_CORES);
   Core& c = cores[proc_id];
@@ -414,14 +356,9 @@ Core& core_of(Cache* mlc, uns proc_id) {
     ASSERTM(proc_id, (MLP_ORACLE != 2 && MLP_ORACLE != 3) || MLP_ORACLE_REF,
             "mlp_oracle %u replays a reference: set mlp_oracle_ref\n", MLP_ORACLE);
     ASSERTM(proc_id, !MLP_ORACLE_REF || MLP_ORACLE <= 3, "mlp_oracle_ref needs mlp_oracle 1 to 3\n");
-    c.set_fills.assign(mlc->num_sets, 0);
-    for (Next& next : c.next)
-      next.set_last.assign(mlc->num_sets, MAX_CTR);
     uint64_t seed = (uint64_t)MLP_ORACLE_SEED * 0xBF58476D1CE4E5B9ULL;
-    c.rng = 0x9E3779B97F4A7C15ULL * (proc_id + 1) + seed;
     c.ref_rng = 0xD1B54A32D192ED03ULL * (proc_id + 1) + seed;
-    c.rng += !c.rng; /* xorshift never leaves 0 */
-    c.ref_rng += !c.ref_rng;
+    c.ref_rng += !c.ref_rng; /* xorshift never leaves 0 */
     if (MLP_ORACLE_RECORD) {
       std::string path = std::string(OUTPUT_DIR) + "/" + record_name(proc_id);
       c.record = fopen(path.c_str(), "wb");
@@ -432,132 +369,6 @@ Core& core_of(Cache* mlc, uns proc_id) {
       load_ref(c, proc_id);
   }
   return c;
-}
-
-Line& line_of(Core& c, Addr line_addr, uns side) {
-  auto ins = c.lines.try_emplace(line_addr);
-  if (ins.second)
-    ins.first->second.side = side;
-  return ins.first->second;
-}
-
-/* Later lookups of the line are reuses, and the control can pick it. */
-void see(Core& c, Line& line, Addr line_addr) {
-  if (line.seen)
-    return;
-  line.seen = true;
-  c.pool[line.side].push_back(line_addr);
-}
-
-/* One more line for mode 1's control on this side, at random from the side's seen lines that are
-   not picked yet: of mlp_oracle_ctrl_choices drawn, the one with the most accesses so far while
-   the side's control lines (since they were picked) trail its marked lines (since they were
-   marked) in accesses, and the fewest otherwise. */
-Flag pick_ctrl_line(Core& c, uns proc_id, uns side) {
-  std::vector<Addr>& pool = c.pool[side];
-  uns choices = MAX2(MLP_ORACLE_CTRL_CHOICES, 1);
-  Flag want_hot = c.ctrl_accesses[side] < c.marked_accesses[side];
-  Line* best = nullptr;
-  Addr best_addr = 0;
-  for (uns draw = 0, got = 0; got < choices && draw < 16 * choices && !pool.empty(); draw++) {
-    Addr addr = pool[rand64(c.rng) % pool.size()];
-    Line& cand = c.lines[addr];
-    if (cand.ctrl)
-      continue;
-    got++;
-    if (!best || (want_hot ? cand.accesses > best->accesses : cand.accesses < best->accesses)) {
-      best = &cand;
-      best_addr = addr;
-    }
-  }
-  if (!best) {
-    oracle_stat(proc_id, side, O_CTRL_NO_PICK);
-    return FALSE;
-  }
-  best->ctrl = true;
-  c.ctrl_set[side].push_back(best_addr);
-  oracle_stat(proc_id, side, O_CTRL_LINES);
-  if (best->marked)
-    oracle_stat(proc_id, side, O_CTRL_LINES_MARKED);
-  return TRUE;
-}
-
-/* Mode 1: keep the side's control as large as its marked set. */
-void balance_ctrl(Core& c, uns proc_id, uns side) {
-  if (MLP_ORACLE != 1)
-    return;
-  while (c.ctrl_set[side].size() < c.marked_lines[side] && pick_ctrl_line(c, proc_id, side)) {
-  }
-}
-
-/* The gap from the previous lookup of a marked line (on this side, or either) to this one. */
-void next_gap(Core& c, uns proc_id, uns v, uns set) {
-  Next& next = c.next[v];
-  uns base = MLP_REUSE_NEXT_I_N + v * N_FIELDS;
-  uns hist_base = MLP_REUSE_NEXT_I_CYCLES_0 + v * 2 * REUSE_BUCKETS;
-  if (next.last_cycle != MAX_CTR) {
-    Counter cycles = cycle_count - next.last_cycle;
-    STAT_EVENT(proc_id, base + N_N);
-    INC_STAT_EVENT(proc_id, base + N_CYCLES, cycles);
-    INC_STAT_EVENT(proc_id, base + N_ACCESSES, c.accesses - next.last_access);
-    hist(proc_id, hist_base, cycles);
-  }
-  next.last_cycle = cycle_count;
-  next.last_access = c.accesses;
-  if (next.set_last[set] != MAX_CTR) {
-    Counter fills = c.set_fills[set] - next.set_last[set];
-    STAT_EVENT(proc_id, base + N_FILLS_N);
-    INC_STAT_EVENT(proc_id, base + N_FILLS, fills);
-    hist(proc_id, hist_base + REUSE_BUCKETS, fills);
-  }
-  next.set_last[set] = c.set_fills[set];
-}
-
-void reuse_sample(uns proc_id, uns side, uns cls, Flag hit, Counter fills, Counter cycles) {
-  uns base = MLP_REUSE_I_MARKED_N + (side * CLASSES + cls) * R_FIELDS;
-  STAT_EVENT(proc_id, base + R_N);
-  if (hit)
-    STAT_EVENT(proc_id, base + R_HIT);
-  INC_STAT_EVENT(proc_id, base + R_FILLS, fills);
-  INC_STAT_EVENT(proc_id, base + R_CYCLES, cycles);
-  hist(proc_id, MLP_REUSE_I_MARKED_FILLS_0 + (side * CLASSES + cls) * REUSE_BUCKETS, fills);
-}
-
-/* A lookup of a line looked up before: how far it is from that lookup, by class, and for a
-   marked line, from the previous lookup of any marked line. */
-void record_reuse(Core& c, uns proc_id, Line& line, uns set, Flag hit) {
-  Counter fills = c.set_fills[set] - line.stamp_fills;
-  Counter cycles = cycle_count - line.stamp_cycle;
-  reuse_sample(proc_id, line.side, line.marked ? MARKED : UNMARKED, hit, fills, cycles);
-  if (line.ctrl)
-    reuse_sample(proc_id, line.side, CTRL, hit, fills, cycles);
-  if (line.marked) {
-    next_gap(c, proc_id, line.side, set);
-    next_gap(c, proc_id, SIDES, set);
-  }
-}
-
-/* The line-level tracking of a lookup on an mlp_oracle_side side. Returns whether mode 4 forces
-   it to hit. */
-Flag track_lookup(Core& c, uns proc_id, Addr line_addr, uns set, uns side, Flag hit) {
-  Line& line = line_of(c, line_addr, side);
-  if (line.looked)
-    record_reuse(c, proc_id, line, set, hit);
-  line.looked = true;
-  line.stamp_fills = c.set_fills[set];
-  line.stamp_cycle = cycle_count;
-  if (!line.seen)
-    return FALSE; /* its first miss has not come back: no reuse yet */
-  line.accesses++;
-  if (line.marked) {
-    c.marked_accesses[side]++;
-    oracle_stat(proc_id, side, O_MARKED_ACCESSES);
-  }
-  if (line.ctrl) {
-    c.ctrl_accesses[side]++;
-    oracle_stat(proc_id, side, O_CTRL_ACCESSES);
-  }
-  return MLP_ORACLE == 4 && !hit;
 }
 
 /* Lines a miss up with the reference's next miss to its line that no miss has lined up with or
@@ -623,25 +434,22 @@ uns mlp_req_side(Mem_Req* req) {
 
 Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
   /* A miss on a line already on its way waits for it: not a lookup of its own. */
-  if (!hit && in_flight)
+  if (hit || in_flight)
     return FALSE;
   uns proc_id = req->proc_id;
-  Core& c = core_of(mlc, proc_id);
-  c.accesses++;
+  Core& c = core_of(proc_id);
   uns side_bit = mlp_req_side(req);
   uns side = side_index(side_bit);
   Flag covered = (side_bit & MLP_ORACLE_SIDE) != 0;
   Addr tag, line_addr;
-  uns set = ext_cache_index(mlc, req->addr, &tag, &line_addr);
+  ext_cache_index(mlc, req->addr, &tag, &line_addr);
   ASSERT(proc_id, !(line_addr & 3));
 
   Flag force = FALSE;
-  if (!hit && c.replay)
+  if (c.replay)
     force = replay_miss(c, proc_id, line_addr, side) && covered;
-  if (covered)
-    force |= track_lookup(c, proc_id, line_addr, set, side, hit);
-  if (hit)
-    return FALSE;
+  if (covered && MLP_ORACLE == 4)
+    force |= c.seen.count(line_addr) != 0;
   if (covered)
     oracle_stat(proc_id, side, O_MISSES);
   if (force) {
@@ -662,16 +470,16 @@ Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
   return FALSE;
 }
 
-void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns marked_sides) {
+void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns8 mark) {
   uns proc_id = req->proc_id;
-  Core& c = core_of(mlc, proc_id);
+  Core& c = core_of(proc_id);
   Addr tag, line_addr;
   ext_cache_index(mlc, req->addr, &tag, &line_addr);
   /* The first return for the line's miss settles its mark: for the record, and for MISSES_MARKED. */
   auto it = c.pending.find(line_addr);
   if (it != c.pending.end()) {
     uns side = it->second.side;
-    Flag marked = (marked_sides & side_bit_of(side)) != 0;
+    Flag marked = mark == (side ? MLP_MARK_DATA : MLP_MARK_INSTR);
     if (c.record) {
       Record r = {line_addr | side | (marked ? 2u : 0u), it->second.inst};
       fwrite(&r, sizeof r, 1, c.record);
@@ -680,27 +488,15 @@ void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns marked_sides) {
       oracle_stat(proc_id, side, O_MISSES_MARKED);
     c.pending.erase(it);
   }
-
-  uns side_bit = mlp_req_side(req);
-  if (!(side_bit & MLP_ORACLE_SIDE))
-    return;
-  uns side = side_index(side_bit);
-  Line& line = line_of(c, line_addr, side);
-  see(c, line, line_addr);
-  if ((marked_sides & side_bit) && !line.marked) {
-    line.marked = true;
-    c.marked_lines[side]++;
-    oracle_stat(proc_id, side, O_MARKED_LINES);
-    balance_ctrl(c, proc_id, side);
-  }
+  if (MLP_ORACLE == 4 && (mlp_req_side(req) & MLP_ORACLE_SIDE))
+    c.seen.insert(line_addr);
 }
 
 void mlp_oracle_insert(Cache* mlc, Mem_Req* req) {
-  Core& c = core_of(mlc, req->proc_id);
+  if (MLP_ORACLE != 4 || !(mlp_req_side(req) & MLP_ORACLE_SIDE))
+    return;
+  Core& c = core_of(req->proc_id);
   Addr tag, line_addr;
-  uns set = ext_cache_index(mlc, req->addr, &tag, &line_addr);
-  c.set_fills[set]++;
-  uns side_bit = mlp_req_side(req);
-  if (side_bit & MLP_ORACLE_SIDE)
-    see(c, line_of(c, line_addr, side_index(side_bit)), line_addr);
+  ext_cache_index(mlc, req->addr, &tag, &line_addr);
+  c.seen.insert(line_addr);
 }

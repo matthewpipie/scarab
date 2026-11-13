@@ -357,11 +357,10 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
    retired-instruction count at the lookup is within mlp_oracle_ref_slack of its own. A miss that
    lines up with none is a real miss.
      0  off.
-     1  track only: forces nothing. Keeps the reuse stats (MLP_REUSE_*), with marking per line
-        (a line is marked from its first marked miss on) and a line-level random control behind
-        their CTRL class, and with mlp_oracle_record, writes a reference. With mlp_oracle_ref, it
-        also lines its misses up with the reference's: replaying a run of the same configuration,
-        every miss lines up, at an offset of 0.
+     1  track only: forces nothing. With mlp_oracle_record, writes a reference. With
+        mlp_oracle_ref, lines its misses up with the reference's: replaying a run of the same
+        configuration, every miss lines up, at an offset of 0. (Reuse distances of marked and
+        unmarked lines are in MLP_RD* and MLP_RDNEXT_*, kept under every policy.)
      2  critical: every miss that lines up with a marked miss of the reference hits (with
         mlp_oracle_reuse_only, a marked miss after the line's first).
      3  random control: as 2, for a random sample of the reference's misses instead, drawn per side
@@ -411,15 +410,12 @@ DEF_PARAM(mlp_oracle_install, MLP_ORACLE_INSTALL, Flag, Flag, TRUE, )
    control up to the marked count, so lines match exactly and misses do too unless the drawn lines
    come up short. Off, it draws the misses at random from all the side's reference misses, and
    only their number matches.
-   MLP_ORACLE_*_REF_{MARKED,CTRL}{,_LINES} show how close they came. mlp_oracle_ctrl_choices also
-   sets how mode 1's line-level control matches marked lines in accesses: of that many lines drawn
-   at random, it takes the one with the most accesses while its lines trail the marked lines in
-   accesses, and the fewest otherwise. */
+   MLP_ORACLE_*_REF_{MARKED,CTRL}{,_LINES} show how close they came. */
 DEF_PARAM(mlp_oracle_ctrl_lines, MLP_ORACLE_CTRL_LINES, Flag, Flag, TRUE, )
 DEF_PARAM(mlp_oracle_ctrl_choices, MLP_ORACLE_CTRL_CHOICES, uns, uns, 8, )
-/* mlp_oracle_seed: seeds the random draws (mode 3's control, mode 1's line-level control). Runs
-   that differ only in it draw independent controls of the same size, which shows how much the
-   control's gain depends on the draw. 0 keeps the draws of runs from before it existed. */
+/* mlp_oracle_seed: seeds mode 3's random draw of the control. Runs that differ only in it draw
+   independent controls of the same size, which shows how much the control's gain depends on the
+   draw. 0 keeps the draws of runs from before it existed. */
 DEF_PARAM(mlp_oracle_seed, MLP_ORACLE_SEED, uns, uns, 0, )
 /* mlp_oracle_reuse_only: modes 2 and 3 leave the reference's cold misses alone (each line's first
    miss: the MLC starts empty, so no replacement policy can make it hit). Mode 2 forces only the

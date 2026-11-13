@@ -25,9 +25,9 @@
  * Author       : Litz Lab
  * Date         : 11/2026
  * Description  : mlp_oracle: upper bounds and a random control for REPL_MLP's marking at
- *                the MLC, and reuse-distance stats for marked lines. Simulator-only: the
- *                marking reads only what the core sees, but forcing hits is not something
- *                hardware can do. See mlp_oracle in memory.param.def.
+ *                the MLC. Simulator-only: the marking reads only what the core sees, but
+ *                forcing hits is not something hardware can do. See mlp_oracle in
+ *                memory.param.def.
  ***************************************************************************************/
 
 #ifndef __MLP_ORACLE_H__
@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-/* Sides of the hierarchy, as bits, as mlp_oracle_side and marked_sides take them. */
+/* Sides of the hierarchy, as bits, as mlp_oracle_side takes them. */
 #define MLP_SIDE_INSTR 1
 #define MLP_SIDE_DATA 2
 
@@ -52,15 +52,15 @@ uns mlp_req_side(Mem_Req* req);
 
 /* The MLC looked req's line up; hit is whether the line was there. Once per request, and never
    for a writeback. in_flight is whether an earlier miss on the line is still on its way back, so
-   this one will wait on it. Records the reuse stats, lines a miss up with the reference
-   (mlp_oracle_ref), and returns whether mlp_oracle forces the access to hit. */
+   this one will wait on it. Lines a miss up with the reference (mlp_oracle_ref), and returns
+   whether mlp_oracle forces the access to hit. */
 Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight);
 
-/* req's MLC miss has come back; marked_sides is what REPL_MLP's marking says about it
-   (MLP_SIDE_* bits, 0 for unmarked). The line has now been seen, so later accesses are reuses.
-   The first return for a miss settles its mark for mlp_oracle_record. Safe to repeat for the same
-   request. */
-void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns marked_sides);
+/* req's MLC miss has come back; mark is how the marking marks the fill (MLP_MARK_*, as
+   mlp_stage_fill_boost in memory.c stages it on the line). A miss counts as marked if the mark is
+   its line's side's. The first return for a miss settles its mark for mlp_oracle_record. The line
+   has now been seen, so mode 4 forces later misses on it. Safe to repeat for the same request. */
+void mlp_oracle_miss_return(Cache* mlc, Mem_Req* req, uns8 mark);
 
 /* The MLC inserted req's line: any fill, writebacks and forced installs included. */
 void mlp_oracle_insert(Cache* mlc, Mem_Req* req);
