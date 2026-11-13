@@ -214,6 +214,10 @@ struct Mem_Req_struct {
                                                  because the ROB head was a load waiting on this */
   Counter rob_stall_noissue_cycles;          /* REPL_MLP (mlp_data_bound 3): of rob_stall_cycles,
                                                  those in which no op issued to the FUs */
+  Flag mlp_mlc_peeked;                       /* stats only: mlp_mlc_lapsed is set (at the first
+                                                 MLC lookup, before it renewed the line) */
+  Flag mlp_mlc_lapsed;                       /* stats only: the line was marked and past its
+                                                 protection (cache_mlp_lapsed) */
   Counter fe_stall_cycles;                   /* Miss cost (stats only): cycles the backend got no
                                                  ops while the on-path icache waited on this */
   Flag fe_abandoned;                         /* REPL_MLP (mlp_instr_mark 2): fetch was redirected
