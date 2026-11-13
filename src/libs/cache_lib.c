@@ -79,9 +79,15 @@ void cache_set_lacs_next_insert(Flag valid, uns cost) {
    (a 2-bit countdown), and a set ticks every round(mlp_boost / MLP_COUNTDOWN_TICKS) fills. */
 #define MLP_COUNTDOWN_TICKS 3
 
+/* REPL_MLP keeps its boost as a countdown (mlp_boost_countdown, on by default) unless
+   mlp_boost_in_fills asks for the fill-count age instead. */
+static inline Flag mlp_countdown_on(void) {
+  return MLP_BOOST_COUNTDOWN && !MLP_BOOST_IN_FILLS;
+}
+
 /* REPL_MLP with mlp_boost_countdown: (re)start a marked line's countdown, on its fill or a hit. */
 static inline void mlp_countdown_start(Cache_Entry* entry) {
-  entry->mlp_ticks_left = MLP_BOOST_COUNTDOWN && entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+  entry->mlp_ticks_left = mlp_countdown_on() && entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
 }
 
 /* REPL_MLP with mlp_boost_countdown: after a fill into `set` at fill_way, decrement the countdown
@@ -208,14 +214,9 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
   cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
-  if (repl_policy == REPL_MLP) {
-    ASSERTM(0, !(MLP_BOOST_COUNTDOWN && MLP_BOOST_IN_FILLS),
-            "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
-    ASSERTM(0, !MLP_BOOST_COUNTDOWN_TIERED || MLP_BOOST_COUNTDOWN,
-            "mlp_boost_countdown_tiered requires mlp_boost_countdown\n");
-    ASSERTM(0, !MLP_BOOST_COUNTDOWN_NO_REVIVE || MLP_BOOST_COUNTDOWN,
-            "mlp_boost_countdown_no_revive requires mlp_boost_countdown\n");
-  }
+  if (repl_policy == REPL_MLP)
+    ASSERTM(0, !MLP_BOOST_COUNTDOWN_NO_REVIVE || mlp_countdown_on(),
+            "mlp_boost_countdown_no_revive requires mlp_boost_countdown without mlp_boost_in_fills\n");
 
   /* allocate memory for all the sets (pointers to line arrays)  */
   cache->entries = (Cache_Entry**)malloc(sizeof(Cache_Entry*) * num_sets);
@@ -428,7 +429,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
 
     if (cache->repl_policy == REPL_MLP)
       cache->mlp_set_fills[set]++;
-    if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && new_line->valid && new_line->mlp_ticks_left)
+    if (cache->repl_policy == REPL_MLP && mlp_countdown_on() && new_line->valid && new_line->mlp_ticks_left)
       STAT_EVENT(proc_id, MLP_COUNTDOWN_EVICT_PROTECTED);
     DEBUG(0, "Replacing 2.2f(set %u, way %u, tag 0x%s, base 0x%s) in cache '%s' with base 0x%s\n", set, repl_index,
           hexstr64s(new_line->tag), hexstr64s(new_line->base), cache->name, hexstr64s(*line_addr));
@@ -495,7 +496,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
     default:
       ASSERT(0, FALSE);  // should never come here
   }
-  if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN)
+  if (cache->repl_policy == REPL_MLP && mlp_countdown_on())
     mlp_countdown_tick(cache, proc_id, set, repl_index);
   if (cache->repl_policy == REPL_IDEAL_STORAGE) {
     new_line->last_access_time = cache->assoc;
@@ -713,7 +714,7 @@ Cache_Entry* find_repl_entry(Cache* cache, uns8 proc_id, uns set, uns* way) {
     }
 
     case REPL_MLP: {
-      if (MLP_BOOST_COUNTDOWN) {
+      if (mlp_countdown_on()) {
         /* Evict the least recently used unprotected line, or the least recently used line if
            every line is protected. With every boost 0 nothing is protected: plain LRU.
            mlp_boost_countdown_tiered instead evicts the lowest mlp_ticks_left outright (0 still
@@ -853,7 +854,7 @@ static inline void update_repl_policy(Cache* cache, Cache_Entry* cur_entry, uns 
       cur_entry->last_access_time = sim_time;
       if (cache->mlp_set_fills)  // REPL_MLP only: the policies above share this case
         cur_entry->mlp_stamp = cache->mlp_set_fills[set];
-      if (cache->repl_policy == REPL_MLP && MLP_BOOST_COUNTDOWN && cur_entry->mlp_boost > 0.0 &&
+      if (cache->repl_policy == REPL_MLP && mlp_countdown_on() && cur_entry->mlp_boost > 0.0 &&
           (!MLP_BOOST_COUNTDOWN_NO_REVIVE || cur_entry->mlp_ticks_left > 0))
         mlp_countdown_start(cur_entry); /* a fill or hit restarts a marked line's countdown, unless
                                             mlp_boost_countdown_no_revive and it already lapsed */

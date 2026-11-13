@@ -11,7 +11,7 @@ REPL_MLP (`--mlc_cache_repl_policy 9`) is L2 LRU plus protection for lines whose
 | Parameter | Value | Default? | What it does |
 |---|---|---|---|
 | `mlc_cache_repl_policy` | 9 | no (0, LRU) | REPL_MLP at the L2 |
-| `mlp_boost_in_fills` | 1 | no (0) | Protects a marked line for γ fills into its set after its last touch (fill-counted γ). With 0, the boost is added to the line's LRU stack position instead (λ). |
+| `mlp_boost_in_fills` | 1 | no (0) | Protects a marked line for γ fills into its set after its last touch (fill-counted γ). With 0, the default countdown is used instead (see below). |
 | `mlp_lin_instr_lambda` | 64 | no (0, off) | γ for instruction lines. 64 and 128 are about equally good with FDIP on. Only 64 has been run with FDIP off. |
 | `mlp_instr_mark` | 2 | yes | Marks only fills a demand fetch reached, and drops those fetch was resteered away from while it waited on them |
 | `mlp_instr_starve` | 2 | yes | Counts a waiting cycle only if the backend was also starved and the ROB head was not a load waiting on memory |
@@ -32,13 +32,15 @@ In addition, a demand fetch must have reached the request, and fetch must not ha
 - The conditions only have to coincide. Nothing checks that this miss caused the starvation.
 - Every input is something the core can see. None of it reads `off_path`.
 
-### Cheaper hardware variant
+### Cheaper hardware variant (the default)
 
-`--mlp_boost_countdown 1` in place of `--mlp_boost_in_fills 1` keeps a 2-bit countdown per line and a tick counter per set. At γ64 it tied fill-counted γ: +1.77 vs +1.75 (mark 2 alone, FDIP on, Google top 2 simpoints). It has not been run with `mlp_instr_starve 2` or with FDIP off.
+Without `--mlp_boost_in_fills 1`, REPL_MLP uses the countdown (`mlp_boost_countdown`, default 1). It keeps a 2-bit countdown per line and a tick counter per set. At γ64 it tied fill-counted γ: +1.77 vs +1.75 (mark 2 alone, FDIP on, Google top 2 simpoints). It has not been run with `mlp_instr_starve 2` or with FDIP off.
+
+`mlp_boost_countdown_tiered` (default 1) changes the victim only when every line in the set is protected: it evicts the line with the fewest ticks left, instead of the least recently used. Over plain countdown it was +2.51 vs +2.48 (Google, 12 workloads, top 3 simpoints, γi64, γd16, #34).
 
 ### Pitfall
 
-Setting `mlp_lin_instr_lambda` without `--mlp_boost_in_fills 1` gives the stack-position mode.
+The stack-position mode (λ) needs both `--mlp_boost_countdown 0` and no `--mlp_boost_in_fills 1`.
 
 | Suite | Stack-position λ (best) | Fill-counted γ (best) |
 |---|---|---|
