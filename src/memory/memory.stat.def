@@ -453,14 +453,15 @@ DEF_STAT(  MLP_EVICT_DMARK                 , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_EVICT_DMARK_UNUSED          , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_EVICT_IMARK                 , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_EVICT_IMARK_UNUSED          , COUNT  , NO_RATIO  )
-// MLC reuse distances (MLP_RD1_* / MLP_RDN_*, see mlp_rd_fill in memory.c), in fills into the line's
-// set, tracked by address. A fill a load or demand fetch waited on starts a line; each later demand
-// lookup of it at the MLC (hit, or miss after eviction) is a reuse. RD1: the first reuse, from the
-// fill; RDN: each later one, from the reuse before it. DMARK / DNOMARK: a load waited on the fill,
-// marked or not; IMARK / INOMARK: a demand fetch waited (no load), marked or not. _LOG2_k counts
-// distances in [2^(k-1), 2^k - 1] (k 0: distance 0; 15: 16384 or more). RD1_*_FILLS: such fills
-// (fills never reused: _FILLS minus the RD1 histogram's sum). _HIT: reuses that hit. A 16-way LRU
-// set can hit only distances up to 15.
+// MLC reuse distances per line address (MLP_RD1_* / MLP_RDN_*, see mlp_rd_fill in memory.c), in
+// fills into the line's set. A line's history starts at its first MLC fill; each later demand
+// lookup of it at the MLC (hit, or miss after eviction) is a reuse. RD1: the line's first reuse,
+// from its first fill; RDN: every reuse after that, from the reuse before it, across evictions and
+// refills. Every reuse is filed under the kind of the line's first fill, for the whole run:
+// DMARK / DNOMARK, a load waited on it, marked or not; IMARK / INOMARK, a demand fetch waited (no
+// load), marked or not; OTHER, neither waited (a prefetch, a store, a writeback). _LOG2_k counts
+// distances in [2^(k-1), 2^k - 1] (k 0: distance 0; 15: 16384 or more). RD1_*_FILLS: first fills of
+// each kind (lines never reused: _FILLS minus the RD1 histogram's sum). _HIT: reuses that hit.
 DEF_STAT(  MLP_RD1_DMARK_LOG2_0            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_DMARK_LOG2_1            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_DMARK_LOG2_2            , COUNT  , NO_RATIO  )
@@ -525,6 +526,22 @@ DEF_STAT(  MLP_RD1_INOMARK_LOG2_12         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_INOMARK_LOG2_13         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_INOMARK_LOG2_14         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_INOMARK_LOG2_15         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_0            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_1            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_2            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_3            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_4            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_5            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_6            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_7            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_8            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_9            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_10           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_11           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_12           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_13           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_14           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_LOG2_15           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_DMARK_LOG2_0            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_DMARK_LOG2_1            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_DMARK_LOG2_2            , COUNT  , NO_RATIO  )
@@ -589,18 +606,37 @@ DEF_STAT(  MLP_RDN_INOMARK_LOG2_12         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_INOMARK_LOG2_13         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_INOMARK_LOG2_14         , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_INOMARK_LOG2_15         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_0            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_1            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_2            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_3            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_4            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_5            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_6            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_7            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_8            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_9            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_10           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_11           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_12           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_13           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_14           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_LOG2_15           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_DMARK_FILLS             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_DNOMARK_FILLS           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_IMARK_FILLS             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_INOMARK_FILLS           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_FILLS             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_DMARK_HIT               , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_DNOMARK_HIT             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_IMARK_HIT               , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RD1_INOMARK_HIT             , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RD1_OTHER_HIT               , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_DMARK_HIT               , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_DNOMARK_HIT             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_IMARK_HIT               , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_RDN_INOMARK_HIT             , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_RDN_OTHER_HIT               , COUNT  , NO_RATIO  )
 // Distinct lines over the measured region (after full_warmup): LOAD, lines with an MLC fill a load
 // waited on, and LOAD_DMARK, those data-marked at one fill or more; IFETCH / IFETCH_IMARK, the same
 // for fills a demand fetch reached.
