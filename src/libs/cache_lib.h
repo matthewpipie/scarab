@@ -252,6 +252,8 @@ void cache_set_next_fill_mlp_boost(float boost);
 #define MLP_MARK_DATA 1
 #define MLP_MARK_INSTR 2
 void cache_set_next_fill_mlp_mark(uns8 mark);
+/* The set addr maps to. */
+uns cache_set_index(Cache* cache, Addr addr);
 /* The mark of addr's line, or MLP_MARK_NONE if it is not resident. */
 uns8 cache_mlp_mark(Cache* cache, Addr addr);
 /* A demand access (load, store or instruction fetch) hit addr's line: note it used. Returns its

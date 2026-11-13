@@ -2396,6 +2396,11 @@ static Cache_Entry* mlp_find_line(Cache* cache, Addr addr, uns* set) {
   return NULL;
 }
 
+uns cache_set_index(Cache* cache, Addr addr) {
+  Addr tag, tag_full, line_addr;
+  return cache_index(cache, addr, &tag, &tag_full, &line_addr);
+}
+
 uns8 cache_mlp_mark(Cache* cache, Addr addr) {
   uns set;
   Cache_Entry* entry = mlp_find_line(cache, addr, &set);

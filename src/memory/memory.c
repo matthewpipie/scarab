@@ -145,6 +145,8 @@ static void mem_process_completed_reqs(void);
 static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data* data);
 static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit);
 static void mlp_count_mlc_evict(uns8 proc_id, Cache* cache);
+static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mark);
+static void mlp_rd_access(Mem_Req* req, Flag hit);
 static void mem_complete_mlc_access(Mem_Req* req);
 static void mem_serve_from_wb(Mem_Req* req, Mshr* entering);
 static Flag mem_process_l1_miss_access(Mem_Req* req, Addr* line_addr, L1_Data* data);
@@ -3141,6 +3143,8 @@ static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit) {
       kind = 3; /* a prefetch */
   }
   STAT_EVENT(req->proc_id, MLP_MLC_ACC_LOAD + kind);
+  if (kind <= 2)
+    mlp_rd_access(req, hit);
   if (!hit)
     return;
   Cache* cache = &MLC(req->proc_id)->cache;
@@ -3168,6 +3172,69 @@ static void mlp_count_mlc_evict(uns8 proc_id, Cache* cache) {
   STAT_EVENT(proc_id, data ? MLP_EVICT_DMARK : MLP_EVICT_IMARK);
   if (unused)
     STAT_EVENT(proc_id, data ? MLP_EVICT_DMARK_UNUSED : MLP_EVICT_IMARK_UNUSED);
+}
+
+/* MLP_RD1_* / MLP_RDN_* (stats only): MLC reuse distances, in fills into the line's set. A fill a
+   load or demand fetch waited on starts a line; each later demand lookup of the line at the MLC
+   (load, store or instruction fetch; a hit, or a miss if it was evicted first) is a reuse, at its
+   distance from the line's previous touch. RD1: the first reuse, from the fill (the span REPL_MLP's
+   fill boost covers); RDN: each later one, from the reuse before it (the span a hit boost covers).
+   The next such fill of the line starts it over; other fills (writebacks, prefetches, stores) leave
+   it as is. Tracked by address, so distances past the line's lifetime count too. A 16-way LRU set
+   keeps a line until the 16th fill after its last touch (fewer if hits reorder the set), so only
+   distances up to 15 can hit. */
+#define MLP_RD_DMARK 0   /* a load waited; marked data-bound */
+#define MLP_RD_DNOMARK 1 /* a load waited; not marked */
+#define MLP_RD_IMARK 2   /* a demand fetch waited (no load); marked instruction-bound */
+#define MLP_RD_INOMARK 3 /* a demand fetch waited (no load); not marked */
+typedef struct {
+  Counter stamp; /* the set's fill count at the line's last touch (its fill or a reuse) */
+  uns8 kind;     /* MLP_RD_*, from the fill */
+  Flag reused;   /* a reuse since the fill: the next one goes to RDN */
+} Mlp_Rd_Entry;
+static Hash_Table* mlp_rd = NULL;         /* per core: lines started by a fill, by line address */
+static Counter** mlp_rd_set_fills = NULL; /* per core, per MLC set: fills so far */
+
+/* Every MLC insert: tick its set's clock, and start a line a load or demand fetch waited on. */
+static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mark) {
+  Cache* cache = &MLC(proc_id)->cache;
+  if (!mlp_rd) {
+    mlp_rd = (Hash_Table*)calloc(NUM_CORES, sizeof(Hash_Table));
+    mlp_rd_set_fills = (Counter**)calloc(NUM_CORES, sizeof(Counter*));
+    for (uns ii = 0; ii < NUM_CORES; ii++) {
+      init_hash_table(&mlp_rd[ii], "mlp_rd", 1 << 20, sizeof(Mlp_Rd_Entry));
+      mlp_rd_set_fills[ii] = (Counter*)calloc(MLC(ii)->cache.num_sets, sizeof(Counter));
+    }
+  }
+  Counter now = ++mlp_rd_set_fills[proc_id][cache_set_index(cache, addr)];
+  if (!load && !ifetch)
+    return;
+  uns8 kind = mark == MLP_MARK_DATA    ? MLP_RD_DMARK
+              : mark == MLP_MARK_INSTR ? MLP_RD_IMARK
+              : load                   ? MLP_RD_DNOMARK
+                                       : MLP_RD_INOMARK;
+  Flag new_entry;
+  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access_create(&mlp_rd[proc_id], addr >> LOG2(MLC_LINE_SIZE), &new_entry);
+  e->stamp = now;
+  e->kind = kind;
+  e->reused = FALSE;
+  STAT_EVENT(proc_id, MLP_RD1_DMARK_FILLS + kind);
+}
+
+/* A demand lookup of req's line at the MLC: a reuse of the line, if a fill started it. */
+static void mlp_rd_access(Mem_Req* req, Flag hit) {
+  if (!mlp_rd)
+    return;
+  Addr key = req->addr >> LOG2(MLC_LINE_SIZE);
+  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access(&mlp_rd[req->proc_id], key);
+  if (!e)
+    return;
+  Counter now = mlp_rd_set_fills[req->proc_id][cache_set_index(&MLC(req->proc_id)->cache, req->addr)];
+  mlp_stat_log2(req->proc_id, (e->reused ? MLP_RDN_DMARK_LOG2_0 : MLP_RD1_DMARK_LOG2_0) + 16 * e->kind, now - e->stamp);
+  if (hit)
+    STAT_EVENT(req->proc_id, (e->reused ? MLP_RDN_DMARK_HIT : MLP_RD1_DMARK_HIT) + e->kind);
+  e->stamp = now;
+  e->reused = TRUE;
 }
 
 /* MLP_LINES_* (stats only): per core, every line seen over the measured region, with these flags. */
@@ -3747,6 +3814,8 @@ Flag mlc_fill_line(Mem_Req* req) {
     }
   }
 
+  uns8 fill_mark = MLP_MARK_NONE;  // stats only (MLP_RD1_*): how the fill below was marked, and who waited on it
+  Flag fill_load = FALSE, fill_ifetch = FALSE;
   {  // the requests this fill serves: MLP_LD_* histograms (stats only), the REPL_MLP boost, MLP_LINES_*
     uns n = mem_fill_waiter_count(&mem->mlc_mshr, req);
     Mem_Req* waiters[n];
@@ -3768,6 +3837,9 @@ Flag mlc_fill_line(Mem_Req* req) {
       ifetch |= mem_req_is_type(waiters[i], MRT_IFETCH);
     }
     mlp_note_line(req->proc_id, req->addr, load, ifetch, mark);
+    fill_mark = mark;
+    fill_load = load;
+    fill_ifetch = ifetch;
   }
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);
@@ -3792,6 +3864,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     data = (MLC_Data*)cache_insert(&MLC(req->proc_id)->cache, req->proc_id, req->addr, &line_addr, &repl_line_addr);
   }
   mlp_count_mlc_evict(req->proc_id, &MLC(req->proc_id)->cache);
+  mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, fill_mark);
   /* this will make it bring the line into the mlc and then modify it */
   data->proc_id = req->proc_id;
 
