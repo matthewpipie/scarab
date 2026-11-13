@@ -360,7 +360,8 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
      1  track only: forces nothing. With mlp_oracle_record, writes a reference. With
         mlp_oracle_ref, lines its misses up with the reference's: replaying a run of the same
         configuration, every miss lines up, at an offset of 0. (Reuse distances of marked and
-        unmarked lines are in MLP_RD* and MLP_RDNEXT_*, kept under every policy.)
+        unmarked lines are in MLP_RD* and MLP_RDNEXT_*, kept under every policy; a reference
+        for the bounds sets mlp_rd_sticky and mlp_rd_ctrl.)
      2  critical: every miss that lines up with a marked miss of the reference hits (with
         mlp_oracle_reuse_only, a marked miss after the line's first).
      3  random control: as 2, for a random sample of the reference's misses instead, drawn per side
@@ -422,6 +423,23 @@ DEF_PARAM(mlp_oracle_seed, MLP_ORACLE_SEED, uns, uns, 0, )
    marked misses after a line's first, and mode 3 draws only from those, matching their count, so
    both bound what replacement can do, as mode 4 does. Off, cold misses are forced like any other. */
 DEF_PARAM(mlp_oracle_reuse_only, MLP_ORACLE_REUSE_ONLY, Flag, Flag, FALSE, )
+/* MLC reuse distances (MLP_RD1_* / MLP_RDN_*, see mlp_rd_fill in memory.c): stats only, so none of
+   these change timing.
+   mlp_rd_sticky: how a line's kind is kept. 0: its first fill's, for the whole run, so lines that
+   came in marked and lines that came in unmarked stay apart. 1: a line moves to its side's marked
+   kind (DMARK, IMARK) at its first marked fill and stays there, so a line counts as marked once any
+   of its fills was marked, as mlp_oracle's bounds take it. */
+DEF_PARAM(mlp_rd_sticky, MLP_RD_STICKY, Flag, Flag, FALSE, )
+/* mlp_rd_iprf_reuse: also count MLC lookups by instruction prefetches (FDIP and the other
+   instruction prefetchers) as reuses, as loads, stores and instruction fetches always are. */
+DEF_PARAM(mlp_rd_iprf_reuse, MLP_RD_IPRF_REUSE, Flag, Flag, FALSE, )
+/* mlp_rd_ctrl: a random control for the marked lines, counted under the DCTRL / ICTRL kinds as
+   well as under their own. 0 off. n: per side (data: DMARK, DNOMARK, OTHER; instruction: IMARK,
+   INOMARK, IPRF), keep as many control lines as the side has marked lines, drawn from all its
+   lines. Each draw takes, of n random lines not drawn yet, the one with the most reuses so far
+   while the control's reuses since its lines were drawn trail the marked lines' since they were
+   marked, and the fewest otherwise, so the two match in reuses. mlp_oracle's study uses 8. */
+DEF_PARAM(mlp_rd_ctrl, MLP_RD_CTRL, uns, uns, 0, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.

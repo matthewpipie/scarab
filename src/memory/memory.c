@@ -146,7 +146,7 @@ static void mem_process_completed_reqs(void);
 static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data* data);
 static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit);
 static void mlp_count_mlc_evict(uns8 proc_id, Cache* cache);
-static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mark);
+static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, Flag iprf, uns8 mark);
 static void mlp_rd_access(Mem_Req* req, Flag hit);
 static void mem_complete_mlc_access(Mem_Req* req);
 static Flag mlp_oracle_install(Mem_Req* req);
@@ -3193,7 +3193,7 @@ static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit) {
       kind = 3; /* a prefetch */
   }
   STAT_EVENT(req->proc_id, MLP_MLC_ACC_LOAD + kind);
-  if (kind <= 2)
+  if (kind <= 2 || (kind == 3 && MLP_RD_IPRF_REUSE && mlp_req_side(req) == MLP_SIDE_INSTR))
     mlp_rd_access(req, hit);
   if (!hit)
     return;
@@ -3226,24 +3226,49 @@ static void mlp_count_mlc_evict(uns8 proc_id, Cache* cache) {
 
 /* MLP_RD1_* / MLP_RDN_* (stats only): MLC reuse distances per line address, in fills into the line's
    set. A line's history starts at its first MLC fill in the run. Each later demand lookup of the
-   line at the MLC (load, store or instruction fetch; a hit, or a miss if it was evicted) is a reuse.
-   RD1: the line's first reuse, from that first fill; RDN: every reuse after it, from the reuse
-   before it, whether or not the line was evicted and refilled in between. The first fill also fixes
-   the line's kind (MLP_RD_*): every reuse is counted under it, and refills don't change it. A 16-way
-   LRU set keeps an untouched line for 16 fills (fewer if hits reorder the set; more under REPL_MLP's
-   boost, or if a prefetch or writeback renews the line between demand lookups). */
+   line at the MLC (load, store or instruction fetch; a hit, or a miss if it was evicted) is a reuse,
+   and with mlp_rd_iprf_reuse so is an instruction prefetch's. RD1: the line's first reuse, from
+   that first fill; RDN: every reuse after it, from the reuse before it, whether or not the line was
+   evicted and refilled in between. The first fill also sets the line's kind (MLP_RD_*), and every
+   reuse is counted under the kind the line has then: refills don't change it, except that with
+   mlp_rd_sticky a marked refill moves an unmarked line to its marked kind for good. A 16-way LRU set
+   keeps an untouched line for 16 fills (fewer if hits reorder the set; more under REPL_MLP's boost,
+   or if a lookup that is not a reuse renews the line in between). */
 #define MLP_RD_DMARK 0   /* a load waited; marked data-bound */
 #define MLP_RD_DNOMARK 1 /* a load waited; not marked */
 #define MLP_RD_IMARK 2   /* a demand fetch waited (no load); marked instruction-bound */
 #define MLP_RD_INOMARK 3 /* a demand fetch waited (no load); not marked */
-#define MLP_RD_OTHER 4   /* neither waited: a prefetch, a store, a writeback */
+#define MLP_RD_OTHER 4   /* none of the others: a data prefetch, a store, a writeback */
+#define MLP_RD_IPRF 5    /* no demand waited, and an instruction prefetch (FDIP, ...) asked for it */
+#define MLP_RD_DCTRL 6   /* mlp_rd_ctrl's data-side control lines, counted here as well */
+#define MLP_RD_ICTRL 7   /* and its instruction-side ones */
+/* Sides, for the control and the MARK_LINES / _REUSES stats: 0 data, 1 instruction. */
+#define MLP_RD_SIDE(kind) ((kind) == MLP_RD_IMARK || (kind) == MLP_RD_INOMARK || (kind) == MLP_RD_IPRF)
+#define MLP_RD_MARKED(kind) ((kind) == MLP_RD_DMARK || (kind) == MLP_RD_IMARK)
 typedef struct {
-  Counter stamp; /* the set's fill count at the line's last touch (its first fill or a reuse) */
-  uns8 kind;     /* MLP_RD_*, from the line's first fill */
-  Flag reused;   /* reused since its first fill: the next reuse goes to RDN */
+  Counter stamp;  /* the set's fill count at the line's last touch (its first fill or a reuse) */
+  Counter reuses; /* reuses so far, for mlp_rd_ctrl's draw */
+  uns8 kind;      /* MLP_RD_DMARK .. MLP_RD_IPRF */
+  uns8 ctrl;      /* 0, or 1 + the side whose control drew it (mlp_rd_ctrl) */
+  Flag reused;    /* reused since its first fill: the next reuse goes to RDN */
 } Mlp_Rd_Entry;
 static Hash_Table* mlp_rd = NULL;         /* per core: every line filled so far, by line address */
 static Counter** mlp_rd_set_fills = NULL; /* per core, per MLC set: fills so far */
+
+/* Per core and side: the marked lines and mlp_rd_ctrl's control for them. */
+typedef struct {
+  Addr* pool; /* keys of the side's lines, to draw the control from (mlp_rd_ctrl only) */
+  uns pool_n, pool_cap;
+  Counter marked;        /* lines of the side's marked kind */
+  Counter drawn;         /* lines in the control */
+  Counter marked_reuses; /* reuses of marked lines since they were marked */
+  Counter ctrl_reuses;   /* reuses of control lines since they were drawn */
+} Mlp_Rd_Side;
+typedef struct {
+  Mlp_Rd_Side side[2];
+  uint64_t rng;
+} Mlp_Rd_Lines;
+static Mlp_Rd_Lines* mlp_rd_lines = NULL; /* per core */
 
 /* MLP_RDNEXT_* (stats only): the gap from one demand lookup of a marked line to the next, for each
    class: data-marked lines, instruction-marked lines, and either (MLP_RDNEXT_*MARK_* in that order). */
@@ -3256,13 +3281,61 @@ typedef struct {
 } Mlp_Rd_Next;
 static Mlp_Rd_Next* mlp_rd_next = NULL; /* per core */
 
-/* Every MLC insert: tick its set's clock, and start the line's history at its first fill. */
-static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mark) {
+/* mlp_rd_ctrl's draws: xorshift64, seeded per core. */
+static uint64_t mlp_rd_rand(uint64_t* s) {
+  *s ^= *s << 13;
+  *s ^= *s >> 7;
+  *s ^= *s << 17;
+  return *s;
+}
+
+/* One more line for the side's control, from the side's lines not drawn yet: of mlp_rd_ctrl random
+   ones, the one with the most reuses so far while the control's reuses (since its lines were
+   drawn) trail the marked lines' (since they were marked), and the fewest otherwise. */
+static Flag mlp_rd_draw(uns proc_id, uns side) {
+  Mlp_Rd_Lines* lines = &mlp_rd_lines[proc_id];
+  Mlp_Rd_Side* sd = &lines->side[side];
+  Flag want_hot = sd->ctrl_reuses < sd->marked_reuses;
+  Mlp_Rd_Entry* best = NULL;
+  for (uns draw = 0, got = 0; got < MLP_RD_CTRL && draw < 16 * MLP_RD_CTRL && sd->pool_n; draw++) {
+    Addr key = sd->pool[mlp_rd_rand(&lines->rng) % sd->pool_n];
+    Mlp_Rd_Entry* cand = (Mlp_Rd_Entry*)hash_table_access(&mlp_rd[proc_id], key);
+    if (cand->ctrl)
+      continue;
+    got++;
+    if (!best || (want_hot ? cand->reuses > best->reuses : cand->reuses < best->reuses))
+      best = cand;
+  }
+  if (!best) {
+    STAT_EVENT(proc_id, MLP_RD_CTRL_NO_PICK);
+    return FALSE;
+  }
+  best->ctrl = 1 + side;
+  sd->drawn++;
+  STAT_EVENT(proc_id, MLP_RD_DCTRL_LINES + side);
+  if (MLP_RD_MARKED(best->kind))
+    STAT_EVENT(proc_id, MLP_RD_DCTRL_MARKED + side);
+  return TRUE;
+}
+
+/* A line took its side's marked kind: count it, and keep the side's control as large. */
+static void mlp_rd_mark_line(uns proc_id, uns side) {
+  Mlp_Rd_Side* sd = &mlp_rd_lines[proc_id].side[side];
+  sd->marked++;
+  STAT_EVENT(proc_id, MLP_RD_DMARK_LINES + side);
+  while (MLP_RD_CTRL && sd->drawn < sd->marked && mlp_rd_draw(proc_id, side)) {
+  }
+}
+
+/* Every MLC insert: tick its set's clock, and start the line's history at its first fill. load,
+   ifetch: a load / a demand fetch waited on the fill; iprf: the request is an instruction prefetch. */
+static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, Flag iprf, uns8 mark) {
   Cache* cache = &MLC(proc_id)->cache;
   if (!mlp_rd) {
     mlp_rd = (Hash_Table*)calloc(NUM_CORES, sizeof(Hash_Table));
     mlp_rd_set_fills = (Counter**)calloc(NUM_CORES, sizeof(Counter*));
     mlp_rd_next = (Mlp_Rd_Next*)calloc(NUM_CORES, sizeof(Mlp_Rd_Next));
+    mlp_rd_lines = (Mlp_Rd_Lines*)calloc(NUM_CORES, sizeof(Mlp_Rd_Lines));
     for (uns ii = 0; ii < NUM_CORES; ii++) {
       uns sets = MLC(ii)->cache.num_sets;
       init_hash_table(&mlp_rd[ii], "mlp_rd", 1 << 20, sizeof(Mlp_Rd_Entry));
@@ -3272,6 +3345,7 @@ static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mar
         for (uns set = 0; set < sets; set++)
           mlp_rd_next[ii].last_fills[cls][set] = MAX_CTR;
       }
+      mlp_rd_lines[ii].rng = 0x9E3779B97F4A7C15ULL * (ii + 1); /* never 0 */
     }
   }
   Counter now = ++mlp_rd_set_fills[proc_id][cache_set_index(cache, addr)];
@@ -3279,15 +3353,31 @@ static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mar
               : mark == MLP_MARK_INSTR ? MLP_RD_IMARK
               : load                   ? MLP_RD_DNOMARK
               : ifetch                 ? MLP_RD_INOMARK
+              : iprf                   ? MLP_RD_IPRF
                                        : MLP_RD_OTHER;
+  Addr key = addr >> LOG2(MLC_LINE_SIZE);
   Flag new_entry;
-  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access_create(&mlp_rd[proc_id], addr >> LOG2(MLC_LINE_SIZE), &new_entry);
-  if (!new_entry)
+  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access_create(&mlp_rd[proc_id], key, &new_entry);
+  if (new_entry) {
+    e->kind = kind;
+    e->stamp = now;
+    e->reused = FALSE;
+    STAT_EVENT(proc_id, MLP_RD1_DMARK_FILLS + kind);
+    if (MLP_RD_CTRL) {
+      Mlp_Rd_Side* sd = &mlp_rd_lines[proc_id].side[MLP_RD_SIDE(kind)];
+      if (sd->pool_n == sd->pool_cap) {
+        sd->pool_cap = sd->pool_cap ? 2 * sd->pool_cap : 1024;
+        sd->pool = (Addr*)realloc(sd->pool, sd->pool_cap * sizeof(Addr));
+      }
+      sd->pool[sd->pool_n++] = key;
+    }
+  } else if (MLP_RD_STICKY && MLP_RD_MARKED(kind) && !MLP_RD_MARKED(e->kind)) {
+    e->kind = kind; /* marked from now on */
+  } else {
     return;
-  e->kind = kind;
-  e->stamp = now;
-  e->reused = FALSE;
-  STAT_EVENT(proc_id, MLP_RD1_DMARK_FILLS + kind);
+  }
+  if (MLP_RD_MARKED(kind))
+    mlp_rd_mark_line(proc_id, MLP_RD_SIDE(kind));
 }
 
 /* MLP_RDNEXT_*: a demand lookup of a marked line of class cls in MLC set `set`, whose fill count is
@@ -3303,26 +3393,45 @@ static void mlp_rd_next_gap(uns proc_id, uns cls, uns set, Counter fills) {
   next->last_fills[cls][set] = fills;
 }
 
-/* A demand lookup of req's line at the MLC: a reuse of the line, if it has been filled before, and
-   for a line marked at its first fill, the next lookup of a marked line (MLP_RDNEXT_*). */
+/* A demand lookup of req's line at the MLC (or with mlp_rd_iprf_reuse, an instruction prefetch's):
+   a reuse of the line, if it has been filled before, filed under the line's kind (and its control
+   kind, if the control drew it), and for a marked line, the next lookup of a marked line
+   (MLP_RDNEXT_*). */
 static void mlp_rd_access(Mem_Req* req, Flag hit) {
   if (!mlp_rd)
     return;
-  mlp_rd_next[req->proc_id].lookups++;
+  uns proc_id = req->proc_id;
+  mlp_rd_next[proc_id].lookups++;
   Addr key = req->addr >> LOG2(MLC_LINE_SIZE);
-  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access(&mlp_rd[req->proc_id], key);
+  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access(&mlp_rd[proc_id], key);
   if (!e)
     return;
-  uns set = cache_set_index(&MLC(req->proc_id)->cache, req->addr);
-  Counter now = mlp_rd_set_fills[req->proc_id][set];
-  mlp_stat_log2(req->proc_id, (e->reused ? MLP_RDN_DMARK_LOG2_0 : MLP_RD1_DMARK_LOG2_0) + 16 * e->kind, now - e->stamp);
+  uns set = cache_set_index(&MLC(proc_id)->cache, req->addr);
+  Counter now = mlp_rd_set_fills[proc_id][set];
+  Stat_Enum log2_base = e->reused ? MLP_RDN_DMARK_LOG2_0 : MLP_RD1_DMARK_LOG2_0;
+  Stat_Enum hit_base = e->reused ? MLP_RDN_DMARK_HIT : MLP_RD1_DMARK_HIT;
+  mlp_stat_log2(proc_id, log2_base + 16 * e->kind, now - e->stamp);
   if (hit)
-    STAT_EVENT(req->proc_id, (e->reused ? MLP_RDN_DMARK_HIT : MLP_RD1_DMARK_HIT) + e->kind);
+    STAT_EVENT(proc_id, hit_base + e->kind);
+  Mlp_Rd_Lines* lines = &mlp_rd_lines[proc_id];
+  if (e->ctrl) {
+    uns side = e->ctrl - 1;
+    mlp_stat_log2(proc_id, log2_base + 16 * (MLP_RD_DCTRL + side), now - e->stamp);
+    if (hit)
+      STAT_EVENT(proc_id, hit_base + MLP_RD_DCTRL + side);
+    lines->side[side].ctrl_reuses++;
+    STAT_EVENT(proc_id, MLP_RD_DCTRL_REUSES + side);
+  }
+  if (MLP_RD_MARKED(e->kind)) {
+    lines->side[MLP_RD_SIDE(e->kind)].marked_reuses++;
+    STAT_EVENT(proc_id, MLP_RD_DMARK_REUSES + MLP_RD_SIDE(e->kind));
+  }
+  e->reuses++;
   e->stamp = now;
   e->reused = TRUE;
   if (e->kind == MLP_RD_DMARK || e->kind == MLP_RD_IMARK) {
-    mlp_rd_next_gap(req->proc_id, e->kind == MLP_RD_DMARK ? 0 : 1, set, now);
-    mlp_rd_next_gap(req->proc_id, 2, set, now);
+    mlp_rd_next_gap(proc_id, e->kind == MLP_RD_DMARK ? 0 : 1, set, now);
+    mlp_rd_next_gap(proc_id, 2, set, now);
   }
 }
 
@@ -3964,7 +4073,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     data = (MLC_Data*)cache_insert(&MLC(req->proc_id)->cache, req->proc_id, req->addr, &line_addr, &repl_line_addr);
   }
   mlp_count_mlc_evict(req->proc_id, &MLC(req->proc_id)->cache);
-  mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, fill_mark);
+  mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, mlp_req_side(req) == MLP_SIDE_INSTR, fill_mark);
   /* this will make it bring the line into the mlc and then modify it */
   data->proc_id = req->proc_id;
 
