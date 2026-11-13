@@ -14,7 +14,7 @@ This runs REPL_MLP at the L2. It protects each marked line for a set number of f
 
 ## How it works
 
-1. **Marking.** Each fill into a cache running REPL_MLP is classified once, when it is filled:
+1. **Marking.** Each fill into the L2 is classified once, when it is filled, whatever the L2's policy (only REPL_MLP, or RRIP with `mlp_rrip_boost`, acts on the mark; under LRU it feeds the stats and [`mlp_oracle`](#bounds-mlp_oracle)). The LLC marks its fills only when it runs one of those itself.
    - A fill that a load waited on is a data fill. The [data rule](#data-marking) decides whether it is marked.
    - Otherwise, a fill that a demand fetch reached is an instruction fill. The [instruction rule](#instruction-marking) decides whether it is marked.
    - Nothing else is ever marked. That includes data prefetches no load waited on, instruction prefetches no demand fetch reached, store-only requests and writebacks.
@@ -298,6 +298,46 @@ The ratio row at γi 64, γd 16 is the best point of the 6×6 γi × γd sweep o
 
 Fill-counted γ stays the recommendation because the countdown has not been compared with it under the current marking defaults.
 
+## Bounds: `mlp_oracle`
+
+`--mlp_oracle` is not a policy. It measures how much replacement could gain from the marking by forcing chosen L2 misses to hit, which no hardware can do, so it is for analysis only. Run it with an LRU L2 (`--mlc_cache_repl_policy 0`) and compare IPC with plain LRU. With it off (the default), nothing changes.
+
+A miss's mark is known only once the miss returns, so a bound takes two runs:
+
+1. **Record:** `--mlp_oracle 1 --mlp_oracle_record 1` runs normally and writes every L2 miss and its mark to `mlp_oracle_misses.<core>.bin` in the output directory.
+2. **Replay:** `--mlp_oracle_ref <experiment>/<config>` reads that record. Each miss lines up with the record's next miss to the same line, within `--mlp_oracle_ref_slack` retired instructions (default 4096).
+
+| `--mlp_oracle` | Forces to hit |
+|---|---|
+| 0 | Nothing: off (default) |
+| 1 | Nothing. With `--mlp_oracle_record 1` it writes the record. With a reference, it only lines misses up, and must equal LRU in cycles. |
+| 2 (oracle) | The misses the reference marked |
+| 3 (control) | As many random misses of the reference, on as many lines |
+| 4 (ceiling) | Every miss to a line the L2 has held before. Needs no reference. |
+
+| Flag | Values |
+|---|---|
+| `mlp_oracle_side` | 1 instruction (default), 2 data, 3 both. Only misses on these sides are forced. |
+| `mlp_oracle_reuse_only` | 0 (default) or 1: never force a line's first miss. The L2 starts empty, so no replacement policy can save a cold miss. Use 1 for every bound; without it, the data oracle beat the ceiling. |
+| `mlp_oracle_install` | 1 (default): a forced line goes into the L2 as its fill would have, so the caches hold about what LRU would and only the latency is gone. 0: the L2 is left alone, as with `perfect_mlc`. |
+| `mlp_oracle_ctrl_lines`, `mlp_oracle_ctrl_choices`, `mlp_oracle_seed` | 1, 8, 0 (defaults): how mode 3 draws its control, so it matches the oracle in lines as well as in misses. Different seeds draw independent controls of the same size. |
+
+The stats are `MLP_ORACLE_{I,D}_*` (misses, marked misses, forced misses, and how the replay lined up with the reference), `MLP_ORACLE_FORCED_HIT*` and `MLP_ORACLE_REF_OFFSET_*`. Reuse distances of marked and unmarked lines are the `MLP_RD*` and `MLP_RDNEXT_*` stats under [Stats](#stats). `tools/mlp_oracle` in scarab-infra runs the whole study (reference, record check, replays, report) for any marking.
+
+**Results** (#36: golden_small with an LRU L2; Google, 12 workloads, 35 simpoints, 50M warmup + 500M measured; `mlp_oracle_reuse_only 1`). These were measured at c8bb06d, before the oracle used main's marking: data lines were marked by the 0.7 ratio, and requests that joined a fill were not judged. Geomean IPC gain over LRU, in %:
+
+| Side | Marked (share of non-cold misses) | Ceiling | Oracle | Control | Oracle − control |
+|---|---|---|---|---|---|
+| Instruction | 11.4% | +8.38 | +4.12 | +0.91 | +3.20 |
+| Data | 43.9% | +24.42 | +13.64 | +9.02 | +4.61 |
+| Both | 24.5% | +41.80 | +18.98 | +10.15 | +8.84 |
+
+On the same runs, REPL_MLP gained +2.60 at γi 64, γd 0 and +2.78 at γi 64, γd 16.
+
+- **Instruction side:** the marking picks well. The oracle gains 4.5 times its control, and REPL_MLP already gets 63% of the oracle.
+- **Data side:** the ratio marking picked weakly. Forcing as many random misses got two thirds of the oracle's gain.
+- **Headroom:** misses the marking calls non-critical still held over half of what replacement could gain.
+
 ## Not recommended yet
 
 - **DRRIP as the base (`--mlp_rrip_boost`)**
@@ -315,3 +355,4 @@ Fill-counted γ stays the recommendation because the countdown has not been comp
 - Data marking on `golden_small_incl`, where the γ sweep's best with the ratio was γi 256, γd 64.
 - The ROB-head data marking with DRRIP as the base.
 - REPL_MLP at the last-level cache.
+- The `mlp_oracle` study under the current marking defaults.
