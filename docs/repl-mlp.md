@@ -25,7 +25,7 @@ Every input to marking is something the core can see, and none of it reads `off_
 
 Under the default flags:
 
-- **A data line is marked** if, between a load merging into its request and the fill, there were at least 16 cycles in which the ROB head was a load waiting on that request and nothing retired. Hardware needs a 5-bit saturating counter per MSHR, bumped from the ROB head.
+- **A data line is marked** if, between a load merging into its request and the fill, there were at least 16 cycles in which the ROB head was a load waiting on that request, nothing retired, and no op issued to the functional units. Hardware needs a 5-bit saturating counter per MSHR, bumped from the ROB head in cycles the issue stage sent nothing.
 - **An instruction line is marked** if a demand fetch reached it, fetch was not resteered away from it while it waited (or a demand fetch reached it again before the fill), and in at least one cycle all of these held:
   - **Fetch was stuck on this line.** Its request was outstanding, fetch and the uop cache delivered no ops, and the icache stage stopped on the miss.
   - **The backend was starved.** Rename passed no ops to the ROB, the ROB was not full, and rename was not stalled on registers.
@@ -98,17 +98,19 @@ A data fill is one that at least one load merged into. From the time a load merg
 | Count | Adds, each cycle |
 |---|---|
 | ROB-head stall cycles | 1 if nothing retired because the ROB head was a load waiting on this request |
+| No-issue ROB-head stall cycles | 1 if it is a ROB-head stall cycle and no op issued to the functional units either |
 | fu_wait cycles | 1 if it is an fu_wait cycle and at least one load is waiting on this request |
 | fu_wait load-cycles | 1 per load waiting on this request, in an fu_wait cycle |
 | Window load-cycles | 1 per load waiting on this request |
 
-**`mlp_data_bound`** (default `2`) picks the count that is checked against the minimum:
+**`mlp_data_bound`** (default `3`) picks the count that is checked against the minimum:
 
 | Value | Count |
 |---|---|
 | `0` | fu_wait load-cycles. A request several loads merged into counts faster. |
 | `1` | fu_wait cycles, once per request however many loads wait on it |
-| `2` | ROB-head stall cycles. Each stall cycle is charged to one request, where fu_wait charges every miss in flight. |
+| `2` | ROB-head stall cycles. Each stall cycle is charged to one request, where fu_wait charges every miss in flight. The default before #42. |
+| `3` | No-issue ROB-head stall cycles: the cycles of `2` in which no new work started either |
 | Other | Aborts |
 
 **`mlp_data_bound_min`** (unsigned, default `16`): the fill is marked if the count reached this. `0` drops the minimum.
@@ -119,7 +121,8 @@ Useful combinations:
 
 | Flags | Marks |
 |---|---|
-| None (default) | Fills with at least 16 ROB-head stall cycles |
+| None (default) | Fills with at least 16 no-issue ROB-head stall cycles |
+| `--mlp_data_bound 2` | Fills with at least 16 ROB-head stall cycles, the default before #42 |
 | `--mlp_data_bound 0 --mlp_data_bound_min 0 --mlp_lin_data_thresh 0.7` | The old ratio marking, the default before #35 |
 | `--mlp_data_bound_min 0` | Every fill a load waited on |
 
@@ -187,7 +190,7 @@ All of these are in `memory.stat.<core>.out`.
 | `MLP_FE_ABANDON_REREACH` | Abandoned lines a demand fetch reached again before the fill |
 | `MLP_COUNTDOWN_EXPIRE` | Countdowns that reached 0 |
 | `MLP_COUNTDOWN_EVICT_PROTECTED` | Victims evicted while still protected, which happens only when the whole set is protected |
-| `MLP_LD_BOUND_LOG2_*`, `MLP_LD_BOUNDREQ_LOG2_*`, `MLP_LD_HEAD_LOG2_*` | Under every policy, at each L2 fill a load waited on: the request's count for `mlp_data_bound` 0, 1 and 2 in log2 buckets. `_0` is 0, `_k` is 2^(k−1) to 2^k − 1, and `_15` is 2^14 and up. |
+| `MLP_LD_BOUND_LOG2_*`, `MLP_LD_BOUNDREQ_LOG2_*`, `MLP_LD_HEAD_LOG2_*`, `MLP_LD_HEADNI_LOG2_*` | Under every policy, at each L2 fill a load waited on: the request's count for `mlp_data_bound` 0, 1, 2 and 3 in log2 buckets. `_0` is 0, `_k` is 2^(k−1) to 2^k − 1, and `_15` is 2^14 and up. |
 | `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request (the count `mlp_data_bound 2` uses), by the level that served it. Stats only. |
 | `REQ_COST_FE_{MLC,LLC,MEM}` | Cycles the backend got no ops while the on-path icache waited on a request, by the level that served it. Stats only. |
 | `REQ_BOUND_LD_*`, `REQ_BOUND_FE_*` | REPL_MLP's fu_wait load-cycles and instruction stuck cycles, split the same way, for comparison with the costs |
@@ -231,11 +234,14 @@ The `MLP_MARKED_*` stats count only marks that carry a boost. With `mlp_lin_data
 - Google: 12 workloads (63 simpoints), 10M warmup + 50M measured instructions.
 - SPEC2006: 55 workloads (294 simpoints). SPEC2017: 36 (168). Geekbench: 13 (78). Datacenter: 7 (36). All at 10M warmup + 10M measured.
 
-Each number is the geomean IPC gain over L2 LRU. The last column is the geomean of the five suite gains, suites weighted equally. The marked share of load fills for the default is 38% (Google), 40% (SPEC2006), 23% (SPEC2017), 65% (Geekbench) and 55% (Datacenter).
+Each number is the geomean IPC gain over L2 LRU. The last column is the geomean of the five suite gains, suites weighted equally. The marked share of load fills for the default is 34% (Google), 37% (SPEC2006), 21% (SPEC2017), 62% (Geekbench) and 53% (Datacenter). "ROB head" rows count every cycle the ROB head was a load waiting on the request and nothing retired (`--mlp_data_bound 2`); "no-issue" rows count only those cycles in which no op issued either (`--mlp_data_bound 3`).
 
 | Data marking, γd 16 | Google | SPEC2006 | SPEC2017 | Geekbench | Datacenter | 5 suites |
 |---|---|---|---|---|---|---|
-| **Default: ROB head ≥ 16** | **+2.64** | **+0.36** | **+0.12** | **−0.04** | **+6.19** | **+1.83** |
+| **Default: no-issue ≥ 16** | **+2.57** | **+0.39** | **+0.12** | **−0.06** | **+6.19** | **+1.81** |
+| No-issue ≥ 8 | +2.52 | +0.41 | +0.10 | −0.03 | +6.20 | +1.81 |
+| No-issue ≥ 32 | +2.53 | +0.27 | +0.12 | −0.07 | +6.15 | +1.77 |
+| ROB head ≥ 16 (previous default) | +2.64 | +0.36 | +0.12 | −0.04 | +6.19 | +1.83 |
 | ROB head ≥ 32 | +2.64 | +0.35 | +0.14 | −0.05 | +6.18 | +1.82 |
 | ROB head ≥ 64 | +2.53 | +0.25 | +0.23 | −0.07 | +6.13 | +1.79 |
 | ROB head ≥ 1 (1 bit) | +2.40 | +0.26 | +0.08 | −0.03 | +6.22 | +1.76 |
@@ -246,14 +252,21 @@ Each number is the geomean IPC gain over L2 LRU. The last column is the geomean 
 | No data boost (γd 0) | +2.07 | 0.00 | +0.01 | +0.02 | +5.93 | +1.58 |
 | ROB head ≥ 16, γd 64 | +1.55 | +0.18 | −0.11 | −0.16 | +6.65 | +1.58 |
 
-The ratio row at γi 64, γd 16 is the best point of the 6×6 γi × γd sweep on `golden_small`. The ratio, γd 0 and LRU numbers come from that sweep (main f1fce3c). On smoke runs (sierra.a.4, sierra.a.6, sphinx3), this code with the old defaults matched it bit for bit.
+The ratio row at γi 64, γd 16 is the best point of the 6×6 γi × γd sweep on `golden_small`. The ratio, γd 0 and LRU numbers come from that sweep (main f1fce3c). On smoke runs (sierra.a.4, sierra.a.6, sphinx3), this code with the old defaults matched it bit for bit. The no-issue rows come from a later sweep with the same setup (scarab 5fb642f).
 
-#### Why the ROB-head count
+#### Why no-issue cycles
+
+- **It counts what the miss exposes.** A cycle in which retirement is blocked but the core still issues work is one where the miss is partly hidden. Counting only cycles with nothing issued is closer to the latency the miss actually costs, and to the top-down definition of memory-bound (execution stalled while a miss is outstanding).
+- **It is chosen for that, not for its score.** Overall it is within noise of the ROB-head count (+1.81 vs +1.83). No-issue ≥ 16 and ROB head ≥ 32 mark the same share of load fills in every suite. At that matched share, no-issue is ahead on SPEC2006 (+0.39 vs +0.35), behind on Google (+2.57 vs +2.64), and within 0.02 on the other three.
+- **It costs the same hardware.** The counter only also checks that the issue stage sent nothing that cycle.
+- **Stricter idleness tests add nothing.** Counting only cycles in which dispatch was also blocked by a full ROB, load/store queue, issue queue or register file scored +1.78 at ≥ 16 (5fb642f, not in this code). The 512-entry ROB itself almost never fills first.
+
+#### Why a ROB-head count
 
 - **It charges each stall to one miss.** A cycle counts only for the request the ROB head is waiting on. The ratio and the fu_wait counts (`mlp_data_bound` 0 and 1) charge every miss in flight during a backend-bound cycle, so misses that overlap the one blocking retirement get marked too.
-- **The threshold is flat.** Minimums of 16, 32 and 64 are within 0.04 of each other, and even 1 (a single bit per MSHR) beats the ratio.
+- **The threshold is flat.** No-issue minimums of 8 and 16 tie (+1.81), and 32 is +1.77. ROB-head minimums of 16, 32 and 64 are within 0.04 of each other, and even 1 (a single bit per MSHR) beats the ratio.
 - **The fu_wait counts cannot replace the ratio.** Their best settings tie or trail it, and they lose on Google.
-- **Where it gains and loses.** The biggest gains over the ratio are sphinx3 (+21.2 vs +13.3), mcf (+6.3 vs +3.1) and xalancbmk (+1.5 vs +0.8). The biggest losses are milc (−1.9 vs −1.5) and cactusADM (−1.9 vs −1.2).
+- **Where it gains and loses.** With ROB head ≥ 16, the biggest gains over the ratio are sphinx3 (+21.2 vs +13.3), mcf (+6.3 vs +3.1) and xalancbmk (+1.5 vs +0.8). The biggest losses are milc (−1.9 vs −1.5) and cactusADM (−1.9 vs −1.2). milc, leslie3d and cactusADM lose under every count tried.
 - **γd 16, not 64.** γd 64 is best on datacenter (+6.65), but it is worse on the other four suites (Google +1.55).
 
 ### Replacement mode
@@ -292,7 +305,7 @@ Fill-counted γ stays the recommendation because the countdown has not been comp
 - The countdown against fill-counted γ under the current marking defaults, and with FDIP off.
 - `no_revive` with a longer γ.
 - `mlp_instr_starve 2` on suites other than Google. Datacenter instruction boost was +8.52 with the old threshold marking.
-- `mlp_data_bound_min` between 1 and 16, and between 16 and 32. Only 1, 16, 32 and 64 have been run.
+- No-issue minimums other than 8, 16 and 32, and ROB-head minimums other than 1, 16, 32 and 64.
 - Data marking on `golden_small_incl`, where the γ sweep's best with the ratio was γi 256, γd 64.
 - The ROB-head data marking with DRRIP as the base.
 - REPL_MLP at the last-level cache.

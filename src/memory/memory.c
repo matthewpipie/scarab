@@ -2549,6 +2549,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->ld_bound_req_cycles = 0;
   new_req->ld_bound_last_cycle = MAX_CTR;
   new_req->rob_stall_cycles = 0;
+  new_req->rob_stall_noissue_cycles = 0;
   new_req->mlp_mlc_peeked = FALSE;
   new_req->mlp_mlc_lapsed = FALSE;
   new_req->fe_stall_cycles = 0;
@@ -3025,8 +3026,10 @@ static Counter mlp_data_bound_count(Mem_Req* req) {
       return req->ld_bound_req_cycles;
     case 2:
       return req->rob_stall_cycles;
+    case 3:
+      return req->rob_stall_noissue_cycles;
     default:
-      ASSERTM(req->proc_id, FALSE, "mlp_data_bound %u is not 0, 1 or 2\n", MLP_DATA_BOUND);
+      ASSERTM(req->proc_id, FALSE, "mlp_data_bound %u is not 0 to 3\n", MLP_DATA_BOUND);
       return 0;
   }
 }
@@ -3828,6 +3831,7 @@ Flag mlc_fill_line(Mem_Req* req) {
       mlp_stat_log2(w->proc_id, MLP_LD_BOUND_LOG2_0, w->ld_bound_cycles);
       mlp_stat_log2(w->proc_id, MLP_LD_BOUNDREQ_LOG2_0, w->ld_bound_req_cycles);
       mlp_stat_log2(w->proc_id, MLP_LD_HEAD_LOG2_0, w->rob_stall_cycles);
+      mlp_stat_log2(w->proc_id, MLP_LD_HEADNI_LOG2_0, w->rob_stall_noissue_cycles);
       if (i > 0)
         STAT_EVENT(w->proc_id, MLP_LD_JOINED);
     }
