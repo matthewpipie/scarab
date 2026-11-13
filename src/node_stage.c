@@ -461,12 +461,17 @@ void node_retire() {
             unsstr64(op_get_done_cycle(op)), unsstr64(cycle_count), (unsigned)(OP_DONE(op) ? 1 : 0));
       // op is not ready to retire
       collect_not_ready_to_retire_stats(op);
-      /* Miss-cost accounting (stats only): nothing retires this cycle because the head is a
-         load still waiting on its memory request, so charge the cycle to that request. Same
-         liveness test as lsq_tag_inflight_loads: op->req is never cleared, but until the
-         load's done_cycle is set it is still the request the load is waiting on. */
-      if (ret_count == 0 && op->uop->mem_type == MEM_LD && op->req && op_get_done_cycle(op) == MAX_CTR)
+      /* Miss cost (stats, and REPL_MLP's mlp_data_bound 2 and 3): nothing retires this cycle
+         because the head is a load still waiting on its memory request, so charge the cycle to
+         that request. Same liveness test as lsq_tag_inflight_loads: op->req is never cleared, but
+         until the load's done_cycle is set it is still the request the load is waiting on. */
+      if (ret_count == 0 && op->uop->mem_type == MEM_LD && op->req && op_get_done_cycle(op) == MAX_CTR) {
         op->req->rob_stall_cycles++;
+        /* issue_queue_update ran earlier this cycle, so node->sd holds the ops issued to the FUs
+           this cycle */
+        if (node->sd.op_count == 0)
+          op->req->rob_stall_noissue_cycles++;
+      }
       break;
     }
 

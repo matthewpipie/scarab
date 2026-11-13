@@ -207,8 +207,17 @@ struct Mem_Req_struct {
                                                  in flight, summed across every op merged into it */
   Counter ld_bound_cycles;                   /* REPL_MLP: subset of ld_window_cycles the core was
                                                  backend/memory-bound */
+  Counter ld_bound_req_cycles;               /* REPL_MLP (mlp_data_bound 1): the cycles of
+                                                 ld_bound_cycles, once per request */
+  Counter ld_bound_last_cycle;               /* the last cycle ld_bound_req_cycles counted */
   Counter rob_stall_cycles;                  /* Miss cost (stats only): cycles nothing retired
                                                  because the ROB head was a load waiting on this */
+  Counter rob_stall_noissue_cycles;          /* REPL_MLP (mlp_data_bound 3): of rob_stall_cycles,
+                                                 those in which no op issued to the FUs */
+  Flag mlp_mlc_peeked;                       /* stats only: mlp_mlc_lapsed is set (at the first
+                                                 MLC lookup, before it renewed the line) */
+  Flag mlp_mlc_lapsed;                       /* stats only: the line was marked and past its
+                                                 protection (cache_mlp_lapsed) */
   Counter fe_stall_cycles;                   /* Miss cost (stats only): cycles the backend got no
                                                  ops while the on-path icache waited on this */
   Flag fe_abandoned;                         /* REPL_MLP (mlp_instr_mark 2): fetch was redirected

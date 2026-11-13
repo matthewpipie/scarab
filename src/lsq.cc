@@ -356,9 +356,15 @@ void lsq_tag_inflight_loads(Flag fu_wait) {
   const auto& load_entries = lsq_unit->get_queue(MEM_LD)->get_entries();
   for (const auto& entry : load_entries) {
     if (entry.op->state >= OS_IN_RS && entry.op->req && op_get_done_cycle(entry.op) == MAX_CTR) {
-      entry.op->req->ld_window_cycles++;
-      if (fu_wait)
-        entry.op->req->ld_bound_cycles++;
+      Mem_Req* req = entry.op->req;
+      req->ld_window_cycles++;
+      if (fu_wait) {
+        req->ld_bound_cycles++;
+        if (req->ld_bound_last_cycle != cycle_count) {  // once per request per cycle
+          req->ld_bound_req_cycles++;
+          req->ld_bound_last_cycle = cycle_count;
+        }
+      }
     }
   }
 }
