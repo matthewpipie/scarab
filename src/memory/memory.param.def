@@ -238,14 +238,32 @@ DEF_PARAM(no_repl_after_queue_size, NO_REPL_AFTER_QUEUE_SIZE, uns, uns, 0,)
 
 /* REPL_MLP (--mlc_cache_repl_policy 9 / --l1_cache_repl_policy 9): evict
    argmin(Recency + boost), Recency the LRU stack position (0 = LRU). A line filled by a load
-   classified data-bound (its stall-cycles-over-window-cycles fraction cleared mlp_lin_data_thresh)
-   gets a flat boost of mlp_lin_data_lambda, and one filled by an instruction fetch marked
-   instruction-bound (mlp_instr_mark) gets mlp_lin_instr_lambda; everything else gets 0, so both
-   at their 0.0 default reproduces plain LRU. Recommended settings, and the runs behind them, are in
-   docs/repl-mlp.md. */
+   marked data-bound (mlp_data_bound) gets a flat boost of mlp_lin_data_lambda, and one filled by
+   an instruction fetch marked instruction-bound (mlp_instr_mark) gets mlp_lin_instr_lambda;
+   everything else gets 0, so both at their 0.0 default reproduces plain LRU. Recommended settings,
+   and the runs behind them, are in docs/repl-mlp.md. */
 DEF_PARAM(mlp_lin_data_lambda, MLP_LIN_DATA_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
-DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.7, )
+/* Data-bound marking: a fill some load waited on is marked if the count mlp_data_bound picks
+   reached mlp_data_bound_min, as mlp_instr_starve_min is on the instruction side. If
+   mlp_lin_data_thresh is above 0, its ld_bound_cycles / ld_window_cycles ratio must also clear
+   mlp_lin_data_thresh. Every count runs from when a load merges into the request until the MLC
+   fill. mlp_data_bound picks the count:
+     0  ld_bound_cycles: per cycle with fu_wait (no FU busy, ROB not empty; topdown.c), one per
+        load waiting on the request, so a request several loads merged into counts faster.
+     1  the cycles of 0, counted once per request however many loads wait on it.
+     2  rob_stall_cycles: cycles nothing retired because the ROB head was a load waiting on the
+        request. Charges each stall cycle to one request, where fu_wait charges every miss in flight.
+     3  rob_stall_noissue_cycles: the cycles of 2 in which no op issued to the FUs either, so no
+        new work started while the load blocked retirement.
+   The default, no-issue ROB-head cycles >= 16 with no ratio, is a 5-bit saturating counter per
+   MSHR. It and mode 2 replaced the 0.7 ratio (--mlp_data_bound 0 --mlp_data_bound_min 0
+   --mlp_lin_data_thresh 0.7), which both beat on five suites (docs/repl-mlp.md). With
+   mlp_lin_data_thresh 0 and mlp_data_bound_min 0, every fill a load waited on is marked. Each
+   count uses only what the core sees; never off_path. */
+DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.0, )
+DEF_PARAM(mlp_data_bound, MLP_DATA_BOUND, uns, uns, 3, )
+DEF_PARAM(mlp_data_bound_min, MLP_DATA_BOUND_MIN, uns, uns, 16, )
 DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
 /* mlp_instr_mark: which instruction fills REPL_MLP marks instruction-bound. Only a fill a demand
    fetch reached can be marked: one a demand fetch created, or a prefetch a demand fetch merged
@@ -279,18 +297,34 @@ DEF_PARAM(mlp_instr_starve_min, MLP_INSTR_STARVE_MIN, uns, uns, 1, )
    lambda fills later than it was. Its protection lapses lambda fills after its last touch unless
    a hit renews it, where a stack-position boost lasts as long as enough of the set's other lines
    rank below lambda. Lambda 0 is plain LRU either way. The MID/LOWQTR prefetch insertion
-   positions do not set the stamp (it stays at MRU). */
+   positions do not set the stamp (it stays at MRU). Takes precedence over mlp_boost_countdown,
+   which is on by default. */
 DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
-/* mlp_boost_countdown: keep REPL_MLP's boost as a 2-bit countdown per line and a tick per set,
-   instead of mlp_boost_in_fills' fill-count age per line. A set ticks every round(lambda / 3)
-   fills into it. A marked line's countdown is set to 3 when it is filled and on every hit, and
-   each tick of its set decrements it. The line is protected while its countdown is nonzero, so
-   protection lasts between 2/3 lambda and lambda fills after its last touch. The victim is the
-   least recently used unprotected line, or the least recently used line if every line is
-   protected. A line whose countdown reaches 0 moves to MRU, as mlp_boost_in_fills ranks a marked
-   line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Cannot be
-   combined with mlp_boost_in_fills. */
-DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, FALSE, )
+/* mlp_boost_countdown (default on): keep REPL_MLP's boost as a 2-bit countdown per line and a
+   tick per set, instead of mlp_boost_in_fills' fill-count age per line. A set ticks every
+   round(lambda / 3) fills into it. A marked line's countdown is set to 3 when it is filled and on
+   every hit, and each tick of its set decrements it. The line is protected while its countdown is
+   nonzero, so protection lasts between 2/3 lambda and lambda fills after its last touch. The
+   victim is the least recently used unprotected line; if every line is protected, the least
+   recently used line, or with mlp_boost_countdown_tiered (default on) the one with the fewest
+   ticks left. A line whose countdown reaches 0 moves to MRU, as mlp_boost_in_fills ranks a marked
+   line lambda fills after its last touch as if touched then. Lambda 0 is plain LRU. Off when
+   mlp_boost_in_fills is on. With both off, the boost is added to the line's LRU stack position. */
+DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, TRUE, )
+/* mlp_boost_countdown_tiered (default on): break mlp_boost_countdown's single protected tier into
+   one tier per countdown value. The victim is the resident line with the lowest mlp_ticks_left
+   (0 = unprotected still goes first), ties to the least recently used within a tier -- instead of
+   grouping every nonzero countdown together and picking the least recently used regardless of how
+   close to expiry it is. It changes the victim only when every line in the set is protected. No
+   effect unless the countdown is in use (mlp_boost_countdown on, mlp_boost_in_fills off). */
+DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, TRUE, )
+/* mlp_boost_countdown_no_revive: only restart a marked line's countdown on a hit if it is still
+   mid-countdown (mlp_ticks_left > 0); a line whose countdown already reached 0 stays at 0 until
+   it is next filled, instead of a hit reviving it to MLP_COUNTDOWN_TICKS regardless. This makes
+   mlp_ticks_left == 0 mean "not protected" uniformly, so a lapsed marked line and a line that was
+   never marked need no separate bit to tell apart. Requires the countdown to be in use
+   (mlp_boost_countdown on, mlp_boost_in_fills off); asserted at init. */
+DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Flag, FALSE, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
    18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
    mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /
@@ -313,14 +347,15 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
 
    A miss here is an MLC lookup that misses on a line with no miss to it already outstanding (one
    that finds the line on its way waits for it as usual, in every mode); writebacks are left out.
-   Modes 2 and 3 take criticality per miss, not per line: a miss is critical if the marking marks
-   it when it comes back, by the same rule REPL_MLP boosts by (mlp_lin_data_thresh on the data
-   side, mlp_instr_mark and mlp_instr_starve on the instruction side). Since that is only known
-   once the latency is paid, they replay a reference run (mlp_oracle_ref) that recorded every miss
-   and its mark (mlp_oracle_record), and force the misses of this run that line up with chosen
-   misses of that one: a miss lines up with the reference's next unclaimed miss to the same line
-   whose retired-instruction count at the lookup is within mlp_oracle_ref_slack of its own. A miss
-   that lines up with none is a real miss.
+   Modes 2 and 3 take criticality per miss, not per line: a miss is critical if the marking marks it
+   when it comes back, by the same rules REPL_MLP boosts by (mlp_data_bound, mlp_data_bound_min and
+   mlp_lin_data_thresh on the data side, mlp_instr_mark and mlp_instr_starve on the instruction
+   side), each request waiting on the fill judged by its own counts. Since that is only known once
+   the latency is paid, they replay a reference run (mlp_oracle_ref) that recorded every miss and
+   its mark (mlp_oracle_record), and force the misses of this run that line up with chosen misses of
+   that one: a miss lines up with the reference's next unclaimed miss to the same line whose
+   retired-instruction count at the lookup is within mlp_oracle_ref_slack of its own. A miss that
+   lines up with none is a real miss.
      0  off.
      1  track only: forces nothing. Keeps the reuse stats (MLP_REUSE_*), with marking per line
         (a line is marked from its first marked miss on) and a line-level random control behind
@@ -338,8 +373,8 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
 DEF_PARAM(mlp_oracle, MLP_ORACLE, uns, uns, 0, )
 /* mlp_oracle_side: which lines mlp_oracle covers: 1 instruction (fetches and instruction
    prefetches, marked by mlp_instr_mark and mlp_instr_starve), 2 data (loads, stores, data
-   prefetches and writebacks, marked by mlp_lin_data_thresh, as REPL_MLP's mlp_lin_data_lambda
-   boost is), 3 both. Its stats are kept per side. */
+   prefetches and writebacks, marked by mlp_data_bound, as REPL_MLP's mlp_lin_data_lambda boost
+   is), 3 both. Its stats are kept per side. */
 DEF_PARAM(mlp_oracle_side, MLP_ORACLE_SIDE, uns, uns, 1, )
 /* mlp_oracle_record: mlp_oracle 1 only. Write every miss on either side, with the retired
    instructions at its lookup and whether the marking marked it as it came back, to
