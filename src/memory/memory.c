@@ -2523,6 +2523,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->pdip_pref = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
+  new_req->ld_bound_req_cycles = 0;
+  new_req->ld_bound_last_cycle = MAX_CTR;
   new_req->rob_stall_cycles = 0;
   new_req->fe_stall_cycles = 0;
   new_req->fe_abandoned = FALSE;
@@ -2996,17 +2998,51 @@ static Flag mlp_instr_marked(Mem_Req* req) {
   return !MLP_INSTR_STARVE || req->fe_starve_cycles >= MLP_INSTR_STARVE_MIN;
 }
 
+/* Count v in a 16-bucket log2 histogram starting at stat base: 0 in bucket 0, [2^(k-1), 2^k) in
+   bucket k, 2^14 and up in bucket 15. */
+static void mlp_stat_log2(uns proc_id, Stat_Enum base, Counter v) {
+  uns bucket = 0;
+  while (v && bucket < 15) {
+    v >>= 1;
+    bucket++;
+  }
+  STAT_EVENT(proc_id, base + bucket);
+}
+
+/* The count mlp_data_bound picks. */
+static Counter mlp_data_bound_count(Mem_Req* req) {
+  switch (MLP_DATA_BOUND) {
+    case 0:
+      return req->ld_bound_cycles;
+    case 1:
+      return req->ld_bound_req_cycles;
+    case 2:
+      return req->rob_stall_cycles;
+    default:
+      ASSERTM(req->proc_id, FALSE, "mlp_data_bound %u is not 0, 1 or 2\n", MLP_DATA_BOUND);
+      return 0;
+  }
+}
+
+/* Whether a fill some load waited on is marked data-bound: the ratio (unless mlp_lin_data_thresh
+   is 0) and the mlp_data_bound count. */
+static Flag mlp_data_marked(Mem_Req* req) {
+  if (!req->ld_window_cycles)
+    return FALSE;
+  if (MLP_LIN_DATA_THRESH > 0.0 &&
+      !((double)req->ld_bound_cycles / (double)req->ld_window_cycles > (double)MLP_LIN_DATA_THRESH))
+    return FALSE;
+  return mlp_data_bound_count(req) >= MLP_DATA_BOUND_MIN;
+}
+
 static void mlp_stage_fill_boost(Cache* cache, Mem_Req* req) {
   if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
     return;
 
   float boost = 0.0;
   if (req->op_count) {
-    if (req->ld_window_cycles) {
-      double frac = (double)req->ld_bound_cycles / (double)req->ld_window_cycles;
-      if (frac > (double)MLP_LIN_DATA_THRESH)
-        boost = MLP_LIN_DATA_LAMBDA;
-    }
+    if (mlp_data_marked(req))
+      boost = MLP_LIN_DATA_LAMBDA;
     if (boost > 0.0) {
       STAT_EVENT(req->proc_id, MLP_MARKED_LOAD);
       if (req->op_count > 1)
@@ -3568,6 +3604,11 @@ Flag mlc_fill_line(Mem_Req* req) {
     }
   }
 
+  if (req->ld_window_cycles) {  // stats only (MLP_LD_*_LOG2 in memory.stat.def)
+    mlp_stat_log2(req->proc_id, MLP_LD_BOUND_LOG2_0, req->ld_bound_cycles);
+    mlp_stat_log2(req->proc_id, MLP_LD_BOUNDREQ_LOG2_0, req->ld_bound_req_cycles);
+    mlp_stat_log2(req->proc_id, MLP_LD_HEAD_LOG2_0, req->rob_stall_cycles);
+  }
   mlp_stage_fill_boost(&MLC(req->proc_id)->cache, req);
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);

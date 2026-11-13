@@ -7,10 +7,10 @@ This page lists every flag and its values, then the recommended settings and the
 ## Recommended
 
 ```
---mlc_cache_repl_policy 9 --mlp_boost_in_fills 1 --mlp_lin_instr_lambda 64
+--mlc_cache_repl_policy 9 --mlp_boost_in_fills 1 --mlp_lin_instr_lambda 64 --mlp_lin_data_lambda 16
 ```
 
-This runs REPL_MLP at the L2 and protects each marked instruction line for 64 fills into its set after its last touch. Data lines get no boost. Every other flag stays at its default. The runs behind it are under [Results](#results).
+This runs REPL_MLP at the L2. It protects each marked line for a set number of fills into its set after its last touch: 64 for instruction lines, 16 for data lines. Every other flag stays at its default. The runs behind it are under [Results](#results).
 
 ## How it works
 
@@ -23,11 +23,13 @@ This runs REPL_MLP at the L2 and protects each marked instruction line for 64 fi
 
 Every input to marking is something the core can see, and none of it reads `off_path`. Wrong-path requests go through the same rules. The rules only check that a stall and an outstanding miss coincided, not that this miss caused the stall.
 
-Under the default flags, an instruction line is marked if a demand fetch reached it, fetch was not resteered away from it while it waited (or a demand fetch reached it again before the fill), and in at least one cycle all of these held:
+Under the default flags:
 
-- **Fetch was stuck on this line.** Its request was outstanding, fetch and the uop cache delivered no ops, and the icache stage stopped on the miss.
-- **The backend was starved.** Rename passed no ops to the ROB, the ROB was not full, and rename was not stalled on registers.
-- **The ROB head was not a load waiting on memory.**
+- **A data line is marked** if, between a load merging into its request and the fill, there were at least 16 cycles in which the ROB head was a load waiting on that request and nothing retired. Hardware needs a 5-bit saturating counter per MSHR, bumped from the ROB head.
+- **An instruction line is marked** if a demand fetch reached it, fetch was not resteered away from it while it waited (or a demand fetch reached it again before the fill), and in at least one cycle all of these held:
+  - **Fetch was stuck on this line.** Its request was outstanding, fetch and the uop cache delivered no ops, and the icache stage stopped on the miss.
+  - **The backend was starved.** Rename passed no ops to the ROB, the ROB was not full, and rename was not stalled on registers.
+  - **The ROB head was not a load waiting on memory.**
 
 ## Flags
 
@@ -44,8 +46,8 @@ Each cache running REPL_MLP marks its own fills. Every result on this page has R
 
 | Flag | Type | Default | Values |
 |---|---|---|---|
-| `mlp_lin_instr_lambda` | float | `0` | γ for marked instruction lines. `0` means no instruction boost. |
-| `mlp_lin_data_lambda` | float | `0` | γ for marked data lines. `0` means no data boost. |
+| `mlp_lin_instr_lambda` | float | `0` | γ for marked instruction lines. `0` means no instruction boost. 64 is recommended. |
+| `mlp_lin_data_lambda` | float | `0` | γ for marked data lines. `0` means no data boost. 16 is recommended. 64 is better on datacenter but worse on every other suite. |
 
 Use values of 0 or more. The unit depends on the mode:
 
@@ -91,14 +93,37 @@ With `mlp_instr_mark 0`, these counted cycles also replace the stuck cycles in t
 
 ### Data marking
 
-A data fill is one that at least one load merged into. For each such request, REPL_MLP counts over every load waiting on it:
+A data fill is one that at least one load merged into. From the time a load merges into the request until the fill, REPL_MLP keeps these counts for it. An **fu_wait** cycle is one in which at most `topdown_fu_exec_few` functional units were busy and the ROB was not empty.
 
-- **Window cycles:** each cycle a load waited on the request. These add up across loads, so two loads waiting in the same cycle count 2.
-- **Bound cycles:** the window cycles in which at most `topdown_fu_exec_few` functional units were busy and the ROB was not empty.
+| Count | Adds, each cycle |
+|---|---|
+| ROB-head stall cycles | 1 if nothing retired because the ROB head was a load waiting on this request |
+| fu_wait cycles | 1 if it is an fu_wait cycle and at least one load is waiting on this request |
+| fu_wait load-cycles | 1 per load waiting on this request, in an fu_wait cycle |
+| Window load-cycles | 1 per load waiting on this request |
 
-**`mlp_lin_data_thresh`** (float, default `0.7`): the fill is marked if bound ÷ window is above the threshold. `0` marks any fill with one bound cycle, and `1` or more marks nothing.
+**`mlp_data_bound`** (default `2`) picks the count that is checked against the minimum:
 
-**`topdown_fu_exec_few`** (unsigned, default `0`, in `src/core.param.def`) sets how many busy functional units still count as "few". It affects data marking and `mlp_instr_starve 5`. It is shared with the top-down stats, so changing it also changes `TOPDOWN_EXEC_STALLS_CYCLES`.
+| Value | Count |
+|---|---|
+| `0` | fu_wait load-cycles. A request several loads merged into counts faster. |
+| `1` | fu_wait cycles, once per request however many loads wait on it |
+| `2` | ROB-head stall cycles. Each stall cycle is charged to one request, where fu_wait charges every miss in flight. |
+| Other | Aborts |
+
+**`mlp_data_bound_min`** (unsigned, default `16`): the fill is marked if the count reached this. `0` drops the minimum.
+
+**`mlp_lin_data_thresh`** (float, default `0`): `0` means no ratio test. Above 0, the fill must also have fu_wait load-cycles ÷ window load-cycles above the threshold. `1` or more marks nothing.
+
+Useful combinations:
+
+| Flags | Marks |
+|---|---|
+| None (default) | Fills with at least 16 ROB-head stall cycles |
+| `--mlp_data_bound 0 --mlp_data_bound_min 0 --mlp_lin_data_thresh 0.7` | The old ratio marking, the default before #35 |
+| `--mlp_data_bound_min 0` | Every fill a load waited on |
+
+**`topdown_fu_exec_few`** (unsigned, default `0`, in `src/core.param.def`) sets how many busy functional units still count as "few". It affects `mlp_data_bound` 0 and 1, the data ratio, and `mlp_instr_starve 5`. It is shared with the top-down stats, so changing it also changes `TOPDOWN_EXEC_STALLS_CYCLES`.
 
 ### Replacement mode
 
@@ -162,9 +187,10 @@ All of these are in `memory.stat.<core>.out`.
 | `MLP_FE_ABANDON_REREACH` | Abandoned lines a demand fetch reached again before the fill |
 | `MLP_COUNTDOWN_EXPIRE` | Countdowns that reached 0 |
 | `MLP_COUNTDOWN_EVICT_PROTECTED` | Victims evicted while still protected, which happens only when the whole set is protected |
-| `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request, by the level that served it. Stats only. |
+| `MLP_LD_BOUND_LOG2_*`, `MLP_LD_BOUNDREQ_LOG2_*`, `MLP_LD_HEAD_LOG2_*` | Under every policy, at each L2 fill a load waited on: the request's count for `mlp_data_bound` 0, 1 and 2 in log2 buckets. `_0` is 0, `_k` is 2^(k−1) to 2^k − 1, and `_15` is 2^14 and up. |
+| `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request (the count `mlp_data_bound 2` uses), by the level that served it. Stats only. |
 | `REQ_COST_FE_{MLC,LLC,MEM}` | Cycles the backend got no ops while the on-path icache waited on a request, by the level that served it. Stats only. |
-| `REQ_BOUND_LD_*`, `REQ_BOUND_FE_*` | REPL_MLP's data bound cycles and instruction stuck cycles, split the same way, for comparison with the costs |
+| `REQ_BOUND_LD_*`, `REQ_BOUND_FE_*` | REPL_MLP's fu_wait load-cycles and instruction stuck cycles, split the same way, for comparison with the costs |
 
 The `MLP_MARKED_*` stats count only marks that carry a boost. With `mlp_lin_data_lambda 0`, `MLP_MARKED_LOAD` stays 0 whatever the data rule would decide. Each cache running REPL_MLP counts its own fills.
 
@@ -198,6 +224,38 @@ The `MLP_MARKED_*` stats count only marks that carry a boost. With `mlp_lin_data
 - **The resteer filter matters in both settings.** With FDIP off, the old ratio mode marks the most lines but trails mark 2 by 0.58%. The likely cause is that it protects wrong-path lines.
 - **The ROB-head check is the right scope.** Requiring no outstanding load anywhere drops lines that still starved the backend, since a load miss behind the head does not block retirement.
 
+### Data marking
+
+**Setup:** `golden_small`, top 6 simpoints, the recommended instruction boost (γi 64) and fill-counted γ in every row, data marking changed at the L2 only, 0 simpoints dropped.
+
+- Google: 12 workloads (63 simpoints), 10M warmup + 50M measured instructions.
+- SPEC2006: 55 workloads (294 simpoints). SPEC2017: 36 (168). Geekbench: 13 (78). Datacenter: 7 (36). All at 10M warmup + 10M measured.
+
+Each number is the geomean IPC gain over L2 LRU. The last column is the geomean of the five suite gains, suites weighted equally. The marked share of load fills for the default is 38% (Google), 40% (SPEC2006), 23% (SPEC2017), 65% (Geekbench) and 55% (Datacenter).
+
+| Data marking, γd 16 | Google | SPEC2006 | SPEC2017 | Geekbench | Datacenter | 5 suites |
+|---|---|---|---|---|---|---|
+| **Default: ROB head ≥ 16** | **+2.64** | **+0.36** | **+0.12** | **−0.04** | **+6.19** | **+1.83** |
+| ROB head ≥ 32 | +2.64 | +0.35 | +0.14 | −0.05 | +6.18 | +1.82 |
+| ROB head ≥ 64 | +2.53 | +0.25 | +0.23 | −0.07 | +6.13 | +1.79 |
+| ROB head ≥ 1 (1 bit) | +2.40 | +0.26 | +0.08 | −0.03 | +6.22 | +1.76 |
+| Old ratio > 0.7 | +2.31 | +0.18 | −0.02 | −0.06 | +6.28 | +1.71 |
+| fu_wait cycles ≥ 32 (`--mlp_data_bound 1`) | +2.21 | +0.33 | −0.11 | −0.05 | +6.33 | +1.71 |
+| fu_wait load-cycles ≥ 128 (`--mlp_data_bound 0`) | +1.89 | +0.21 | +0.20 | −0.09 | +6.31 | +1.68 |
+| Every fill a load waited on (`--mlp_data_bound_min 0`) | +2.31 | −0.10 | −0.15 | −0.04 | +6.28 | +1.63 |
+| No data boost (γd 0) | +2.07 | 0.00 | +0.01 | +0.02 | +5.93 | +1.58 |
+| ROB head ≥ 16, γd 64 | +1.55 | +0.18 | −0.11 | −0.16 | +6.65 | +1.58 |
+
+The ratio row at γi 64, γd 16 is the best point of the 6×6 γi × γd sweep on `golden_small`. The ratio, γd 0 and LRU numbers come from that sweep (main f1fce3c). On smoke runs (sierra.a.4, sierra.a.6, sphinx3), this code with the old defaults matched it bit for bit.
+
+#### Why the ROB-head count
+
+- **It charges each stall to one miss.** A cycle counts only for the request the ROB head is waiting on. The ratio and the fu_wait counts (`mlp_data_bound` 0 and 1) charge every miss in flight during a backend-bound cycle, so misses that overlap the one blocking retirement get marked too.
+- **The threshold is flat.** Minimums of 16, 32 and 64 are within 0.04 of each other, and even 1 (a single bit per MSHR) beats the ratio.
+- **The fu_wait counts cannot replace the ratio.** Their best settings tie or trail it, and they lose on Google.
+- **Where it gains and loses.** The biggest gains over the ratio are sphinx3 (+21.2 vs +13.3), mcf (+6.3 vs +3.1) and xalancbmk (+1.5 vs +0.8). The biggest losses are milc (−1.9 vs −1.5) and cactusADM (−1.9 vs −1.2).
+- **γd 16, not 64.** γd 64 is best on datacenter (+6.65), but it is worse on the other four suites (Google +1.55).
+
 ### Replacement mode
 
 - **Fill-counted vs stack position** (#20, older threshold marking, instruction boost only, best γ or λ of each):
@@ -208,7 +266,7 @@ The `MLP_MARKED_*` stats count only marks that carry a boost. With `mlp_lin_data
   | Datacenter | +8.52 | +8.52 |
 
 - **Countdown vs fill-counted:** at γ64 they tied, +1.77 vs +1.75 (`mlp_instr_mark 2` alone, FDIP on, Google top 2 simpoints).
-- **Countdown variants** (#34; Google, 12 workloads, top 3 simpoints, γi 64, γd 16, ratio data marking):
+- **Countdown variants** (#34; Google, 12 workloads, top 3 simpoints, γi 64, γd 16, with the ratio data marking that was the default then):
 
   | Variant | Gain over LRU |
   |---|---|
@@ -223,10 +281,6 @@ Fill-counted γ stays the recommendation because the countdown has not been comp
 
 ## Not recommended yet
 
-- **Data-side boost (`mlp_lin_data_lambda`)**
-  - SPEC2006: its best is +0.13 (γ16), or +0.29 with #25's FU-wait condition. Plain DRRIP gets +1.0.
-  - SPEC2017: it loses at every fixed setting tested.
-  - Datacenter: it gained +1.89 (γ64), but it has not been run together with the instruction boost.
 - **DRRIP as the base (`--mlp_rrip_boost`)**
   - On Google, DRRIP alone is −0.95 vs LRU.
   - DRRIP with instruction credits of 16 (`--mlp_rrip_boost 2`) got +1.36 (`mlp_instr_mark 2` alone, top 2 simpoints), against +1.75 for LRU with γ64.
@@ -238,4 +292,7 @@ Fill-counted γ stays the recommendation because the countdown has not been comp
 - The countdown against fill-counted γ under the current marking defaults, and with FDIP off.
 - `no_revive` with a longer γ.
 - `mlp_instr_starve 2` on suites other than Google. Datacenter instruction boost was +8.52 with the old threshold marking.
+- `mlp_data_bound_min` between 1 and 16, and between 16 and 32. Only 1, 16, 32 and 64 have been run.
+- Data marking on `golden_small_incl`, where the γ sweep's best with the ratio was γi 256, γd 64.
+- The ROB-head data marking with DRRIP as the base.
 - REPL_MLP at the last-level cache.
