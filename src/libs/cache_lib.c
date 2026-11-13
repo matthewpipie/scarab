@@ -2394,7 +2394,7 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
 
 /* REPL_MLP (stats only): whether a resident marked line is still protected. */
 static inline Flag mlp_protected(Cache* cache, uns set, Cache_Entry* entry) {
-  if (MLP_BOOST_COUNTDOWN)
+  if (mlp_countdown_on())
     return entry->mlp_ticks_left > 0;
   if (MLP_BOOST_IN_FILLS && cache->mlp_set_fills)
     return (double)(cache->mlp_set_fills[set] - entry->mlp_stamp) < (double)entry->mlp_boost;
