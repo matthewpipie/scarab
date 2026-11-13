@@ -63,6 +63,12 @@ void cache_set_next_fill_mlp_boost(float boost) {
   g_next_fill_mlp_boost = boost;
 }
 
+static uns8 g_next_fill_mlp_mark = MLP_MARK_NONE;
+
+void cache_set_next_fill_mlp_mark(uns8 mark) {
+  g_next_fill_mlp_mark = mark;
+}
+
 /* REPL_LACS: staged by memory/lacs.c right before a fill-time cache_insert on a cache
    running REPL_LACS, consumed by lacs_update_insert (the strategy table's update_insert,
    since REPL_LACS -- unlike REPL_MLP -- sits in the strategy-table group). !valid means
@@ -73,6 +79,13 @@ static uns g_lacs_next_cost = 0;
 void cache_set_lacs_next_insert(Flag valid, uns cost) {
   g_lacs_next_valid = valid;
   g_lacs_next_cost = cost;
+}
+
+/* Stats only: remember the line an insert is about to replace (memory.c reads it for MLP_EVICT_*). */
+static inline void mlp_note_victim(Cache* cache, Cache_Entry* victim) {
+  cache->mlp_victim_valid = victim->valid;
+  cache->mlp_victim_mark = victim->mlp_mark;
+  cache->mlp_victim_used = victim->mlp_used;
 }
 
 /* REPL_MLP with mlp_boost_countdown: a marked line is protected for this many ticks of its set
@@ -208,6 +221,9 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
   cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
+  cache->mlp_victim_valid = FALSE;
+  cache->mlp_victim_mark = MLP_MARK_NONE;
+  cache->mlp_victim_used = FALSE;
   if (repl_policy == REPL_MLP)
     ASSERTM(0, !(MLP_BOOST_COUNTDOWN && MLP_BOOST_IN_FILLS),
             "mlp_boost_countdown cannot be combined with mlp_boost_in_fills\n");
@@ -228,6 +244,8 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
       cache->entries[ii][jj].mlp_ticks_left = 0;
       cache->entries[ii][jj].mlp_boost = 0.0;
       cache->entries[ii][jj].mlp_rrip_credit = 0;
+      cache->entries[ii][jj].mlp_mark = MLP_MARK_NONE;
+      cache->entries[ii][jj].mlp_used = FALSE;
       if (data_size) {
         cache->entries[ii][jj].data = (void*)malloc(data_size);
         memset(cache->entries[ii][jj].data, 0, data_size);
@@ -408,12 +426,14 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   if (cache->repl_policy == REPL_IDEAL) {
     new_line = insert_sure_line(cache, set, tag);
     *repl_line_addr = 0;
+    cache->mlp_victim_valid = FALSE;
   } else {
     new_line = find_repl_entry(cache, proc_id, set, &repl_index);
     /* before insert the data into cache, if the cache has shadow entry */
     /* insert that entry to the shadow cache */
     if ((cache->repl_policy == REPL_SHADOW_IDEAL) && new_line->valid)
       shadow_cache_insert(cache, set, new_line->tag, new_line->tag_full, new_line->base);
+    mlp_note_victim(cache, new_line);
 
     /* bug fixed. 4/26/04 if the entry is not valid, repl_line_addr should be set to 0 */
     if (new_line->valid)
@@ -438,6 +458,9 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   new_line->pref = isPrefetch;
   new_line->mlp_boost = g_next_fill_mlp_boost;
   g_next_fill_mlp_boost = 0.0;
+  new_line->mlp_mark = g_next_fill_mlp_mark;
+  g_next_fill_mlp_mark = MLP_MARK_NONE;
+  new_line->mlp_used = FALSE;
   new_line->mlp_stamp = cache->mlp_set_fills ? cache->mlp_set_fills[set] : 0;
   mlp_countdown_start(new_line);
 
@@ -1477,6 +1500,7 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
   // update_evict -> action_repl -> update_insert
   // External func also directly call it
   new_line = repl_policy_func_table[policy].update_evict(cache, proc_id, set, &repl_index, NULL, FALSE);
+  mlp_note_victim(cache, new_line);
 
   if (new_line->valid)
     *repl_line_addr = new_line->base;
@@ -1486,6 +1510,9 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
   /* mlp_rrip_boost: the boost memory.c staged for this fill (0 if none) */
   new_line->mlp_boost = g_next_fill_mlp_boost;
   g_next_fill_mlp_boost = 0.0;
+  new_line->mlp_mark = g_next_fill_mlp_mark;
+  g_next_fill_mlp_mark = MLP_MARK_NONE;
+  new_line->mlp_used = FALSE;
   repl_policy_func_table[policy].update_insert(cache, proc_id, set, repl_index, NULL);
   new_line->mlp_rrip_credit = MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA ? (uns)new_line->mlp_boost : 0;
 
@@ -2346,6 +2373,67 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
     icarus_stat_evict(proc_id, icarus_bin_of(&cache->entries[set][lru_way]));
   cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
   return &cache->entries[set][*way];
+}
+
+/* REPL_MLP (stats only): whether a resident marked line is still protected. */
+static inline Flag mlp_protected(Cache* cache, uns set, Cache_Entry* entry) {
+  if (MLP_BOOST_COUNTDOWN)
+    return entry->mlp_ticks_left > 0;
+  if (MLP_BOOST_IN_FILLS && cache->mlp_set_fills)
+    return (double)(cache->mlp_set_fills[set] - entry->mlp_stamp) < (double)entry->mlp_boost;
+  return TRUE;
+}
+
+/* addr's resident line, or NULL; *set gets its set. */
+static Cache_Entry* mlp_find_line(Cache* cache, Addr addr, uns* set) {
+  Addr tag, tag_full, line_addr;
+  *set = cache_index(cache, addr, &tag, &tag_full, &line_addr);
+  for (uns ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[*set][ii];
+    if (entry->valid && entry->tag == tag)
+      return entry;
+  }
+  return NULL;
+}
+
+uns8 cache_mlp_mark(Cache* cache, Addr addr) {
+  uns set;
+  Cache_Entry* entry = mlp_find_line(cache, addr, &set);
+  return entry ? entry->mlp_mark : MLP_MARK_NONE;
+}
+
+uns8 cache_mlp_demand_hit(Cache* cache, Addr addr) {
+  uns set;
+  Cache_Entry* entry = mlp_find_line(cache, addr, &set);
+  if (!entry)
+    return MLP_MARK_NONE;
+  entry->mlp_used = TRUE;
+  return entry->mlp_mark;
+}
+
+Flag cache_mlp_lapsed(Cache* cache, Addr addr) {
+  uns set;
+  Cache_Entry* entry = mlp_find_line(cache, addr, &set);
+  return entry && entry->mlp_mark != MLP_MARK_NONE && !mlp_protected(cache, set, entry);
+}
+
+void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow) {
+  for (uns set = 0; set < cache->num_sets; set++) {
+    for (uns ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      if (!entry->valid)
+        continue;
+      (*valid)++;
+      if (entry->mlp_mark == MLP_MARK_NONE)
+        continue;
+      if (entry->mlp_mark == MLP_MARK_DATA)
+        (*dmark)++;
+      else
+        (*imark)++;
+      if (mlp_protected(cache, set, entry))
+        (*inwindow)++;
+    }
+  }
 }
 
 /* REPL_ICARUS: the CIT's criticality signal for a line already in the cache (see

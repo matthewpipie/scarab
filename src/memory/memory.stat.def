@@ -421,6 +421,54 @@ DEF_STAT(  MLP_LD_HEAD_LOG2_12             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_LD_HEAD_LOG2_13             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_LD_HEAD_LOG2_14             , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_LD_HEAD_LOG2_15             , COUNT  , NO_RATIO  )
+// REPL_MLP marking footprint (stats only). MLP_MLC_ACC_*: MLC lookups (a hit, or a request's first
+// miss), by kind: LOAD, STORE, IFETCH, PREF (any prefetch type), WB (a dcache writeback; a hit renews
+// the line's recency, and with it a marked line's protection). MLP_MLC_HIT_DMARK_* / _IMARK_*: the
+// lookups that hit a line marked data-bound / instruction-bound at its fill (the mark stays until
+// eviction; see MLP_OCC_INWINDOW for whether it still protects the line).
+DEF_STAT(  MLP_MLC_ACC_LOAD                , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_ACC_STORE               , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_ACC_IFETCH              , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_ACC_PREF                , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_ACC_WB                  , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_DMARK_LOAD          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_DMARK_STORE         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_DMARK_IFETCH        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_DMARK_PREF          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_DMARK_WB            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_IMARK_LOAD          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_IMARK_STORE         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_IMARK_IFETCH        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_IMARK_PREF          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_IMARK_WB            , COUNT  , NO_RATIO  )
+// Demand hits (LOAD, STORE, IFETCH) on a marked line whose protection had lapsed before the hit
+// renewed it (cache_mlp_lapsed).
+DEF_STAT(  MLP_MLC_HIT_DMARK_LAPSED        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_MLC_HIT_IMARK_LAPSED        , COUNT  , NO_RATIO  )
+// MLC evictions (ALL), of data- / instruction-marked lines (DMARK, IMARK), and _UNUSED: those no
+// demand access hit between the line's fill and its eviction.
+DEF_STAT(  MLP_EVICT_ALL                   , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_EVICT_ALL_UNUSED            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_EVICT_DMARK                 , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_EVICT_DMARK_UNUSED          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_EVICT_IMARK                 , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_EVICT_IMARK_UNUSED          , COUNT  , NO_RATIO  )
+// Distinct lines over the measured region (after full_warmup): LOAD, lines with an MLC fill a load
+// waited on, and LOAD_DMARK, those data-marked at one fill or more; IFETCH / IFETCH_IMARK, the same
+// for fills a demand fetch reached.
+DEF_STAT(  MLP_LINES_LOAD                  , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_LINES_LOAD_DMARK            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_LINES_IFETCH                , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_LINES_IFETCH_IMARK          , COUNT  , NO_RATIO  )
+// MLC census every 4096 cycles, summed over samples (divide by MLP_OCC_SAMPLES): valid lines,
+// data-marked, instruction-marked, and marked lines whose protection is still in effect (with
+// mlp_boost_in_fills: fewer than its boost fills into the set since its last touch; with
+// mlp_boost_countdown: ticks left; otherwise every marked line).
+DEF_STAT(  MLP_OCC_SAMPLES                 , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_OCC_VALID                   , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_OCC_DMARK                   , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_OCC_IMARK                   , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_OCC_INWINDOW                , COUNT  , NO_RATIO  )
 // mlp_instr_mark 2's flag, counted under every policy. MLP_FE_ABANDON: redirects away from an
 // icache miss fetch was stalled on. _REREACH: a demand fetch reached such a miss again before its
 // fill, clearing the flag.

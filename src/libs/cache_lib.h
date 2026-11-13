@@ -116,6 +116,8 @@ typedef struct Cache_Entry_struct {
                           expires; it is protected while this is nonzero */
   uns mlp_rrip_credit; /* RRIP with mlp_rrip_boost 2: aging steps the line still absorbs before its
                           RRPV rises; set to its boost at its fill and at every hit */
+  uns8 mlp_mark;       /* REPL_MLP (stats only): which rule marked the line at its fill, MLP_MARK_* */
+  Flag mlp_used;       /* stats only: a demand access hit the line since its fill (cache_mlp_demand_hit) */
 
   Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
                             time; always FALSE for data lines */
@@ -189,6 +191,10 @@ struct Cache_struct {
   void* predictor;
 
   Counter* mlp_set_fills; /* REPL_MLP: fills into each set so far, the clock for mlp_boost_in_fills */
+  /* stats only: the line the last cache_insert replaced (valid FALSE if it took an invalid way) */
+  Flag mlp_victim_valid;
+  uns8 mlp_victim_mark;
+  Flag mlp_victim_used;
 };
 
 /**************************************************************************************/
@@ -239,6 +245,25 @@ void update_repl_resteer_policy(Cache*, Addr);
    (or, for RRIP, cache_insert_strategy) call should stamp on the new line. Call right before a
    fill-time cache_insert on such a cache; reset to 0 after. */
 void cache_set_next_fill_mlp_boost(float boost);
+
+/* REPL_MLP (stats only): which rule marked a line at its fill. Staged with the boost, by
+   cache_set_next_fill_mlp_mark, and kept on the line until eviction. */
+#define MLP_MARK_NONE 0
+#define MLP_MARK_DATA 1
+#define MLP_MARK_INSTR 2
+void cache_set_next_fill_mlp_mark(uns8 mark);
+/* The mark of addr's line, or MLP_MARK_NONE if it is not resident. */
+uns8 cache_mlp_mark(Cache* cache, Addr addr);
+/* A demand access (load, store or instruction fetch) hit addr's line: note it used. Returns its
+   mark, as cache_mlp_mark. */
+uns8 cache_mlp_demand_hit(Cache* cache, Addr addr);
+/* Whether addr's line is resident, marked, and past its protection: with mlp_boost_in_fills, its
+   boost or more fills into its set since its last touch; with mlp_boost_countdown, no ticks left.
+   A stack-position boost (neither) never lapses. Read it before the access renews the line. */
+Flag cache_mlp_lapsed(Cache* cache, Addr addr);
+/* Add to each count the cache's valid lines, data- and instruction-marked lines, and marked lines
+   whose protection is still in effect (see MLP_OCC_INWINDOW in memory.stat.def). */
+void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow);
 
 /* REPL_LACS: stage the cost the NEXT cache_insert (strategy path) should stamp on the new
    line. Call right before a fill-time cache_insert on a cache running REPL_LACS; `valid`
