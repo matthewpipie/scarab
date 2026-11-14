@@ -758,6 +758,18 @@ uint32_t TraceReaderMemtrace::add_dependency_info(ctype_pin_inst* info, instr_t*
     }
   }
 
+  /* DR_ISA_REGDEPS keeps the arithmetic flags out of the register operand lists: each
+     instruction's header has one bit for "reads at least one arithmetic flag" and one for
+     "writes at least one", which DR decodes into EFLAGS_READ_ARITH / EFLAGS_WRITE_ARITH. Model
+     them as SCARAB_REG_ZPS, the single flags register the XED path maps RFLAGS/EFLAGS to, so a
+     conditional branch (or cmov, setcc, adc) depends on the instruction that set its flags.
+     Without this, conditional branches in REGDEPS traces have no source registers at all. */
+  uint arith_flags = instr_get_arith_flags(drinst, DR_QUERY_DEFAULT);
+  if (TESTANY(EFLAGS_READ_ARITH, arith_flags) && info->num_src_regs < MAX_SRC_REGS_NUM)
+    add_reg(info, SRC_REGS, SCARAB_REG_ZPS);
+  if (TESTANY(EFLAGS_WRITE_ARITH, arith_flags) && info->num_dst_regs < MAX_DST_REGS_NUM)
+    add_reg(info, DST_REGS, SCARAB_REG_ZPS);
+
   return max_op_width;
 }
 
