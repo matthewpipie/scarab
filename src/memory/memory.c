@@ -4062,6 +4062,8 @@ Flag mlc_fill_line(Mem_Req* req) {
   if (MLP_ORACLE)
     mlp_oracle_insert(&MLC(req->proc_id)->cache, req);
   mockingjay_fill(&MLC(req->proc_id)->cache, req);
+  if (MLC(req->proc_id)->cache.repl_policy == REPL_INST_PARTITION)
+    cache_set_inst_part_next_insert(mem_req_type_is_inst(req->type));
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers

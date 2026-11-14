@@ -2411,7 +2411,7 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
     uns count = 0;
     int lru_way = -1;
     Counter lru_time = 0;
-    
+
     // Count number of ways in set in our bin
     for (ii = 0; ii < cache->assoc; ii++) {
       Cache_Entry* entry = &cache->entries[set][ii];
@@ -2543,6 +2543,110 @@ Flag cache_icarus_mark_critical(Cache* cache, Addr addr) {
 }
 
 /**************************************************************************************/
+/* INST_PARTITION -- fixed instruction/data way partition at the MLC.
+ *
+ * --mlc_inst_part_ways (N) reserves N ways per set for instruction lines (demand fetches and
+ * FDIP prefetches, mem_req_type_is_inst); the remaining assoc - N ways are data's. The
+ * partition is soft until the set fills: compulsory misses land in empty ways with no
+ * eviction, so one side can temporarily hold more than its share (e.g. the first N+2 fills
+ * being instruction gives instruction N+2 ways, with no data lines yet to contest them).
+ *
+ * Once the set is full, every fill evicts:
+ *   - the LRU instruction line, if instruction currently holds more than its N ways;
+ *   - else the LRU data line, if data currently holds more than its assoc-N ways;
+ *   - else (both sides are exactly at their quota) the LRU line of the fill's own side.
+ * Because instruction count + data count == assoc whenever the set is full, exactly one of
+ * the first two conditions can hold at a time -- never both -- so there's no ambiguity about
+ * which side is "over." Whichever side overshot during the soft startup phase gets drained by
+ * fills of either type until it reaches its quota; from then on the third case is a fixed
+ * point (a fill always evicts its own side, which is the side its own addition would put over
+ * quota), so the exact split (N instruction / assoc-N data) holds forever after. */
+
+/* Staged by memory.c right before a fill-time cache_insert on a cache running
+   REPL_INST_PARTITION: which side (instruction/data) the fill about to happen is on. Consumed
+   and reset by inst_part_update_insert; also read (not consumed) by inst_part_update_evict to
+   break the exact-quota tie above. */
+static Flag g_inst_part_next_valid = FALSE;
+static Flag g_inst_part_next_is_inst = FALSE;
+
+void cache_set_inst_part_next_insert(Flag is_inst) {
+  g_inst_part_next_valid = TRUE;
+  g_inst_part_next_is_inst = is_inst;
+}
+
+void inst_part_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                           Repl_Policy repl_policy);
+void inst_part_update_hit(Cache* cache, uns set, uns way, void* arg);
+void inst_part_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg);
+Cache_Entry* inst_part_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external);
+
+void inst_part_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                           Repl_Policy repl_policy) {
+  general_action_init(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
+  ASSERTM(0, MLC_INST_PART_WAYS <= assoc,
+          "REPL_INST_PARTITION: --mlc_inst_part_ways (%u) exceeds %s's associativity (%u)\n", MLC_INST_PART_WAYS, name,
+          assoc);
+}
+
+void inst_part_update_hit(Cache* cache, uns set, uns way, void* arg) {
+  cache->entries[set][way].last_access_time = cycle_count;
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_HIT);
+}
+
+void inst_part_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg) {
+  cache->entries[set][way].part_is_inst = g_inst_part_next_valid ? g_inst_part_next_is_inst : FALSE;
+  cache->entries[set][way].last_access_time = cycle_count;
+  g_inst_part_next_valid = FALSE;
+  g_inst_part_next_is_inst = FALSE;
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
+}
+
+Cache_Entry* inst_part_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
+  int ii;
+
+  /* An empty way always wins: the partition isn't enforced until the set is full. */
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (!cache->entries[set][ii].valid) {
+      *way = ii;
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
+  uns instr_count = 0;
+  for (ii = 0; ii < cache->assoc; ii++)
+    if (cache->entries[set][ii].part_is_inst)
+      instr_count++;
+  uns data_count = cache->assoc - instr_count;
+
+  Flag evict_instr;
+  if (instr_count > MLC_INST_PART_WAYS)
+    evict_instr = TRUE;
+  else if (data_count > cache->assoc - MLC_INST_PART_WAYS)
+    evict_instr = FALSE;
+  else /* both sides exactly at quota: evict the side the incoming fill is on */
+    evict_instr = g_inst_part_next_valid ? g_inst_part_next_is_inst : FALSE;
+
+  int lru_way = -1;
+  Counter lru_time = 0;
+  for (ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    if (entry->part_is_inst != evict_instr)
+      continue;
+    if (lru_way == -1 || entry->last_access_time < lru_time) {
+      lru_way = ii;
+      lru_time = entry->last_access_time;
+    }
+  }
+  ASSERT(proc_id, lru_way != -1);
+  *way = lru_way;
+  if (!if_external)
+    STAT_EVENT(proc_id, evict_instr ? MLC_INST_PART_EVICT_INSTR : MLC_INST_PART_EVICT_DATA);
+  cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+  return &cache->entries[set][*way];
+}
+
+/**************************************************************************************/
 /* Driven Table */
 
 // clang-format off
@@ -2556,6 +2660,7 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_LACS,    lacs_action_init,     general_action_repl,  lacs_update_hit,    lacs_update_insert,   lacs_update_evict,   NULL              },
   { REPL_ICARUS,  icarus_action_init,   general_action_repl,  icarus_update_hit,  icarus_update_insert, icarus_update_evict, NULL              },
   { REPL_MOCKINGJAY, mockingjay_action_init, general_action_repl, mockingjay_update_hit, mockingjay_update_insert, mockingjay_update_evict, NULL },
+  { REPL_INST_PARTITION, inst_part_action_init, general_action_repl, inst_part_update_hit, inst_part_update_insert, inst_part_update_evict, NULL },
   { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL,                NULL              },
 };
 // clang-format on

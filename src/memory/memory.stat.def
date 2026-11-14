@@ -1060,6 +1060,10 @@ DEF_STAT(  MLC_ICARUS_EVICT_01		       , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_ICARUS_EVICT_11		       , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_ICARUS_EVICT_10		       , COUNT  , NO_RATIO  )
 
+// REPL_INST_PARTITION: fixed instruction/data way partition at the MLC
+DEF_STAT(  MLC_INST_PART_EVICT_INSTR      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_INST_PART_EVICT_DATA       , COUNT  , NO_RATIO  )
+
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
 
