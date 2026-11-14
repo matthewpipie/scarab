@@ -50,11 +50,18 @@ extern "C" {
    loads, stores, data prefetches and writebacks. */
 uns mlp_req_side(Mem_Req* req);
 
+/* What the reference miss a lookup lined up with was, as mlp_oracle_lookup reports it in *ref. */
+#define MLP_ORACLE_REF_MATCHED 1 /* it lined up with one; none of the others are set otherwise */
+#define MLP_ORACLE_REF_MARKED 2  /* the reference marked it */
+#define MLP_ORACLE_REF_CTRL 4    /* mode 3's draw took it (drawn in every run with a reference) */
+#define MLP_ORACLE_REF_COLD 8    /* its line's first miss in the reference */
+
 /* The MLC looked req's line up; hit is whether the line was there. Once per request, and never
    for a writeback. in_flight is whether an earlier miss on the line is still on its way back, so
-   this one will wait on it. Lines a miss up with the reference (mlp_oracle_ref), and returns
-   whether mlp_oracle forces the access to hit. */
-Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight);
+   this one will wait on it. Lines a miss up with the reference (mlp_oracle_ref), sets *ref to the
+   MLP_ORACLE_REF_* bits of the reference miss it lined up with (0 if none), and returns whether
+   mlp_oracle forces the access to hit. */
+Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight, uns8* ref);
 
 /* req's MLC miss has come back; mark is how the marking marks the fill (MLP_MARK_*, as
    mlp_stage_fill_boost in memory.c stages it on the line). A miss counts as marked if the mark is

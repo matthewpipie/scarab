@@ -372,8 +372,9 @@ Core& core_of(uns proc_id) {
 }
 
 /* Lines a miss up with the reference's next miss to its line that no miss has lined up with or
-   passed, and returns whether this run forces it. */
-Flag replay_miss(Core& c, uns proc_id, Addr line_addr, uns side) {
+   passed, sets *ref to what that miss was (MLP_ORACLE_REF_*, left alone if none), and returns
+   whether this run forces it. */
+Flag replay_miss(Core& c, uns proc_id, Addr line_addr, uns side, uns8* ref) {
   auto it = c.ref_lines.find(line_addr);
   if (it == c.ref_lines.end()) {
     oracle_stat(proc_id, side, O_REF_UNMATCHED);
@@ -397,6 +398,8 @@ Flag replay_miss(Core& c, uns proc_id, Addr line_addr, uns side) {
     return FALSE;
   }
   const Ref_Miss& m = c.ref[rl.next++];
+  *ref = MLP_ORACLE_REF_MATCHED | (m.marked ? MLP_ORACLE_REF_MARKED : 0) | (m.ctrl ? MLP_ORACLE_REF_CTRL : 0) |
+         (m.cold ? MLP_ORACLE_REF_COLD : 0);
   if (now < m.inst)
     STAT_EVENT(proc_id, MLP_ORACLE_REF_EARLY);
   else if (now > m.inst)
@@ -432,7 +435,8 @@ uns mlp_req_side(Mem_Req* req) {
   }
 }
 
-Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
+Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight, uns8* ref) {
+  *ref = 0;
   /* A miss on a line already on its way waits for it: not a lookup of its own. */
   if (hit || in_flight)
     return FALSE;
@@ -447,7 +451,7 @@ Flag mlp_oracle_lookup(Cache* mlc, Mem_Req* req, Flag hit, Flag in_flight) {
 
   Flag force = FALSE;
   if (c.replay)
-    force = replay_miss(c, proc_id, line_addr, side) && covered;
+    force = replay_miss(c, proc_id, line_addr, side, ref) && covered;
   if (covered && MLP_ORACLE == 4)
     force |= c.seen.count(line_addr) != 0;
   if (covered)

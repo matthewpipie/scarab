@@ -359,9 +359,10 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
      0  off.
      1  track only: forces nothing. With mlp_oracle_record, writes a reference. With
         mlp_oracle_ref, lines its misses up with the reference's: replaying a run of the same
-        configuration, every miss lines up, at an offset of 0. (Reuse distances of marked and
-        unmarked lines are in MLP_RD* and MLP_RDNEXT_*, kept under every policy; a reference
-        for the bounds sets mlp_rd_sticky and mlp_rd_ctrl.)
+        configuration, every miss lines up, at an offset of 0, and MLP_RDMISS_* are the reuse
+        distances of the misses modes 2 and 3 would force (with mode 3's draw settings, among
+        them mlp_oracle_reuse_only). (Reuse distances of marked and unmarked lines are in MLP_RD*
+        and MLP_RDNEXT_*, kept under every policy; a reference for the bounds sets mlp_rd_sticky.)
      2  critical: every miss that lines up with a marked miss of the reference hits (with
         mlp_oracle_reuse_only, a marked miss after the line's first).
      3  random control: as 2, for a random sample of the reference's misses instead, drawn per side
@@ -433,13 +434,6 @@ DEF_PARAM(mlp_rd_sticky, MLP_RD_STICKY, Flag, Flag, FALSE, )
 /* mlp_rd_iprf_reuse: also count MLC lookups by instruction prefetches (FDIP and the other
    instruction prefetchers) as reuses, as loads, stores and instruction fetches always are. */
 DEF_PARAM(mlp_rd_iprf_reuse, MLP_RD_IPRF_REUSE, Flag, Flag, FALSE, )
-/* mlp_rd_ctrl: a random control for the marked lines, counted under the DCTRL / ICTRL kinds as
-   well as under their own. 0 off. n: per side (data: DMARK, DNOMARK, OTHER; instruction: IMARK,
-   INOMARK, IPRF), keep as many control lines as the side has marked lines, drawn from all its
-   lines. Each draw takes, of n random lines not drawn yet, the one with the most reuses so far
-   while the control's reuses since its lines were drawn trail the marked lines' since they were
-   marked, and the fewest otherwise, so the two match in reuses. mlp_oracle's study uses 8. */
-DEF_PARAM(mlp_rd_ctrl, MLP_RD_CTRL, uns, uns, 0, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
