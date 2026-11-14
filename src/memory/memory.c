@@ -3064,22 +3064,25 @@ static void mem_fill_waiters(Mshr* file, Mem_Req* req, Mem_Req** reqs) {
   ASSERT(req->proc_id, reqs[0] == req);
 }
 
-/* REPL_MLP: the boost one request earns its fill, and the stat that counts it as marked. The data
-   side applies if any op merged into it (mlp_data_marked; a store-only request has no load
+/* REPL_MLP: whether one request earns its fill a mark, and the stat that counts it as marked. The
+   data side applies if any op merged into it (mlp_data_marked; a store-only request has no load
    waiting and is never marked), else the instruction side if a demand fetch reached it
    (mlp_instr_marked; mem_req_is_type, so a late instruction prefetch a demand fetch merged into
    counts like a demand fetch). The data counts accrue on the request through op->req
-   (lsq_tag_inflight_loads, node_stage.c), so a load flushed before the fill keeps what it accrued. */
-static float mlp_req_boost(Mem_Req* req, Stat_Enum* marked_stat) {
+   (lsq_tag_inflight_loads, node_stage.c), so a load flushed before the fill keeps what it accrued.
+   Deliberately independent of mlp_lin_data_lambda/mlp_lin_instr_lambda's magnitude: with mlp_duel_on,
+   those stay 0 and the real per-set amount comes from mlp_current_boost at eviction time, so marking
+   can't be gated on them without silently discarding every REPL_MLP mark under dueling. */
+static Flag mlp_req_marked(Mem_Req* req, Stat_Enum* marked_stat) {
   if (req->op_count) {
     *marked_stat = MLP_MARKED_LOAD;
-    return mlp_data_marked(req) ? MLP_LIN_DATA_LAMBDA : 0.0;
+    return mlp_data_marked(req);
   }
   if (mem_req_is_type(req, MRT_IFETCH)) {
     *marked_stat = MLP_MARKED_FETCH;
-    return mlp_instr_marked(req) ? MLP_LIN_INSTR_LAMBDA : 0.0;
+    return mlp_instr_marked(req);
   }
-  return 0.0;
+  return FALSE;
 }
 
 /* mlp_duel_on: feed `req`'s own boundness into `set`'s duel state, whether or not it ends up being
@@ -3116,23 +3119,26 @@ static uns8 mlp_stage_fill_boost(Cache* cache, Mshr* file, Mem_Req* req) {
   Mem_Req* reqs[n];
   mem_fill_waiters(file, req, reqs);
   Stat_Enum marked_stat = 0;
-  float boost = mlp_req_boost(req, &marked_stat);
+  Flag marked = mlp_req_marked(req, &marked_stat);
+  float boost = marked ? (marked_stat == MLP_MARKED_LOAD ? MLP_LIN_DATA_LAMBDA : MLP_LIN_INSTR_LAMBDA) : 0.0;
   Mem_Req* by = req;
   if (mlp)
     mlp_duel_record_req(cache, set, req);
   for (uns i = 1; i < n; i++) {
     Stat_Enum stat = 0;
-    float b = mlp_req_boost(reqs[i], &stat);
+    Flag m = mlp_req_marked(reqs[i], &stat);
+    float b = m ? (stat == MLP_MARKED_LOAD ? MLP_LIN_DATA_LAMBDA : MLP_LIN_INSTR_LAMBDA) : 0.0;
     if (mlp)
       mlp_duel_record_req(cache, set, reqs[i]);
-    if (b > boost) {
+    if (m && (!marked || b > boost)) {
+      marked = TRUE;
       boost = b;
       by = reqs[i];
       marked_stat = stat;
     }
   }
   uns8 mark = MLP_MARK_NONE;
-  if (boost > 0.0) {
+  if (marked) {
     STAT_EVENT(by->proc_id, marked_stat);
     if (marked_stat == MLP_MARKED_LOAD ? by->op_count > 1 : popcount32(by->types) > 1)
       STAT_EVENT(by->proc_id, MLP_MARKED_MERGE);
