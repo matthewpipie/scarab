@@ -12,6 +12,14 @@ This page lists every flag and its values, then the recommended settings and the
 
 This runs REPL_MLP at the L2. It protects each marked line for a set number of fills into its set after its last touch: 64 for instruction lines, 16 for data lines. Every other flag stays at its default. The runs behind it are under [Results](#results).
 
+With the countdown (the default replacement mode, which now defaults to `no_revive`), use larger γ:
+
+```
+--mlc_cache_repl_policy 9 --mlp_lin_instr_lambda 96 --mlp_lin_data_lambda 24
+```
+
+At 64 / 16 the countdown with `no_revive` loses about a quarter of a point to reviving lapsed lines. 96 / 24 wins it back; see [Countdown: `no_revive` and γ](#countdown-no_revive-and-γ). The countdown and fill-counted γ have not yet been compared under the current marking defaults.
+
 ## How it works
 
 1. **Marking.** Each fill into the L2 is classified once, when it is filled, whatever the L2's policy (only REPL_MLP, or RRIP with `mlp_rrip_boost`, acts on the mark; under LRU it feeds the stats and [`mlp_oracle`](#bounds-mlp_oracle)). The LLC marks its fills only when it runs one of those itself.
@@ -46,8 +54,8 @@ Each cache running REPL_MLP marks its own fills. Every result on this page has R
 
 | Flag | Type | Default | Values |
 |---|---|---|---|
-| `mlp_lin_instr_lambda` | float | `0` | γ for marked instruction lines. `0` means no instruction boost. 64 is recommended. |
-| `mlp_lin_data_lambda` | float | `0` | γ for marked data lines. `0` means no data boost. 16 is recommended. 64 is better on datacenter but worse on every other suite. |
+| `mlp_lin_instr_lambda` | float | `0` | γ for marked instruction lines. `0` means no instruction boost. 64 is recommended fill-counted, 96 with the countdown. |
+| `mlp_lin_data_lambda` | float | `0` | γ for marked data lines. `0` means no data boost. 16 is recommended fill-counted, 24 with the countdown. 64 (fill-counted) is better on datacenter but worse on every other suite. |
 
 Use values of 0 or more. The unit depends on the mode:
 
@@ -145,11 +153,11 @@ How the three modes compare:
 | Victim | The least recently used unprotected line | The smallest stamp + γ, ties to the least recently used. The stamp is the set's fill count at the line's last touch. | The smallest LRU stack position (0 = LRU) + γ, ties to the lower way |
 | How long a marked line is protected | 2p+1 to 3p fills after its last touch, about ⅔γ to γ | Exactly γ fills after its last touch | Until it is more than γ positions older than some unmarked line |
 | If every line in the set is protected | The least recently used line, or with `tiered` the one with the fewest ticks left | The line closest to lapsing | Not applicable |
-| A hit on a marked line | Restarts the countdown, even after it lapsed (unless `no_revive`) | Restarts protection | Moves it to MRU and keeps γ |
+| A hit on a marked line | Restarts the countdown if it has not lapsed yet (with `no_revive 0`, even after it lapsed) | Restarts protection | Moves it to MRU and keeps γ |
 | When protection lapses | The line moves to MRU | The line ranks as if touched at the lapse | Not applicable |
-| State beyond LRU and the mark | A 2-bit countdown per line, a fill counter per set | A fill-count stamp per line, a fill counter per set | None |
+| State beyond LRU and the mark | A 2-bit countdown per line, a fill counter per set. With `no_revive 0` a line must also remember its mark after the countdown lapses. | A fill-count stamp per line, a fill counter per set | None |
 
-In the countdown, a marked line's counter is set to 3 when it is filled or hit. Its set ticks every p fills, and each tick takes 1 off. A line's own fill does not tick it. p depends on the line's own γ, so instruction and data lines tick at different rates.
+In the countdown, a marked line's counter is set to 3 when it is filled, or hit before it lapses. Its set ticks every p fills, and each tick takes 1 off. A line's own fill does not tick it. p depends on the line's own γ, so instruction and data lines tick at different rates.
 
 In stack position mode, a marked line is evicted ahead of an unmarked line only if it is more than γ positions older. If γ is at least the associativity, that never happens. Marked lines then pile up until the whole set is marked, and an instruction line at γi 64 always outranks a data line at γd 16.
 
@@ -159,11 +167,10 @@ In stack position mode, a marked line is evicted ahead of an unmarked line only 
 
 **`mlp_boost_countdown_tiered`** (default `1`) matters only in the countdown, and only when every line in the set is protected. `1` evicts the line with the fewest ticks left, with ties going to the least recently used. `0` evicts the least recently used line. Ticks are compared, not fills. At γi 64 and γd 16, one instruction tick is 21 fills and one data tick is 5, so tiered is only a rough version of the fill-counted mode's "closest to lapsing".
 
-**`mlp_boost_countdown_no_revive`** (default `0`) matters only in the countdown.
+**`mlp_boost_countdown_no_revive`** (default `1`) matters only in the countdown. It does nothing in the other modes.
 
-- `0`: every hit on a marked line restarts its countdown.
-- `1`: a hit restarts it only if it has not reached 0 yet. A lapsed line stays unprotected until it is evicted and filled again, since a fill always starts the countdown. A countdown of 0 then means "unprotected" for every line, which can save a bit per line.
-- Setting it to 1 when the countdown is not in use aborts at startup, on any cache running REPL_MLP.
+- `1` (default): a hit restarts the countdown only if it has not reached 0 yet. A lapsed line stays unprotected until it is evicted and filled again, since a fill always starts the countdown. A countdown of 0 then means "unprotected" for every line, which saves a bit per line. Use γ 96 / 24 with it.
+- `0`: every hit on a marked line restarts its countdown, even after it lapsed. The line has to keep its mark after the countdown lapses.
 
 ### RRIP as the base
 
@@ -297,7 +304,30 @@ The ratio row at γi 64, γd 16 is the best point of the 6×6 γi × γd sweep o
   | Countdown, `no_revive` | +2.05 |
   | Countdown, `tiered` and `no_revive` | +2.08 |
 
-  `no_revive` loses because a hit on a lapsed line no longer protects it again. A longer γ might win the loss back, but that has not been run.
+  `no_revive` loses because a hit on a lapsed line no longer protects it again. A longer γ wins the loss back; see below.
+
+### Countdown: `no_revive` and γ
+
+**Setup:** `golden_small`, REPL_MLP at the L2, countdown with `tiered`, every marking flag at its default (main 03c737d, plus stats only). Gain over LRU, geomean over workloads.
+
+| γi / γd | Google, `no_revive 0` | Google, `no_revive 1` | SPEC2006, `no_revive 0` | SPEC2006, `no_revive 1` |
+|---|---|---|---|---|
+| 64 / 16 | +2.42 | +2.14 | +0.43 | +0.27 |
+| 72 / 24 | | +2.32 | | |
+| 79 / 16 | | +2.32 | | |
+| 64 / 31 | | +2.17 | | |
+| 79 / 31 | +2.49 | +2.34 | | +0.45 |
+| 88 / 28 | | +2.42 | | +0.44 |
+| 88 / 40 | | +2.28 | | |
+| **96 / 24** | +2.64 | **+2.47** | +0.52 | **+0.41** |
+| 128 / 32 | | +2.46 | | |
+
+Google is 12 workloads, top 3 simpoints (35), 10M warmup + 50M. SPEC2006 is 55 workloads, top 6 simpoints (294), 10M warmup + 10M.
+
+- **Why `no_revive` needs a larger γ:** a countdown lapses 2p+1 to 3p fills after the line's last touch, about ⅔γ to γ. Most of the hits that revive a line come in that gap: with `no_revive 0` at 64 / 16, 51% of revived data hits and 89% of revived instruction hits on Google arrived less than γ fills after the last touch, and almost all the rest within 8 fills past γ (`MLP_LAPSED_*_PAST_*`, scarab dc523f4). The gap is a third of γ, so the γ that covers it grows with γ: about 1.5× for instructions. For data, a tick of 8 fills (γd 23 to 25) is the smallest that holds.
+- **Instructions carry Google, data carries SPEC.** At 64 / 16 with `no_revive`, raising γi alone (79 / 16) wins back 0.18 of Google's 0.27; raising γd alone (64 / 31) wins back 0.03. SPEC2006 prefers the larger γd (79 / 31 is its best).
+- **sphinx3 needs γd 24.** Its 311317 simpoint either locks a working set into the L2 or thrashes. With `no_revive` at γd 16 it thrashes and runs 17% slower than with revive (sphinx3 −6.1%). A no_revive sweep over γd (γi has no effect on it) gave, in cycles against revive at 64 / 16: γd 15 to 17 (tick 5) +17.4%, 18 to 20 +13.2%, 21 to 22 +6.3%, **23 to 25 +0.7%**, 26 to 28 −1.9%, 30 and up about −2.8%. γd only matters through its tick, so γd values with the same round(γd/3) gave identical cycles.
+- **Reviving is still worth a little at the same γ.** At 96 / 24, `no_revive 0` is ahead by 0.16 on Google and 0.11 on SPEC2006. `no_revive 1` gives that up for one bit per line. At 96 / 24 it is +0.05 against `no_revive 0` at 64 / 16 on Google and −0.02 on SPEC2006.
 
 Fill-counted γ stays the recommendation because the countdown has not been compared with it under the current marking defaults.
 
@@ -352,7 +382,7 @@ On the same runs, REPL_MLP gained +2.60 at γi 64, γd 0 and +2.78 at γi 64, γ
 
 - γ above 64 with FDIP off.
 - The countdown against fill-counted γ under the current marking defaults, and with FDIP off.
-- `no_revive` with a longer γ.
+- The countdown at 96 / 24 on suites other than Google and SPEC2006, and γ around it.
 - `mlp_instr_starve 2` on suites other than Google. Datacenter instruction boost was +8.52 with the old threshold marking.
 - No-issue minimums other than 8, 16 and 32, and ROB-head minimums other than 1, 16, 32 and 64.
 - Data marking on `golden_small_incl`, where the γ sweep's best with the ratio was γi 256, γd 64.
