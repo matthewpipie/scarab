@@ -42,6 +42,12 @@
  *  - With a prefetcher (Flex-MIN), a reuse interval that ends in a prefetch trains as
  *    FLEXMIN_PENALTY times longer, so lines a prefetch will bring back are kept less.
  *
+ * The predictor learns a signature's first reuse distance only when one of its sampled lines
+ * is reused or ages out, and aging out takes INF_RD (8x associativity) accesses to that set:
+ * about 8 cache-capacities of traffic. Until then the signature's fills insert at ETR 0
+ * (MJ_FILL_COLD), so a short warmup leaves the policy partly untrained -- the paper warms for
+ * 200M instructions.
+ *
  * Every constant, and every quirk of the artifact's arithmetic, is kept. The ones that read
  * the LLC's geometry (sampled sets, signature and tag widths, INF_RD, INF_ETR) take the
  * geometry of whichever cache runs the policy. Where the artifact and the paper differ, this
@@ -62,10 +68,10 @@
  *    cache_insert, whose update_insert trains and predicts.
  *  - The PC. A data demand uses the PC of the load or store that allocated the request (or,
  *    for a prefetch a demand merged into, the oldest op waiting on it); a data prefetch uses
- *    the load PC that triggered it, as the paper says; an instruction fetch or prefetch uses
- *    its line number (its address is line-aligned, and the signature hashes the PC's low
- *    bits). A prefetch a demand merged into counts as a demand, as ChampSim's MSHR merge
- *    makes it one.
+ *    the load PC that triggered it, as the paper says (a software prefetch, its own PC); an
+ *    instruction fetch or prefetch uses its line number (its address is line-aligned, and the
+ *    signature hashes the PC's low bits). A prefetch a demand merged into counts as a demand,
+ *    as ChampSim's MSHR merge makes it one.
  *  - Prefetches that hit at the level they were sent to are dropped by mem_pref_probe
  *    without touching replacement state, so they train nothing; ChampSim counts them as
  *    prefetch hits. --prefetch_update_lru_mlc/_l1 0 also stops prefetch hits from training.
@@ -396,7 +402,7 @@ static void mj_req_access(Cache* cache, Mem_Req* req, Mj_Access* acc) {
   else if (mj_req_is_inst(req->type))
     acc->pc = req->addr >> cache->shift_bits; /* line-aligned: the line number keeps the hashed bits */
   else if (acc->prefetch)
-    acc->pc = req->pref_loadPC;
+    acc->pc = req->pref_loadPC ? req->pref_loadPC : req->loadPC; /* a software prefetch has an op */
   else
     acc->pc = req->loadPC ? req->loadPC : req->oldest_op_addr ? req->oldest_op_addr : req->pref_loadPC;
 }
