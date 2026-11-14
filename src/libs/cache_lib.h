@@ -116,7 +116,8 @@ typedef struct Cache_Entry_struct {
                           expires; it is protected while this is nonzero */
   uns mlp_rrip_credit; /* RRIP with mlp_rrip_boost 2: aging steps the line still absorbs before its
                           RRPV rises; set to its boost at its fill and at every hit */
-  uns8 mlp_mark;       /* REPL_MLP (stats only): which rule marked the line at its fill, MLP_MARK_* */
+  uns8 mlp_mark;       /* stats only: which rule marked the line at its fill, MLP_MARK_* (the MLC
+                          marks under any policy; see mlp_stage_fill_boost) */
   Flag mlp_used;       /* stats only: a demand access hit the line since its fill (cache_mlp_demand_hit) */
 
   Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
@@ -259,9 +260,11 @@ uns8 cache_mlp_mark(Cache* cache, Addr addr);
 /* A demand access (load, store or instruction fetch) hit addr's line: note it used. Returns its
    mark, as cache_mlp_mark. */
 uns8 cache_mlp_demand_hit(Cache* cache, Addr addr);
-/* Whether addr's line is resident, marked, and past its protection: with mlp_boost_in_fills, its
-   boost or more fills into its set since its last touch; with mlp_boost_countdown, no ticks left.
-   A stack-position boost (neither) never lapses. Read it before the access renews the line. */
+/* Whether addr's line is resident, was boosted at its fill, and is past its protection: with
+   mlp_boost_in_fills, its boost or more fills into its set since its last touch; with
+   mlp_boost_countdown, no ticks left. A stack-position boost (neither) never lapses. A marked line
+   with no boost (the cache does not boost, or the side's lambda is 0) was never protected, so it
+   does not lapse either. Read it before the access renews the line. */
 Flag cache_mlp_lapsed(Cache* cache, Addr addr);
 /* Add to each count the cache's valid lines, data- and instruction-marked lines, and marked lines
    whose protection is still in effect (see MLP_OCC_INWINDOW in memory.stat.def). */

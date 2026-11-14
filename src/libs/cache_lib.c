@@ -2392,8 +2392,11 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
   return &cache->entries[set][*way];
 }
 
-/* REPL_MLP (stats only): whether a resident marked line is still protected. */
+/* REPL_MLP (stats only): whether a resident line is still protected. A line with no boost (unmarked,
+   or marked where the cache does not boost or the side's lambda is 0) never was. */
 static inline Flag mlp_protected(Cache* cache, uns set, Cache_Entry* entry) {
+  if (entry->mlp_boost <= 0.0)
+    return FALSE;
   if (mlp_countdown_on())
     return entry->mlp_ticks_left > 0;
   if (MLP_BOOST_IN_FILLS && cache->mlp_set_fills)
@@ -2436,7 +2439,7 @@ uns8 cache_mlp_demand_hit(Cache* cache, Addr addr) {
 Flag cache_mlp_lapsed(Cache* cache, Addr addr) {
   uns set;
   Cache_Entry* entry = mlp_find_line(cache, addr, &set);
-  return entry && entry->mlp_mark != MLP_MARK_NONE && !mlp_protected(cache, set, entry);
+  return entry && entry->mlp_boost > 0.0 && !mlp_protected(cache, set, entry);
 }
 
 void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow) {

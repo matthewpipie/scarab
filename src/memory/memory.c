@@ -63,6 +63,7 @@
 #include "icarus.h"
 #include "lacs.h"
 #include "mem_req.h"
+#include "mlp_oracle.h"
 #include "op.h"
 #include "statistics.h"
 // #include "dram.h"
@@ -145,9 +146,12 @@ static void mem_process_completed_reqs(void);
 static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data* data);
 static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit);
 static void mlp_count_mlc_evict(uns8 proc_id, Cache* cache);
-static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mark);
+static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, Flag iprf, uns8 mark);
 static void mlp_rd_access(Mem_Req* req, Flag hit);
+static void mlp_rd_ref_miss(Mem_Req* req, uns8 ref);
 static void mem_complete_mlc_access(Mem_Req* req);
+static Flag mlp_oracle_install(Mem_Req* req);
+static Flag mlp_oracle_pass_on(Mem_Req* req);
 static void mem_serve_from_wb(Mem_Req* req, Mshr* entering);
 static Flag mem_process_l1_miss_access(Mem_Req* req, Addr* line_addr, L1_Data* data);
 static void mem_complete_l1_access(Mem_Req* req);
@@ -1723,7 +1727,33 @@ static void mem_complete_mlc_access(Mem_Req* req) {
   if (data)
     icarus_mlc_hit(&MLC(req->proc_id)->cache, req);
 
-  if (data || PERFECT_MLC) { /* mlc hit */
+  /* mlp_oracle: decide once per request, as the lookup first sees it, whether this access is
+     forced to hit; a request that retries keeps the decision. With mlp_oracle_install, a forced
+     hit puts the line in the MLC first and is then served as the hit it now is; without, it is
+     served as a perfect_mlc hit. */
+  if (MLP_ORACLE && !fill_req_is_wb(req)) {
+    if (!req->mlp_oracle_looked) {
+      req->mlp_oracle_looked = TRUE;
+      uns8 ref;
+      req->mlp_oracle_force = mlp_oracle_lookup(&MLC(req->proc_id)->cache, req, data != NULL,
+                                                mshr_line(&mem->mlc_mshr, req->addr) != NULL, &ref);
+      mlp_rd_ref_miss(req, ref);
+    }
+    if (!data && req->mlp_oracle_force && MLP_ORACLE_INSTALL) {
+      if (!mlp_oracle_install(req)) {
+        STAT_EVENT(req->proc_id, MLP_ORACLE_INSTALL_RETRY);
+        return;
+      }
+      data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);
+      if (!data)
+        STAT_EVENT(req->proc_id, MLP_ORACLE_NOT_INSTALLED);
+    } else if (!data && req->mlp_oracle_force && !mlp_oracle_pass_on(req)) {
+      STAT_EVENT(req->proc_id, MLP_ORACLE_INSTALL_RETRY);
+      return;
+    }
+  }
+
+  if (data || PERFECT_MLC || req->mlp_oracle_force) { /* mlc hit */
     /* if exclusive cache, invalidate the line in L2 if there is a done function
      * to transfer the data to MLC -- also need to propagate the dirty to MLC */
     Flag mlc_hit_access = mem_process_mlc_hit_access(req, &line_addr, data, lru_position);
@@ -1734,8 +1764,8 @@ static void mem_complete_mlc_access(Mem_Req* req) {
           ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (PREF_I_TOGETHER && req->type == MRT_IFETCH) ||
            (PREF_TRAIN_ON_PREF_MISSES && req->type == MRT_DPRF))) {
         // Train the Data prefetcher
-        ASSERT(req->proc_id, PERFECT_MLC || data);
-        ASSERT(req->proc_id, PERFECT_MLC || req->proc_id == data->proc_id);
+        ASSERT(req->proc_id, PERFECT_MLC || req->mlp_oracle_force || data);
+        ASSERT(req->proc_id, !data || req->proc_id == data->proc_id);
         ASSERT(req->proc_id, req->proc_id == req->addr >> 58);
         pref_umlc_hit(req->proc_id, req->addr, req->loadPC, req->global_hist);
       }
@@ -2554,6 +2584,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->mlp_mlc_lapsed = FALSE;
   new_req->fe_stall_cycles = 0;
   new_req->fe_abandoned = FALSE;
+  new_req->mlp_oracle_looked = FALSE;
+  new_req->mlp_oracle_force = FALSE;
 
   if (op) {
     ASSERT(new_req->proc_id, new_req->proc_id == op->proc_id);
@@ -3063,63 +3095,81 @@ static void mem_fill_waiters(Mshr* file, Mem_Req* req, Mem_Req** reqs) {
   ASSERT(req->proc_id, reqs[0] == req);
 }
 
-/* REPL_MLP: the boost one request earns its fill, and the stat that counts it as marked. The data
-   side applies if any op merged into it (mlp_data_marked; a store-only request has no load
-   waiting and is never marked), else the instruction side if a demand fetch reached it
-   (mlp_instr_marked; mem_req_is_type, so a late instruction prefetch a demand fetch merged into
-   counts like a demand fetch). The data counts accrue on the request through op->req
-   (lsq_tag_inflight_loads, node_stage.c), so a load flushed before the fill keeps what it accrued. */
-static float mlp_req_boost(Mem_Req* req, Stat_Enum* marked_stat) {
-  if (req->op_count) {
-    *marked_stat = MLP_MARKED_LOAD;
-    return mlp_data_marked(req) ? MLP_LIN_DATA_LAMBDA : 0.0;
-  }
-  if (mem_req_is_type(req, MRT_IFETCH)) {
-    *marked_stat = MLP_MARKED_FETCH;
-    return mlp_instr_marked(req) ? MLP_LIN_INSTR_LAMBDA : 0.0;
-  }
-  return 0.0;
+/* REPL_MLP's marking of one request, by its own counts. MLP_MARK_DATA: an op merged into it and
+   mlp_data_marked says so (a store-only request has no load waiting and is never marked).
+   MLP_MARK_INSTR: no op did, a demand fetch reached it, and mlp_instr_marked says so
+   (mem_req_is_type, so a late instruction prefetch a demand fetch merged into counts like a demand
+   fetch). The data counts accrue on the request through op->req (lsq_tag_inflight_loads,
+   node_stage.c), so a load flushed before the fill keeps what it accrued. */
+static uns8 mlp_req_mark(Mem_Req* req) {
+  if (req->op_count)
+    return mlp_data_marked(req) ? MLP_MARK_DATA : MLP_MARK_NONE;
+  if (mem_req_is_type(req, MRT_IFETCH))
+    return mlp_instr_marked(req) ? MLP_MARK_INSTR : MLP_MARK_NONE;
+  return MLP_MARK_NONE;
 }
 
-/* REPL_MLP: classify the fill req is about to cause into `cache` (whose request file is `file`)
-   and stage its flat boost for the cache_insert[_replpos] call that follows. Each request waiting
-   on the fill is judged by its own counts (mlp_req_boost), and the fill takes the largest boost:
-   a demand that joined the line behind a prefetch marks it only if that demand's own loads
-   stalled the core long enough. Does nothing when `cache` runs neither REPL_MLP nor an RRIP
-   policy with mlp_rrip_boost.
+/* Whether `cache` boosts the lines the marking marks: REPL_MLP, or an RRIP policy with
+   mlp_rrip_boost. */
+static Flag mlp_boosts(Cache* cache) {
+  return cache->repl_policy == REPL_MLP || (MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy));
+}
 
-   Stats count the request the boost came from. MLP_MARKED_MERGE: more than one op (data) or type
-   (instruction) coalesced into it. MLP_MARKED_JOINED: it joined the line behind another. Returns,
-   and stages for the line, which rule marked the fill (MLP_MARK_*; stats only). */
-static uns8 mlp_stage_fill_boost(Cache* cache, Mshr* file, Mem_Req* req) {
-  if (cache->repl_policy != REPL_MLP && !(MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)))
-    return MLP_MARK_NONE;
-
+/* How the marking marks the fill req is about to cause into `cache` (whose request file is
+   `file`), whatever the cache's policy. Each request waiting on the fill is judged by its own
+   counts (mlp_req_mark): a demand that joined the line behind a prefetch marks it only if that
+   demand's own loads stalled the core long enough. The fill takes the waiter whose mark earns the
+   largest boost, a marked waiter over an unmarked one when the boosts tie (as they do at 0 when
+   `cache` does not boost), and the earliest otherwise. *boost gets that boost (0 unless `cache`
+   boosts), *by the request it came from. REPL_MLP stages the mark and boost; mlp_oracle records the
+   mark. */
+static uns8 mlp_fill_mark(Cache* cache, Mshr* file, Mem_Req* req, float* boost, Mem_Req** by) {
+  Flag boosts = mlp_boosts(cache);
   uns n = mem_fill_waiter_count(file, req);
   Mem_Req* reqs[n];
   mem_fill_waiters(file, req, reqs);
-  Stat_Enum marked_stat = 0;
-  float boost = mlp_req_boost(req, &marked_stat);
-  Mem_Req* by = req;
-  for (uns i = 1; i < n; i++) {
-    Stat_Enum stat = 0;
-    float b = mlp_req_boost(reqs[i], &stat);
-    if (b > boost) {
-      boost = b;
-      by = reqs[i];
-      marked_stat = stat;
+  uns8 mark = MLP_MARK_NONE;
+  *boost = 0.0;
+  *by = req;
+  for (uns i = 0; i < n; i++) {
+    uns8 m = mlp_req_mark(reqs[i]);
+    float b = !boosts || m == MLP_MARK_NONE ? 0.0 : m == MLP_MARK_DATA ? MLP_LIN_DATA_LAMBDA : MLP_LIN_INSTR_LAMBDA;
+    if (b > *boost || (b == *boost && mark == MLP_MARK_NONE && m != MLP_MARK_NONE)) {
+      mark = m;
+      *boost = b;
+      *by = reqs[i];
     }
   }
-  uns8 mark = MLP_MARK_NONE;
-  if (boost > 0.0) {
-    STAT_EVENT(by->proc_id, marked_stat);
-    if (marked_stat == MLP_MARKED_LOAD ? by->op_count > 1 : popcount32(by->types) > 1)
+  return mark;
+}
+
+/* Mark the fill req is about to cause into `cache` (whose request file is `file`; mlp_fill_mark),
+   and stage the mark and, if `cache` boosts, the boost for the cache_insert[_replpos] call that
+   follows. The MLC marks every fill whatever its policy, so the marking's stats (MLP_MARKED_*,
+   MLP_RD*, MLP_MLC_HIT_*MARK_*, MLP_EVICT_*) mean the same under LRU; another level marks only
+   when it boosts.
+
+   Stats count the request the mark came from. MLP_MARKED_MERGE: more than one op (data) or type
+   (instruction) coalesced into it. MLP_MARKED_JOINED: it joined the line behind another. Returns
+   the mark (MLP_MARK_*; stats only). */
+static uns8 mlp_stage_fill_boost(Cache* cache, Mshr* file, Mem_Req* req) {
+  Flag boosts = mlp_boosts(cache);
+  if (!boosts && cache != &MLC(req->proc_id)->cache)
+    return MLP_MARK_NONE;
+
+  float boost;
+  Mem_Req* by;
+  uns8 mark = mlp_fill_mark(cache, file, req, &boost, &by);
+  if (mark != MLP_MARK_NONE) {
+    Flag data = mark == MLP_MARK_DATA;
+    STAT_EVENT(by->proc_id, data ? MLP_MARKED_LOAD : MLP_MARKED_FETCH);
+    if (data ? by->op_count > 1 : popcount32(by->types) > 1)
       STAT_EVENT(by->proc_id, MLP_MARKED_MERGE);
     if (by != req)
       STAT_EVENT(by->proc_id, MLP_MARKED_JOINED);
-    mark = marked_stat == MLP_MARKED_LOAD ? MLP_MARK_DATA : MLP_MARK_INSTR;
   }
-  cache_set_next_fill_mlp_boost(boost);
+  if (boosts)
+    cache_set_next_fill_mlp_boost(boost);
   cache_set_next_fill_mlp_mark(mark);
   return mark;
 }
@@ -3146,7 +3196,7 @@ static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit) {
       kind = 3; /* a prefetch */
   }
   STAT_EVENT(req->proc_id, MLP_MLC_ACC_LOAD + kind);
-  if (kind <= 2)
+  if (kind <= 2 || (kind == 3 && MLP_RD_IPRF_REUSE && mlp_req_side(req) == MLP_SIDE_INSTR))
     mlp_rd_access(req, hit);
   if (!hit)
     return;
@@ -3179,34 +3229,57 @@ static void mlp_count_mlc_evict(uns8 proc_id, Cache* cache) {
 
 /* MLP_RD1_* / MLP_RDN_* (stats only): MLC reuse distances per line address, in fills into the line's
    set. A line's history starts at its first MLC fill in the run. Each later demand lookup of the
-   line at the MLC (load, store or instruction fetch; a hit, or a miss if it was evicted) is a reuse.
-   RD1: the line's first reuse, from that first fill; RDN: every reuse after it, from the reuse
-   before it, whether or not the line was evicted and refilled in between. The first fill also fixes
-   the line's kind (MLP_RD_*): every reuse is counted under it, and refills don't change it. A 16-way
-   LRU set keeps an untouched line for 16 fills (fewer if hits reorder the set; more under REPL_MLP's
-   boost, or if a prefetch or writeback renews the line between demand lookups). */
+   line at the MLC (load, store or instruction fetch; a hit, or a miss if it was evicted) is a reuse,
+   and with mlp_rd_iprf_reuse so is an instruction prefetch's. RD1: the line's first reuse, from
+   that first fill; RDN: every reuse after it, from the reuse before it, whether or not the line was
+   evicted and refilled in between. The first fill also sets the line's kind (MLP_RD_*), and every
+   reuse is counted under the kind the line has then: refills don't change it, except that with
+   mlp_rd_sticky a marked refill moves an unmarked line to its marked kind for good. A 16-way LRU set
+   keeps an untouched line for 16 fills (fewer if hits reorder the set; more under REPL_MLP's boost,
+   or if a lookup that is not a reuse renews the line in between). */
 #define MLP_RD_DMARK 0   /* a load waited; marked data-bound */
 #define MLP_RD_DNOMARK 1 /* a load waited; not marked */
 #define MLP_RD_IMARK 2   /* a demand fetch waited (no load); marked instruction-bound */
 #define MLP_RD_INOMARK 3 /* a demand fetch waited (no load); not marked */
-#define MLP_RD_OTHER 4   /* neither waited: a prefetch, a store, a writeback */
+#define MLP_RD_OTHER 4   /* none of the others: a data prefetch, a store, a writeback */
+#define MLP_RD_IPRF 5    /* no demand waited, and an instruction prefetch (FDIP, ...) asked for it */
+#define MLP_RD_MARKED(kind) ((kind) == MLP_RD_DMARK || (kind) == MLP_RD_IMARK)
 typedef struct {
   Counter stamp; /* the set's fill count at the line's last touch (its first fill or a reuse) */
-  uns8 kind;     /* MLP_RD_*, from the line's first fill */
+  uns8 kind;     /* MLP_RD_* */
   Flag reused;   /* reused since its first fill: the next reuse goes to RDN */
 } Mlp_Rd_Entry;
 static Hash_Table* mlp_rd = NULL;         /* per core: every line filled so far, by line address */
 static Counter** mlp_rd_set_fills = NULL; /* per core, per MLC set: fills so far */
 
-/* Every MLC insert: tick its set's clock, and start the line's history at its first fill. */
-static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mark) {
+/* MLP_RDNEXT_* (stats only): the gap from one demand lookup of a marked line to the next, for each
+   class: data-marked lines, instruction-marked lines, and either (MLP_RDNEXT_*MARK_* in that order). */
+#define MLP_RDNEXT_CLASSES 3
+typedef struct {
+  Counter lookups;                         /* MLC demand lookups since the first MLC fill */
+  Counter last_lookup[MLP_RDNEXT_CLASSES]; /* `lookups` at the class's previous one; 0: none yet */
+  Counter* last_fills[MLP_RDNEXT_CLASSES]; /* per MLC set: its fills at the class's previous one in
+                                              the set; MAX_CTR: none yet */
+} Mlp_Rd_Next;
+static Mlp_Rd_Next* mlp_rd_next = NULL; /* per core */
+
+/* Every MLC insert: tick its set's clock, and start the line's history at its first fill. load,
+   ifetch: a load / a demand fetch waited on the fill; iprf: the request is an instruction prefetch. */
+static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, Flag iprf, uns8 mark) {
   Cache* cache = &MLC(proc_id)->cache;
   if (!mlp_rd) {
     mlp_rd = (Hash_Table*)calloc(NUM_CORES, sizeof(Hash_Table));
     mlp_rd_set_fills = (Counter**)calloc(NUM_CORES, sizeof(Counter*));
+    mlp_rd_next = (Mlp_Rd_Next*)calloc(NUM_CORES, sizeof(Mlp_Rd_Next));
     for (uns ii = 0; ii < NUM_CORES; ii++) {
+      uns sets = MLC(ii)->cache.num_sets;
       init_hash_table(&mlp_rd[ii], "mlp_rd", 1 << 20, sizeof(Mlp_Rd_Entry));
-      mlp_rd_set_fills[ii] = (Counter*)calloc(MLC(ii)->cache.num_sets, sizeof(Counter));
+      mlp_rd_set_fills[ii] = (Counter*)calloc(sets, sizeof(Counter));
+      for (uns cls = 0; cls < MLP_RDNEXT_CLASSES; cls++) {
+        mlp_rd_next[ii].last_fills[cls] = (Counter*)malloc(sets * sizeof(Counter));
+        for (uns set = 0; set < sets; set++)
+          mlp_rd_next[ii].last_fills[cls][set] = MAX_CTR;
+      }
     }
   }
   Counter now = ++mlp_rd_set_fills[proc_id][cache_set_index(cache, addr)];
@@ -3214,31 +3287,78 @@ static void mlp_rd_fill(uns proc_id, Addr addr, Flag load, Flag ifetch, uns8 mar
               : mark == MLP_MARK_INSTR ? MLP_RD_IMARK
               : load                   ? MLP_RD_DNOMARK
               : ifetch                 ? MLP_RD_INOMARK
+              : iprf                   ? MLP_RD_IPRF
                                        : MLP_RD_OTHER;
   Flag new_entry;
   Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access_create(&mlp_rd[proc_id], addr >> LOG2(MLC_LINE_SIZE), &new_entry);
-  if (!new_entry)
-    return;
-  e->kind = kind;
-  e->stamp = now;
-  e->reused = FALSE;
-  STAT_EVENT(proc_id, MLP_RD1_DMARK_FILLS + kind);
+  if (new_entry) {
+    e->kind = kind;
+    e->stamp = now;
+    e->reused = FALSE;
+    STAT_EVENT(proc_id, MLP_RD1_DMARK_FILLS + kind);
+  } else if (MLP_RD_STICKY && MLP_RD_MARKED(kind) && !MLP_RD_MARKED(e->kind)) {
+    e->kind = kind; /* marked from now on */
+  }
 }
 
-/* A demand lookup of req's line at the MLC: a reuse of the line, if it has been filled before. */
+/* MLP_RDNEXT_*: a demand lookup of a marked line of class cls in MLC set `set`, whose fill count is
+   `fills`: the gaps from the class's previous one on the core, in lookups, and in the set, in fills. */
+static void mlp_rd_next_gap(uns proc_id, uns cls, uns set, Counter fills) {
+  Mlp_Rd_Next* next = &mlp_rd_next[proc_id];
+  Stat_Enum base = MLP_RDNEXT_DMARK_LOOKUPS_LOG2_0 + 32 * cls;
+  if (next->last_lookup[cls])
+    mlp_stat_log2(proc_id, base, next->lookups - next->last_lookup[cls]);
+  next->last_lookup[cls] = next->lookups;
+  if (next->last_fills[cls][set] != MAX_CTR)
+    mlp_stat_log2(proc_id, base + 16, fills - next->last_fills[cls][set]);
+  next->last_fills[cls][set] = fills;
+}
+
+/* A demand lookup of req's line at the MLC (or with mlp_rd_iprf_reuse, an instruction prefetch's):
+   a reuse of the line, if it has been filled before, and for a line marked at its first fill (with
+   mlp_rd_sticky, at any), the next lookup of a marked line (MLP_RDNEXT_*). */
 static void mlp_rd_access(Mem_Req* req, Flag hit) {
   if (!mlp_rd)
     return;
+  mlp_rd_next[req->proc_id].lookups++;
   Addr key = req->addr >> LOG2(MLC_LINE_SIZE);
   Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access(&mlp_rd[req->proc_id], key);
   if (!e)
     return;
-  Counter now = mlp_rd_set_fills[req->proc_id][cache_set_index(&MLC(req->proc_id)->cache, req->addr)];
+  uns set = cache_set_index(&MLC(req->proc_id)->cache, req->addr);
+  Counter now = mlp_rd_set_fills[req->proc_id][set];
   mlp_stat_log2(req->proc_id, (e->reused ? MLP_RDN_DMARK_LOG2_0 : MLP_RD1_DMARK_LOG2_0) + 16 * e->kind, now - e->stamp);
   if (hit)
     STAT_EVENT(req->proc_id, (e->reused ? MLP_RDN_DMARK_HIT : MLP_RD1_DMARK_HIT) + e->kind);
   e->stamp = now;
   e->reused = TRUE;
+  if (e->kind == MLP_RD_DMARK || e->kind == MLP_RD_IMARK) {
+    mlp_rd_next_gap(req->proc_id, e->kind == MLP_RD_DMARK ? 0 : 1, set, now);
+    mlp_rd_next_gap(req->proc_id, 2, set, now);
+  }
+}
+
+/* MLP_RDMISS_* (stats only): an MLC miss that mlp_oracle lined up with a reference miss (ref, as
+   mlp_oracle_lookup reports it) after the line's first: its distance from the line's last touch as
+   MLP_RD* stamps it (its first fill, or its latest reuse), before this lookup counts. Filed per side
+   under ALL, and under MARK / CTRL if the reference miss was marked / in mode 3's draw (it can be
+   both). A run that forces nothing (mlp_oracle 1) and replays a run of its own configuration sees
+   the reference's own misses, so these are the distances of the misses mode 2 and mode 3 force. */
+static void mlp_rd_ref_miss(Mem_Req* req, uns8 ref) {
+  if (!mlp_rd || !(ref & MLP_ORACLE_REF_MATCHED) || (ref & MLP_ORACLE_REF_COLD))
+    return;
+  Mlp_Rd_Entry* e = (Mlp_Rd_Entry*)hash_table_access(&mlp_rd[req->proc_id], req->addr >> LOG2(MLC_LINE_SIZE));
+  if (!e) {
+    STAT_EVENT(req->proc_id, MLP_RDMISS_NO_LINE);
+    return;
+  }
+  Counter dist = mlp_rd_set_fills[req->proc_id][cache_set_index(&MLC(req->proc_id)->cache, req->addr)] - e->stamp;
+  Stat_Enum base = MLP_RDMISS_DALL_LOG2_0 + (mlp_req_side(req) == MLP_SIDE_INSTR ? 48 : 0);
+  mlp_stat_log2(req->proc_id, base, dist);
+  if (ref & MLP_ORACLE_REF_MARKED)
+    mlp_stat_log2(req->proc_id, base + 16, dist);
+  if (ref & MLP_ORACLE_REF_CTRL)
+    mlp_stat_log2(req->proc_id, base + 32, dist);
 }
 
 /* MLP_LINES_* (stats only): per core, every line seen over the measured region, with these flags. */
@@ -3646,6 +3766,14 @@ static inline void mlc_miss_is_satisfied(Mem_Req* req) {
 Flag mlc_fill_line(Mem_Req* req) {
   /* REPL_LACS: the miss has returned to the MLC; train before any skip below. */
   lacs_miss_return(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
+  /* mlp_oracle: the same, for the marking, here because an exclusive MLC skips the insert below. A
+     forced hit's install never missed and is skipped. */
+  if (MLP_ORACLE && req->mlc_miss && !fill_req_is_wb(req)) {
+    float boost;
+    Mem_Req* by;
+    Cache* mlc = &MLC(req->proc_id)->cache;
+    mlp_oracle_miss_return(mlc, req, mlp_fill_mark(mlc, &mem->mlc_mshr, req, &boost, &by));
+  }
   /* Exclusive MLC: only the destination level keeps the line; a core-destined fill
      passes through the MLC without inserting. */
   if (!fill_inserts_at_mlc(req)) {
@@ -3848,6 +3976,8 @@ Flag mlc_fill_line(Mem_Req* req) {
   }
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);
+  if (MLP_ORACLE)
+    mlp_oracle_insert(&MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3869,7 +3999,7 @@ Flag mlc_fill_line(Mem_Req* req) {
     data = (MLC_Data*)cache_insert(&MLC(req->proc_id)->cache, req->proc_id, req->addr, &line_addr, &repl_line_addr);
   }
   mlp_count_mlc_evict(req->proc_id, &MLC(req->proc_id)->cache);
-  mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, fill_mark);
+  mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, mlp_req_side(req) == MLP_SIDE_INSTR, fill_mark);
   /* this will make it bring the line into the mlc and then modify it */
   data->proc_id = req->proc_id;
 
@@ -3946,6 +4076,53 @@ Flag mlc_fill_line(Mem_Req* req) {
   mlc_miss_is_satisfied(req);
 
   return SUCCESS;
+}
+
+/* mlp_oracle: put req's line in the MLC now, as the fill of its miss would have, so a forced hit
+   leaves the hierarchy about as the miss would and only the latency is gone. An exclusive LLC
+   gives its copy up, as a hit there would; a non-exclusive one is touched, or filled if it does
+   not have the line. Then mlc_fill_line inserts it, victim writeback and all, and its latency stats
+   read 0. Returns FALSE if a write port or writeback slot was busy; every step is safe to repeat,
+   so the lookup tries again next cycle. */
+static Flag mlp_oracle_install(Mem_Req* req) {
+  Cache* llc = &L1(req->proc_id)->cache;
+  Addr llc_line_addr;
+  L1_Data* below = (L1_Data*)cache_access(llc, req->addr, &llc_line_addr, !mem_exclusive_l1());
+  if (below) {
+    if (req->destination < DEST_L1)
+      mem_invalidate_on_promote(req, llc, mem_exclusive_l1(), below->dirty, MLP_ORACLE_LLC_INVAL);
+  } else if (!mem_exclusive_l1() && fill_inserts_at_l1(req)) {
+    req->l1_miss_cycle = cycle_count;
+    if (!l1_fill_line(req))
+      return FALSE;
+    STAT_EVENT(req->proc_id, MLP_ORACLE_LLC_FILL);
+  }
+  req->mlc_miss_cycle = cycle_count;
+  return mlc_fill_line(req);
+}
+
+/* mlp_oracle_install 0: the MLC leaves req's line out, so a forced hit takes no MLC space, and the
+   line goes where the MLC would pass it on. An LLC that has it is touched; a non-exclusive one
+   without it is filled, and an exclusive one gets it as it gets a clean MLC victim. Returns FALSE
+   if a write port or writeback slot was busy; every step is safe to repeat, so the lookup tries
+   again next cycle. */
+static Flag mlp_oracle_pass_on(Mem_Req* req) {
+  Addr llc_line_addr;
+  if (cache_access(&L1(req->proc_id)->cache, req->addr, &llc_line_addr, TRUE))
+    return TRUE;
+  if (mem_exclusive_l1()) {
+    Addr line_addr = req->addr & ~(Addr)(MLC_LINE_SIZE - 1);
+    if (mshr_line(&mem->mlc_wb, line_addr))
+      return TRUE; /* already on its way down */
+    if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count))
+      return FALSE;
+  } else if (fill_inserts_at_l1(req)) {
+    req->l1_miss_cycle = cycle_count;
+    if (!l1_fill_line(req))
+      return FALSE;
+  }
+  STAT_EVENT(req->proc_id, MLP_ORACLE_LLC_FILL);
+  return TRUE;
 }
 
 /**************************************************************************************/

@@ -340,6 +340,100 @@ DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Fl
         levels lower.
    A boost of 0 is plain RRIP in every mode. See rrip_update_evict in libs/cache_lib.c. */
 DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
+/* mlp_oracle: upper bounds for replacement that uses REPL_MLP's marking, and a random control for
+   them, at the MLC. Simulator-only: the marking reads only what the core sees, but no hardware can
+   force a hit. Run it on LRU (mlc_cache_repl_policy 0) and compare IPC with plain LRU. The marking
+   does not need REPL_MLP to be on.
+
+   A miss here is an MLC lookup that misses on a line with no miss to it already outstanding (one
+   that finds the line on its way waits for it as usual, in every mode); writebacks are left out.
+   Modes 2 and 3 take criticality per miss, not per line: a miss is critical if the marking marks it
+   when it comes back, by the same rules REPL_MLP boosts by (mlp_data_bound, mlp_data_bound_min and
+   mlp_lin_data_thresh on the data side, mlp_instr_mark and mlp_instr_starve on the instruction
+   side), each request waiting on the fill judged by its own counts. Since that is only known once
+   the latency is paid, they replay a reference run (mlp_oracle_ref) that recorded every miss and
+   its mark (mlp_oracle_record), and force the misses of this run that line up with chosen misses of
+   that one: a miss lines up with the reference's next unclaimed miss to the same line whose
+   retired-instruction count at the lookup is within mlp_oracle_ref_slack of its own. A miss that
+   lines up with none is a real miss.
+     0  off.
+     1  track only: forces nothing. With mlp_oracle_record, writes a reference. With
+        mlp_oracle_ref, lines its misses up with the reference's: replaying a run of the same
+        configuration, every miss lines up, at an offset of 0, and MLP_RDMISS_* are the reuse
+        distances of the misses modes 2 and 3 would force (with mode 3's draw settings, among
+        them mlp_oracle_reuse_only). (Reuse distances of marked and unmarked lines are in MLP_RD*
+        and MLP_RDNEXT_*, kept under every policy; a reference for the bounds sets mlp_rd_sticky.)
+     2  critical: every miss that lines up with a marked miss of the reference hits (with
+        mlp_oracle_reuse_only, a marked miss after the line's first).
+     3  random control: as 2, for a random sample of the reference's misses instead, drawn per side
+        with no filter (a marked miss can be drawn), as many as the reference has marked on that
+        side. mlp_oracle_ctrl_lines also matches the number of lines they fall on.
+        mlp_oracle_reuse_only leaves cold misses out of the draw and the count.
+     4  ceiling: every miss to a line that has missed before hits. Needs no reference.
+   Only misses on the sides mlp_oracle_side names are forced. */
+DEF_PARAM(mlp_oracle, MLP_ORACLE, uns, uns, 0, )
+/* mlp_oracle_side: which lines mlp_oracle covers: 1 instruction (fetches and instruction
+   prefetches, marked by mlp_instr_mark and mlp_instr_starve), 2 data (loads, stores, data
+   prefetches and writebacks, marked by mlp_data_bound, as REPL_MLP's mlp_lin_data_lambda boost
+   is), 3 both. Its stats are kept per side. */
+DEF_PARAM(mlp_oracle_side, MLP_ORACLE_SIDE, uns, uns, 1, )
+/* mlp_oracle_record: mlp_oracle 1 only. Write every miss on either side, with the retired
+   instructions at its lookup and whether the marking marked it as it came back, to
+   mlp_oracle_misses.<core>.bin in output_dir, the reference modes 2 and 3 replay. A miss still out
+   at the end of the run is left out. */
+DEF_PARAM(mlp_oracle_record, MLP_ORACLE_RECORD, Flag, Flag, FALSE, )
+/* mlp_oracle_ref: the reference run mlp_oracle 1 to 3 replay, recorded with mlp_oracle_record.
+   Either the directory it ran in (a path starting with / or .), or the configuration it ran as,
+   for scarab-infra's <experiment>/<config>/<workload...>/<simpoint> layout: <config> for one in the
+   same experiment, <experiment>/<config> for one in another. This run's output_dir with that many
+   components swapped for these, wherever that names a recorded run, is the reference. */
+DEF_PARAM(mlp_oracle_ref, MLP_ORACLE_REF, char*, string, NULL, )
+/* mlp_oracle_ref_slack: how far apart, in retired instructions at the lookup, a miss and a
+   reference miss to the same line can be and still line up. MLP_ORACLE_REF_OFFSET_* is the
+   histogram of how far apart the ones that line up are. */
+DEF_PARAM(mlp_oracle_ref_slack, MLP_ORACLE_REF_SLACK, uns, uns, 4096, )
+/* mlp_oracle_install: what a forced hit does to the caches.
+     1  puts the line in the MLC at once, as the miss's fill would have: an exclusive LLC gives
+        its copy up, a non-exclusive one is touched or filled, and the MLC inserts it with
+        mlc_fill_line, victim and all. The caches hold about what LRU would, and only the miss
+        latency is gone.
+     0  leaves the MLC alone, as perfect_mlc does: a forced line takes no MLC space, which goes
+        to other lines. The line goes where the MLC would pass it on: an LLC that has it is
+        touched, a non-exclusive one without it is filled, and an exclusive one gets it as it gets
+        a clean MLC victim. In modes 2 and 3, the line's later misses that line up with no
+        reference miss, which hit in the reference, hit too, up to its next miss that lines up
+        with one. */
+DEF_PARAM(mlp_oracle_install, MLP_ORACLE_INSTALL, Flag, Flag, TRUE, )
+/* mlp_oracle_ctrl_lines: mode 3 draws the control's misses from as many lines as the reference's
+   marked misses fall on, per side, so the two match in lines as well as in misses. It takes lines
+   one at a time, each the one of mlp_oracle_ctrl_choices drawn at random (from the side's lines
+   with a reference miss) whose misses bring the running total closest to its share of the marked
+   misses. Each line keeps one of its misses at random, and a random subset of the rest fills the
+   control up to the marked count, so lines match exactly and misses do too unless the drawn lines
+   come up short. Off, it draws the misses at random from all the side's reference misses, and
+   only their number matches.
+   MLP_ORACLE_*_REF_{MARKED,CTRL}{,_LINES} show how close they came. */
+DEF_PARAM(mlp_oracle_ctrl_lines, MLP_ORACLE_CTRL_LINES, Flag, Flag, TRUE, )
+DEF_PARAM(mlp_oracle_ctrl_choices, MLP_ORACLE_CTRL_CHOICES, uns, uns, 8, )
+/* mlp_oracle_seed: seeds mode 3's random draw of the control. Runs that differ only in it draw
+   independent controls of the same size, which shows how much the control's gain depends on the
+   draw. 0 keeps the draws of runs from before it existed. */
+DEF_PARAM(mlp_oracle_seed, MLP_ORACLE_SEED, uns, uns, 0, )
+/* mlp_oracle_reuse_only: modes 2 and 3 leave the reference's cold misses alone (each line's first
+   miss: the MLC starts empty, so no replacement policy can make it hit). Mode 2 forces only the
+   marked misses after a line's first, and mode 3 draws only from those, matching their count, so
+   both bound what replacement can do, as mode 4 does. Off, cold misses are forced like any other. */
+DEF_PARAM(mlp_oracle_reuse_only, MLP_ORACLE_REUSE_ONLY, Flag, Flag, FALSE, )
+/* MLC reuse distances (MLP_RD1_* / MLP_RDN_*, see mlp_rd_fill in memory.c): stats only, so none of
+   these change timing.
+   mlp_rd_sticky: how a line's kind is kept. 0: its first fill's, for the whole run, so lines that
+   came in marked and lines that came in unmarked stay apart. 1: a line moves to its side's marked
+   kind (DMARK, IMARK) at its first marked fill and stays there, so a line counts as marked once any
+   of its fills was marked, as mlp_oracle's bounds take it. */
+DEF_PARAM(mlp_rd_sticky, MLP_RD_STICKY, Flag, Flag, FALSE, )
+/* mlp_rd_iprf_reuse: also count MLC lookups by instruction prefetches (FDIP and the other
+   instruction prefetchers) as reuses, as loads, stores and instruction fetches always are. */
+DEF_PARAM(mlp_rd_iprf_reuse, MLP_RD_IPRF_REUSE, Flag, Flag, FALSE, )
 
 /* FDIP Confidence Cache */
 // The cache line size is fixed to ICACHE_LINE_SIZE (64 by default). The number of entries in a FDIP UC is FDIP_UC_SIZE / ICACHE_LINE_SIZE. To have 16K (16384) entries, FDIP_UC_SIZE should be 1048576.
