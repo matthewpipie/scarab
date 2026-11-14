@@ -61,16 +61,19 @@ typedef enum Repl_Policy_enum {
   REPL_RESTEER,               /* Prioritize the instr following a resteered branch or fetch barrier */
   REPL_STICKY_PRIORITY_LINES, /* Prioritize lines tagged with priority bit. */
 
-  REPL_VOID,    /* void policy for loop ending and policy seperation */
-  REPL_LRU_REF, /* least-recently-used replacement */
-  REPL_NRU,     /* not recently used replacement */
-  REPL_SRRIP,   /* static re-reference interval prediction */
-  REPL_BRRIP,   /* bimodal re-reference interval prediction */
-  REPL_DRRIP,   /* dynamic re-reference interval prediction */
-  REPL_SHIP,    /* signature-based hit predictor */
-  REPL_LACS,    /* locality-aware cost-sensitive replacement (Kharbutli & Sheikh, IEEE TC 2014) */
-  REPL_ICARUS,  /* branch-history-contextualized criticality + reuse binning
-                   (Kalbande et al., ASPLOS 2026) */
+  REPL_VOID,           /* void policy for loop ending and policy seperation */
+  REPL_LRU_REF,        /* least-recently-used replacement */
+  REPL_NRU,            /* not recently used replacement */
+  REPL_SRRIP,          /* static re-reference interval prediction */
+  REPL_BRRIP,          /* bimodal re-reference interval prediction */
+  REPL_DRRIP,          /* dynamic re-reference interval prediction */
+  REPL_SHIP,           /* signature-based hit predictor */
+  REPL_LACS,           /* locality-aware cost-sensitive replacement (Kharbutli & Sheikh, IEEE TC 2014) */
+  REPL_ICARUS,         /* branch-history-contextualized criticality + reuse binning
+                          (Kalbande et al., ASPLOS 2026) */
+  REPL_INST_PARTITION, /* fixed instruction/data way partition at the MLC -- see
+                          --mlc_inst_part_ways and the REPL_INST_PARTITION section of
+                          libs/cache_lib.c */
 
   NUM_REPL
 } Repl_Policy;
@@ -114,14 +117,14 @@ typedef struct Cache_Entry_struct {
   uns8 reference_val; /* for re-reference replacement policy */
   Flag outcome;       /* for replacement policy */
 
-  float mlp_boost; /* RRIP with mlp_rrip_boost: eviction-priority boost staged at fill (see
-                       cache_set_next_fill_mlp_boost). Not used by REPL_MLP itself -- see mlp_mark. */
-  uns8 mlp_mark; /* REPL_MLP: MLP_MARK_NONE/DATA/INSTR, the classification of the fill that caused
-                     this line, set once at fill (cache_set_next_fill_mlp_mark). The numeric boost
-                     for this mark is looked up fresh from the set's current state every time it's
-                     needed via mlp_current_boost, not stored here. */
-  Counter mlp_stamp; /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
-                        recency update (fill or hit) */
+  float mlp_boost;     /* RRIP with mlp_rrip_boost: eviction-priority boost staged at fill (see
+                           cache_set_next_fill_mlp_boost). Not used by REPL_MLP itself -- see mlp_mark. */
+  uns8 mlp_mark;       /* REPL_MLP: MLP_MARK_NONE/DATA/INSTR, the classification of the fill that caused
+                           this line, set once at fill (cache_set_next_fill_mlp_mark). The numeric boost
+                           for this mark is looked up fresh from the set's current state every time it's
+                           needed via mlp_current_boost, not stored here. */
+  Counter mlp_stamp;   /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
+                          recency update (fill or hit) */
   uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown: set ticks until the line's protection
                           expires; it is protected while this is nonzero */
   uns mlp_rrip_credit; /* RRIP with mlp_rrip_boost 2: aging steps the line still absorbs before its
@@ -131,6 +134,12 @@ typedef struct Cache_Entry_struct {
   Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
                             time; always FALSE for data lines */
   Flag icarus_reused;   /* REPL_ICARUS: hit at least once since it was filled */
+
+  Flag part_is_inst; /* REPL_INST_PARTITION: TRUE if this line was filled by an instruction-side
+                         request (mem_req_type_is_inst: a demand fetch or an FDIP prefetch), set
+                         once at fill via cache_set_inst_part_next_insert. Determines which of
+                         the set's two way-quotas (--mlc_inst_part_ways instruction ways, the
+                         rest data) this line counts against. */
 } Cache_Entry;
 
 // DO NOT CHANGE THIS ORDER
@@ -293,6 +302,13 @@ void cache_set_icarus_next_insert(Flag valid, Flag critical);
 /* REPL_ICARUS: set the critical bit of the resident line holding `addr` (the CIT's
    criticality signal on a hit). Leaves LRU state alone. Returns TRUE if newly set. */
 Flag cache_icarus_mark_critical(Cache* cache, Addr addr);
+
+/* REPL_INST_PARTITION: stage whether the NEXT cache_insert[_replpos] call's fill is on the
+   instruction side (mem_req_type_is_inst(req->type)) or the data side. Call right before a
+   fill-time cache_insert on a cache running REPL_INST_PARTITION. Consumed and reset by
+   inst_part_update_insert; also read (without being consumed) by inst_part_update_evict to
+   break ties when both quotas are exactly met (see cache_lib.c). */
+void cache_set_inst_part_next_insert(Flag is_inst);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);

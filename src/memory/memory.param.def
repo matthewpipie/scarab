@@ -190,6 +190,13 @@ DEF_PARAM(icarus_costly_fetch, ICARUS_COSTLY_FETCH, uns, uns, 0, )
 DEF_PARAM(icarus_costly_cycles, ICARUS_COSTLY_CYCLES, uns, uns, 40, )
 DEF_PARAM(icarus_costly_trigger_pct, ICARUS_COSTLY_TRIGGER_PCT, uns, uns, 8, )
 
+/* REPL_INST_PARTITION at the MLC only: a fixed way partition between instruction lines
+   (demand fetches and FDIP prefetches) and data lines. This many ways per set are reserved
+   for instruction lines; the rest (--mlc_assoc minus this) are data's. inst_part_action_init
+   asserts this is <= --mlc_assoc. See the REPL_INST_PARTITION section of libs/cache_lib.c for
+   the full algorithm, including how the partition is (not) enforced before a set fills. */
+DEF_PARAM(mlc_inst_part_ways, MLC_INST_PART_WAYS, uns, uns, 0, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be
