@@ -62,6 +62,7 @@ void reset_map_stage(void);
 void recover_map_stage(void);
 void debug_map_stage(void);
 void update_map_stage(Stage_Data*);
+Flag mlp_branch_in_scope(Op* op);
 
 /**************************************************************************************/
 
