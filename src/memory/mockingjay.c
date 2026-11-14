@@ -63,8 +63,9 @@
  *  - The PC. A data demand uses the PC of the load or store that allocated the request (or,
  *    for a prefetch a demand merged into, the oldest op waiting on it); a data prefetch uses
  *    the load PC that triggered it, as the paper says; an instruction fetch or prefetch uses
- *    the line address. A prefetch a demand merged into counts as a demand, as ChampSim's
- *    MSHR merge makes it one.
+ *    its line number (its address is line-aligned, and the signature hashes the PC's low
+ *    bits). A prefetch a demand merged into counts as a demand, as ChampSim's MSHR merge
+ *    makes it one.
  *  - Prefetches that hit at the level they were sent to are dropped by mem_pref_probe
  *    without touching replacement state, so they train nothing; ChampSim counts them as
  *    prefetch hits. --prefetch_update_lru_mlc/_l1 0 also stops prefetch hits from training.
@@ -384,7 +385,7 @@ static inline Flag mj_req_is_inst(Mem_Req_Type type) {
 }
 
 /* The access a request makes, as the artifact's (type, ip) would describe it */
-static void mj_req_access(Mem_Req* req, Mj_Access* acc) {
+static void mj_req_access(Cache* cache, Mem_Req* req, Mj_Access* acc) {
   acc->addr = req->addr;
   acc->writeback = req->type == MRT_WB || req->type == MRT_WB_NODIRTY;
   /* A prefetch a demand merged into is the demand's now, as in ChampSim's MSHR merge. */
@@ -393,7 +394,7 @@ static void mj_req_access(Mem_Req* req, Mj_Access* acc) {
   if (acc->writeback)
     acc->pc = 0; /* a writeback's PC fields are not set (and not read) */
   else if (mj_req_is_inst(req->type))
-    acc->pc = req->addr;
+    acc->pc = req->addr >> cache->shift_bits; /* line-aligned: the line number keeps the hashed bits */
   else if (acc->prefetch)
     acc->pc = req->pref_loadPC;
   else
@@ -541,12 +542,13 @@ void mockingjay_hit(Cache* cache, Mem_Req* req) {
   if (cache->repl_policy != REPL_MOCKINGJAY)
     return;
   Mj_Access acc;
-  mj_req_access(req, &acc);
+  mj_req_access(cache, req, &acc);
   if (acc.writeback)
     return;
   uns set;
   int way = mj_find_way(cache, req->addr, &set);
-  ASSERT(req->proc_id, way >= 0);
+  if (way < 0)
+    return; /* served from elsewhere (--l1_pref_cache_enable's prefetch cache) */
   Mj_State* s = mj_state(cache);
   mj_update(s, set, way, &acc, TRUE, req->proc_id);
   mj_stat(s, req->proc_id, MJ_STAT_HIT);
@@ -556,7 +558,7 @@ Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty) {
   if (cache->repl_policy != REPL_MOCKINGJAY || !MOCKINGJAY_BYPASS || dirty)
     return FALSE;
   Mj_Access acc;
-  mj_req_access(req, &acc);
+  mj_req_access(cache, req, &acc);
   if (acc.writeback)
     return FALSE;
 
@@ -584,5 +586,5 @@ void mockingjay_fill(Cache* cache, Mem_Req* req) {
     return;
   g_mj_next_fill.valid = TRUE;
   g_mj_next_fill.cache = cache;
-  mj_req_access(req, &g_mj_next_fill.acc);
+  mj_req_access(cache, req, &g_mj_next_fill.acc);
 }
