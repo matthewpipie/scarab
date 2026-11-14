@@ -2580,6 +2580,14 @@ Cache_Entry* inst_part_update_evict(Cache* cache, uns8 proc_id, uns set, uns* wa
   else /* both sides exactly at quota: evict the side the incoming fill is on */
     evict_instr = g_inst_part_next_valid ? g_inst_part_next_is_inst : FALSE;
 
+  /* At a quota of 0 on either side (MLC_INST_PART_WAYS == 0 or == assoc), the branch above
+     can pick a side that is holding zero lines -- there's nothing of that type to evict yet.
+     Fall back to the other side, which must hold at least one line since the set is full. */
+  if (evict_instr && instr_count == 0)
+    evict_instr = FALSE;
+  else if (!evict_instr && data_count == 0)
+    evict_instr = TRUE;
+
   int lru_way = -1;
   Counter lru_time = 0;
   for (ii = 0; ii < cache->assoc; ii++) {
