@@ -1747,13 +1747,17 @@ DEF_STAT(MLC_FILL_SKIPPED,                             COUNT,           NO_RATIO
 
 DEF_STAT( DCACHE_FILL,                                COUNT,           NO_RATIO)
 DEF_STAT( DCACHE_WB_REQ,                              RATIO,        DCACHE_FILL)
+DEF_STAT( DCACHE_FILL_RESIDENT,                       COUNT,           NO_RATIO)
+DEF_STAT( ICACHE_FILL_RESIDENT,                       COUNT,           NO_RATIO)
 
 DEF_STAT( DCACHE_WB_REQ_DIRTY,                        DIST,            NO_RATIO)
 DEF_STAT( DCACHE_WB_REQ_NODIRTY,                      DIST,            NO_RATIO)
+DEF_STAT( DCACHE_WB_REFUSED,                          COUNT,           NO_RATIO)
 
 
 DEF_STAT( ICACHE_FILL,                                COUNT,           NO_RATIO)
 DEF_STAT( ICACHE_WB_REQ,                              RATIO,        ICACHE_FILL)
+DEF_STAT( ICACHE_WB_REFUSED,                          COUNT,           NO_RATIO)
 
 DEF_STAT(L1_FILL_DIRTY,                               RATIO,           L1_FILL)
 DEF_STAT(MLC_FILL_DIRTY,                              RATIO,           MLC_FILL)
@@ -1809,6 +1813,7 @@ DEF_STAT(  MEM_REQ_MERGED_L1_DESCENT                   , COUNT  , NO_RATIO  )
 DEF_STAT(  MEM_REQ_MERGED_DRAM_DESCENT                 , COUNT  , NO_RATIO  )
 DEF_STAT(  MEM_REQ_JOINED_LINE                         , COUNT  , NO_RATIO  )
 DEF_STAT(  MEM_REQ_WB_FORWARD                          , COUNT  , NO_RATIO  )
+DEF_STAT(  MEM_REQ_WB_MERGED                           , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_NEWREQ_MATCHED_L2_PREF                    , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_NEWREQ_MATCHED_L2_PREF_MLC_HIT            , RATIO  , MLC_NEWREQ_MATCHED_L2_PREF  )
 
@@ -3101,12 +3106,13 @@ DEF_STAT( REJECTED_QUEUE_MEM                                    , COUNT, NO_RATI
 DEF_STAT( REJECTED_DEMAND_RESERVE                               , COUNT, NO_RATIO)
 // Requests turned away because the file they would enter was full, by that file, on the
 // requesting core; indexed by Mshr_File, so listed in its order. REJECTED_QUEUE_* above lump the
-// files one level looks up (REJECTED_QUEUE_MLC is ICACHE + DCACHE + DCACHE_WB), and
+// files one level looks up (REJECTED_QUEUE_MLC is ICACHE + DCACHE + ICACHE_WB + DCACHE_WB), and
 // REJECTED_QUEUE_MEM also counts DRAM refusing a request.
 DEF_STAT( REJECTED_ICACHE_MSHR_FULL                             , COUNT, NO_RATIO)
 DEF_STAT( REJECTED_DCACHE_MSHR_FULL                             , COUNT, NO_RATIO)
 DEF_STAT( REJECTED_MLC_MSHR_FULL                                , COUNT, NO_RATIO)
 DEF_STAT( REJECTED_L1_MSHR_FULL                                 , COUNT, NO_RATIO)
+DEF_STAT( REJECTED_ICACHE_WB_FULL                               , COUNT, NO_RATIO)
 DEF_STAT( REJECTED_DCACHE_WB_FULL                               , COUNT, NO_RATIO)
 DEF_STAT( REJECTED_MLC_WB_FULL                                  , COUNT, NO_RATIO)
 DEF_STAT( REJECTED_L1_WB_FULL                                   , COUNT, NO_RATIO)

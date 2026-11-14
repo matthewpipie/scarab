@@ -51,10 +51,12 @@
  * boundary, so each one entering the FTQ is one block: its line is looked up once. On a hit
  * the entry's targets (and their masked neighbours) go to a --pdip_pq_size prefetch queue
  * when it has room and the icache MSHRs have more than --pdip_mshr_reserve free entries.
- * update_pdip drains up to --pdip_issue_width entries a cycle, after demand fetch and FDIP
- * have used the icache ports: each is dropped if the MSHRs are short or (--pdip_ftq_dedup) its
- * line is already in the FTQ, then probed in the icache and sent to the L2 as an MRT_IPRF
- * only on a probe miss. A busy port leaves the entry for the next cycle.
+ * update_pdip moves up to --pdip_issue_width entries a cycle to the icache's prefetch queue,
+ * behind that cycle's FDIP and EIP lines: each is dropped if the MSHRs are short or
+ * (--pdip_ftq_dedup) its line is already in the FTQ. A full icache queue leaves the entry for
+ * the next cycle. Like FDIP's and EIP's, a queued line's tag lookup takes a bank port of the
+ * icache ICACHE_LATENCY - 1 cycles later (pref_drain_queue); only a miss goes to the L2, as
+ * an MRT_IPRF (pdip_pref_issued).
  ***************************************************************************************/
 
 #include "prefetcher/pdip.h"
@@ -475,30 +477,37 @@ void update_pdip(uns proc_id) {
       STAT_EVENT(proc_id, PDIP_ISSUE_DROP_FTQ);
       continue;
     }
-    Flag hit = FALSE;
-    if (!mem_pref_probe(proc_id, DEST_ICACHE, line, FALSE, &hit)) {
-      STAT_EVENT(proc_id, PDIP_PORT_RETRY);
+    if (!pref_addto_icache_queue(proc_id, line, PDIP_PREF_ID, MRT_IPRF, FALSE, FALSE, 0, 0)) {
+      STAT_EVENT(proc_id, PDIP_ICQ_RETRY);
       break;
     }
     c.pq.pop_front();
     processed++;
-    if (hit) {
+    STAT_EVENT(proc_id, PDIP_ICQ_ENQ);
+  }
+}
+
+void pdip_pref_issued(uns proc_id, Addr line, Pref_Issue_Result result) {
+  switch (result) {
+    case PREF_ISSUE_BANK_BUSY:
+      STAT_EVENT(proc_id, PDIP_ISSUE_DROP_PORT);
+      break;
+    case PREF_ISSUE_HIT:
       STAT_EVENT(proc_id, PDIP_ISSUE_DROP_ICACHE_HIT);
-      continue;
-    }
-    const Flag result =
-        new_mem_req(MRT_IPRF, proc_id, line, ICACHE_LINE_SIZE, 0, NULL, instr_fill_line, unique_count, 0);
-    if (result == SUCCESS_NEW) {
+      break;
+    case PREF_ISSUE_NEW: {
       Mshr_Line* mshr_ln = mshr_line(mem_core_file(proc_id, MRT_IPRF), line);
       Mem_Req* req = mshr_ln ? mshr_line_first(mshr_ln) : NULL;
       if (req)
         req->pdip_pref = TRUE;
       STAT_EVENT(proc_id, PDIP_PREF_ISSUED);
       DEBUG(proc_id, "prefetch 0x%llx\n", (unsigned long long)line);
-    } else if (result == SUCCESS_MERGED) {
-      STAT_EVENT(proc_id, PDIP_PREF_MERGED);
-    } else {
-      STAT_EVENT(proc_id, PDIP_PREF_FAILED);
+      break;
     }
+    case PREF_ISSUE_MERGED:
+      STAT_EVENT(proc_id, PDIP_PREF_MERGED);
+      break;
+    default:
+      STAT_EVENT(proc_id, PDIP_PREF_FAILED);
   }
 }
