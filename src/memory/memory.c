@@ -540,6 +540,8 @@ static inline void mem_record_cost(Mem_Req* req, uns level) {
   INC_STAT_EVENT(req->proc_id, REQ_COST_FE_MLC + level, req->fe_stall_cycles);
   INC_STAT_EVENT(req->proc_id, REQ_BOUND_LD_MLC + level, req->ld_bound_cycles);
   INC_STAT_EVENT(req->proc_id, REQ_BOUND_FE_MLC + level, req->fe_bound_cycles);
+  INC_STAT_EVENT(req->proc_id, REQ_COST_ROB_NOISSUE_MLC + level, req->rob_stall_noissue_cycles);
+  INC_STAT_EVENT(req->proc_id, REQ_BOUND_FE_STARVE_MLC + level, req->fe_starve_cycles);
 }
 
 void mem_free_req(Mem_Req* req) {
