@@ -77,6 +77,9 @@ struct InstInfo {
   // Scarab drops because no Scarab register stands for their virtual ID, by ID range (MEMTRACE_REGDEPS_*)
   uint8_t regdeps_reg_opnds = 0;
   uint8_t regdeps_dropped[REGDEPS_DROP_KINDS] = {};
+  // syscall number of a TRACE_MARKER_TYPE_SYSCALL marker seen between the previous
+  // instruction and this one (-1 = none); consumed only by pc_profile
+  int64_t syscall_before = -1;
 };
 
 #define XED_OP_NAME(ins, op) \
