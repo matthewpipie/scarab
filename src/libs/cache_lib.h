@@ -71,6 +71,8 @@ typedef enum Repl_Policy_enum {
   REPL_LACS,    /* locality-aware cost-sensitive replacement (Kharbutli & Sheikh, IEEE TC 2014) */
   REPL_ICARUS,  /* branch-history-contextualized criticality + reuse binning
                    (Kalbande et al., ASPLOS 2026) */
+  REPL_MOCKINGJAY, /* reuse-distance prediction mimicking Belady's MIN (Shah, Jain & Lin,
+                      HPCA 2022); MLC or L1 only, see memory/mockingjay.c */
 
   NUM_REPL
 } Repl_Policy;

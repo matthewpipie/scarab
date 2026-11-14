@@ -64,6 +64,7 @@
 #include "lacs.h"
 #include "mem_req.h"
 #include "mlp_oracle.h"
+#include "mockingjay.h"
 #include "op.h"
 #include "statistics.h"
 // #include "dram.h"
@@ -390,6 +391,11 @@ void init_uncores(void) {
   for (uns proc_id = 0; proc_id < NUM_CORES; proc_id++) {
     MLC(proc_id) = mlc;
   }
+  /* REPL_MOCKINGJAY: the MLC is shared by every core. A level filled by its upper level's
+     victims inserts nothing but writebacks, which the artifact puts first in line for eviction. */
+  ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !(mem_exclusive_mlc_dcache() || mem_exclusive_mlc_icache()),
+          "REPL_MOCKINGJAY does not support an exclusive MLC (every fill would be a victim writeback)\n");
+  mockingjay_configure(&mlc->cache, NUM_CORES, MLC_MJ_HIT);
 
   /* Initialize LLC */
   if (PRIVATE_L1) {
@@ -402,6 +408,7 @@ void init_uncores(void) {
       sprintf(buf, "L1[%d]", proc_id);
       init_cache(&l1->cache, buf, L1_SIZE / NUM_CORES, L1_ASSOC, L1_LINE_SIZE, sizeof(L1_Data), L1_CACHE_REPL_POLICY);
       l1->cache.repl_miss_by_report = TRUE; /* see mem_report_miss() */
+      mockingjay_configure(&l1->cache, 1, L1_MJ_HIT);
 
       l1->num_banks = L1_BANKS / NUM_CORES;
       l1->ports = (Ports*)malloc(sizeof(Ports) * l1->num_banks);
@@ -416,6 +423,7 @@ void init_uncores(void) {
     Ported_Cache* l1 = (Ported_Cache*)malloc(sizeof(Ported_Cache));
     init_cache(&l1->cache, "L1_CACHE", L1_SIZE, L1_ASSOC, L1_LINE_SIZE, sizeof(L1_Data), L1_CACHE_REPL_POLICY);
     l1->cache.repl_miss_by_report = TRUE; /* see mem_report_miss() */
+    mockingjay_configure(&l1->cache, NUM_CORES, L1_MJ_HIT);
     l1->num_banks = L1_BANKS;
     l1->ports = (Ports*)malloc(sizeof(Ports) * l1->num_banks);
     for (uns ii = 0; ii < l1->num_banks; ii++) {
@@ -427,6 +435,9 @@ void init_uncores(void) {
       L1(proc_id) = l1;
     }
   }
+
+  ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !mem_exclusive_l1(),
+          "REPL_MOCKINGJAY does not support an exclusive L1 (every fill would be an MLC victim writeback)\n");
 
   if (L1_CACHE_REPL_POLICY == REPL_PARTITION) {
     // initially equally partition
@@ -1134,6 +1145,10 @@ Flag mem_process_l1_hit_access(Mem_Req* req, Addr* line_addr, L1_Data* data, int
   Flag fill_mlc = MLC_PRESENT && req->destination != DEST_L1 && (req->type != MRT_WB && req->type != MRT_WB_NODIRTY);
 
   if (data) { /* not perfect l1 */
+    /* REPL_MOCKINGJAY: train on the hit once, here, where it is served (before an exclusive L1
+       gives the line up), as the lookup's cache_access would under another policy */
+    if (PREFETCH_UPDATE_LRU_L1 || !mem_req_type_is_prefetch(req->type))
+      mockingjay_hit(&L1(req->proc_id)->cache, req);
     if ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (req->type == MRT_IFETCH)) {
       if (L1_CACHE_HIT_POSITION_COLLECT) {
         ASSERT(data->proc_id, lru_position != -1);
@@ -1242,6 +1257,9 @@ Flag mem_process_mlc_hit_access(Mem_Req* req, Addr* line_addr, MLC_Data* data, i
 
     if (data) { /* not perfect mlc */
       mlp_count_mlc_lookup(req, TRUE);
+      /* REPL_MOCKINGJAY: once per request, not on every retry of the lookup */
+      if (PREFETCH_UPDATE_LRU_MLC || !mem_req_type_is_prefetch(req->type))
+        mockingjay_hit(&MLC(req->proc_id)->cache, req);
       if ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (req->type == MRT_IFETCH)) {
         if (data->prefetch) {  // prefetch hit
           DEBUG(req->proc_id, "%7lld mlc prefetch hit %d\n", cycle_count, (int)(req->addr));
@@ -3483,6 +3501,13 @@ Flag l1_fill_line(Mem_Req* req) {
       STAT_EVENT(req->proc_id, EXCL_FILL_DUP_L0_LLC);
   }
 
+  /* REPL_MOCKINGJAY: a line predicted to be reused after everything in its set is not
+     inserted (an L1 fill carries no dirty data: writebacks are never bypassed). */
+  if (mockingjay_bypass(&L1(req->proc_id)->cache, req, FALSE)) {
+    l1_miss_is_satisfied(req);
+    return TRUE;
+  }
+
   /* The fill writes the array, so it needs the write bank -- the same one a writeback
      wants. A writeback already took it for this level's lookup and is that same write,
      so it does not pay twice. A refused fill leaves the line ready to retry. */
@@ -3660,6 +3685,7 @@ Flag l1_fill_line(Mem_Req* req) {
 
   mlp_stage_fill_boost(&L1(req->proc_id)->cache, &mem->l1_mshr, req);
   lacs_fill(LACS_SLOT_L1, &L1(req->proc_id)->cache, req);
+  mockingjay_fill(&L1(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
@@ -3862,6 +3888,13 @@ Flag mlc_fill_line(Mem_Req* req) {
     }
   }
 
+  /* REPL_MOCKINGJAY: a line predicted to be reused after everything in its set is not
+     inserted, unless it carries dirty data only this level would hold. */
+  if (mockingjay_bypass(&MLC(req->proc_id)->cache, req, promoted_dirty)) {
+    mlc_miss_is_satisfied(req);
+    return TRUE;
+  }
+
   /* The fill writes the array, so it needs the write bank -- the same one a writeback
      wants. A writeback already took it for this level's lookup and is that same write,
      so it does not pay twice. A refused fill leaves the line ready to retry. */
@@ -4028,6 +4061,7 @@ Flag mlc_fill_line(Mem_Req* req) {
   icarus_fill(&MLC(req->proc_id)->cache, req);
   if (MLP_ORACLE)
     mlp_oracle_insert(&MLC(req->proc_id)->cache, req);
+  mockingjay_fill(&MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
