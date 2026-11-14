@@ -209,6 +209,18 @@ int memtrace_trace_read(int proc_id, ctype_pin_inst* next_onpath_pi) {
   memcpy(next_onpath_pi, insi->info, sizeof(ctype_pin_inst));
   fill_in_dynamic_info(proc_id, next_onpath_pi, insi);
 
+  if (insi->is_dr_ins) {
+    STAT_EVENT(proc_id, MEMTRACE_REGDEPS_INSTS);
+    INC_STAT_EVENT(proc_id, MEMTRACE_REGDEPS_REG_OPNDS, insi->regdeps_reg_opnds);
+    Flag dropped = FALSE;
+    for (int k = 0; k < REGDEPS_DROP_KINDS; ++k) {
+      INC_STAT_EVENT(proc_id, MEMTRACE_REGDEPS_DROP_ID_18_33 + k, insi->regdeps_dropped[k]);
+      dropped |= k != 1 && insi->regdeps_dropped[k];  // segment registers are ignored on purpose
+    }
+    if (dropped)
+      STAT_EVENT(proc_id, MEMTRACE_REGDEPS_INSTS_WITH_DROP);
+  }
+
   if (next_onpath_pi->scarab_marker_roi_begin == true) {
     assert(!roi_dump_began);
     // reset stats

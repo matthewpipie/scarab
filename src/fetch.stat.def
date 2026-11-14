@@ -282,3 +282,16 @@ DEF_STAT(CYCLES_RESTEER_BTB_MISS_COULD_BE_SAVED_UC_FETCH, DIST, NO_RATIO)
 
 DEF_STAT(CYCLES_UOC_IC_SWITCH            , COUNT   , NO_RATIO)
 
+// MEMTRACE, DR_ISA_REGDEPS traces (the Google workload traces): instructions fed to the core, their
+// register operands, and operands Scarab drops because no Scarab register stands for their virtual ID,
+// by ID range in DynamoRIO's x86 numbering (DR_REG_VIRTn is ID n + 2). The order matches
+// regdeps_drop_kind in memtrace_trace_reader_memtrace.cc. _34_39 (segment registers) are dropped on
+// purpose, as on the XED path; INSTS_WITH_DROP counts instructions that lost any other operand.
+DEF_STAT(MEMTRACE_REGDEPS_INSTS, COUNT, NO_RATIO)
+DEF_STAT(MEMTRACE_REGDEPS_REG_OPNDS, COUNT, NO_RATIO)
+DEF_STAT(MEMTRACE_REGDEPS_DROP_ID_18_33, COUNT, NO_RATIO)  // MMX, x87
+DEF_STAT(MEMTRACE_REGDEPS_DROP_ID_34_39, COUNT, NO_RATIO)  // segment
+DEF_STAT(MEMTRACE_REGDEPS_DROP_ID_40_71, COUNT, NO_RATIO)  // debug, control
+DEF_STAT(MEMTRACE_REGDEPS_DROP_ID_88_UP, COUNT, NO_RATIO)  // XMM16-31 and later
+DEF_STAT(MEMTRACE_REGDEPS_DROP_OTHER, COUNT, NO_RATIO)
+DEF_STAT(MEMTRACE_REGDEPS_INSTS_WITH_DROP, COUNT, NO_RATIO)
