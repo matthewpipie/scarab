@@ -194,6 +194,8 @@ All of these are in `memory.stat.<core>.out`.
 | `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request (the count `mlp_data_bound 2` uses), by the level that served it. Stats only. |
 | `REQ_COST_FE_{MLC,LLC,MEM}` | Cycles the backend got no ops while the on-path icache waited on a request, by the level that served it. Stats only. |
 | `REQ_BOUND_LD_*`, `REQ_BOUND_FE_*` | REPL_MLP's fu_wait load-cycles and instruction stuck cycles, split the same way, for comparison with the costs |
+| `REQ_COST_ROB_NOISSUE_*` | The part of `REQ_COST_ROB_*` in which no op issued: the count the default `mlp_data_bound 3` marks by, split the same way |
+| `REQ_BOUND_FE_STARVE_*` | The part of `REQ_BOUND_FE_*` in which the backend was idle as `mlp_instr_starve` defines it: the count the default instruction marking uses, split the same way. Always 0 with `--mlp_instr_starve 0`. |
 | `MLP_MLC_ACC_*`, `MLP_MLC_HIT_{D,I}MARK_*` | L2 lookups by kind (load, store, fetch, prefetch, writeback), and those that hit a line marked at its fill |
 | `MLP_MLC_HIT_{D,I}MARK_LAPSED` | Demand hits on a boosted line whose protection had already run out |
 | `MLP_EVICT_{ALL,DMARK,IMARK}{,_UNUSED}` | L2 evictions, of marked lines, and those no demand hit since their fill |
