@@ -703,6 +703,47 @@ PATCH_REP:
   return complete;
 }
 
+/* MEMTRACE_REGDEPS_DROP_*: the bucket of a register operand Scarab drops, by its virtual ID. The ranges
+   follow DynamoRIO's x86 real-to-virtual table (d_r_reg_id_to_virtual, core/ir/x86/encode.c), whose
+   DR_REG_VIRTn is ID n + 2: 18-33 MMX and x87, 34-39 segment (ignored on purpose, as the XED path
+   does), 40-71 debug and control, 88 and up XMM16-31 and later. */
+static int regdeps_drop_kind(reg_id_t reg) {
+  if (reg >= 18 && reg <= 33)
+    return 0;
+  if (reg >= 34 && reg <= 39)
+    return 1;
+  if (reg >= 40 && reg <= 71)
+    return 2;
+  if (reg >= 88)
+    return 3;
+  return 4;
+}
+
+/* Whether add_dependency_info drops a register operand: no Scarab register stands for its virtual ID,
+   or it maps into the segment/RIP range add_reg ignores. */
+static bool regdeps_reg_dropped(reg_id_t reg) {
+  uint8_t scarab_reg = dr_isa_to_scarab_reg(reg);
+  return scarab_reg == SCARAB_REG_INV || (scarab_reg >= SCARAB_REG_CS && scarab_reg <= SCARAB_REG_RIP);
+}
+
+/* {register operands, dropped ones by regdeps_drop_kind} of a DR_ISA_REGDEPS instruction. */
+static std::array<uint8_t, 1 + REGDEPS_DROP_KINDS> regdeps_count_opnds(instr_t* drinst) {
+  std::array<uint8_t, 1 + REGDEPS_DROP_KINDS> counts = {};
+  auto note = [&counts](opnd_t opnd) {
+    if (!opnd_is_reg(opnd))
+      return;
+    counts[0]++;
+    reg_id_t reg = opnd_get_reg(opnd);
+    if (regdeps_reg_dropped(reg))
+      counts[1 + regdeps_drop_kind(reg)]++;
+  };
+  for (int i = 0; i < instr_num_srcs(drinst); ++i)
+    note(instr_get_src(drinst, i));
+  for (int i = 0; i < instr_num_dsts(drinst); ++i)
+    note(instr_get_dst(drinst, i));
+  return counts;
+}
+
 uint32_t TraceReaderMemtrace::add_dependency_info(ctype_pin_inst* info, instr_t* drinst) {
   uint32_t max_op_width = 1;
   info->ld_size = 8;
@@ -995,6 +1036,7 @@ void TraceReaderMemtrace::processDrIsaInst(InstInfo* _info, bool has_another_mem
 
     fill_in_basic_info(&cinst, predecoded, mt_ref_.instr.size, mt_ref_.instr.type);
     add_dependency_info(&cinst, predecoded);
+    regdeps_opnd_counts_[mt_ref_.instr.addr] = regdeps_count_opnds(predecoded);
     cinst.encoding_is_new = mt_ref_.instr.encoding_is_new;
     ctype_inst_map_.emplace(mt_ref_.instr.addr,
                             std::make_tuple(cinst.num_ld + cinst.num_st, false, cinst.cf_type, false, cinst));
@@ -1007,6 +1049,14 @@ void TraceReaderMemtrace::processDrIsaInst(InstInfo* _info, bool has_another_mem
   tie(mt_mem_ops_, unknown_type, cond_branch, std::ignore, std::ignore) = ctype_inst_iter->second;
   mt_prior_isize_ = mt_ref_.instr.size;
   _info->is_dr_ins = true;
+  auto regdeps_counts = regdeps_opnd_counts_.find(mt_ref_.instr.addr);
+  for (int k = 0; k <= REGDEPS_DROP_KINDS; ++k) {
+    uint8_t n = regdeps_counts != regdeps_opnd_counts_.end() ? regdeps_counts->second[k] : 0;
+    if (k == 0)
+      _info->regdeps_reg_opnds = n;
+    else
+      _info->regdeps_dropped[k - 1] = n;
+  }
   _info->info = &(std::get<MAP_XED>(ctype_inst_iter->second));
   _info->pid = mt_ref_.instr.pid;
   _info->tid = mt_ref_.instr.tid;

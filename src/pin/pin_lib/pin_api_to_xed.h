@@ -41,6 +41,9 @@ extern "C" {
 
 enum class CustomOp : uint8_t { NONE, PREFETCH_CODE };
 
+// Buckets of MEMTRACE_REGDEPS_DROP_* (memtrace_trace_reader_memtrace.cc, regdeps_drop_kind)
+#define REGDEPS_DROP_KINDS 5
+
 struct InstInfo {
   uint64_t pc = 0;  // instruction address
   union {
@@ -70,6 +73,10 @@ struct InstInfo {
   bool fetched_instruction = false;
   // DynamoRIO trace_type_t for this instruction (set by memtrace reader)
   int dr_trace_type = 0;
+  // DR_ISA_REGDEPS only (set by the memtrace reader): this instruction's register operands, and those
+  // Scarab drops because no Scarab register stands for their virtual ID, by ID range (MEMTRACE_REGDEPS_*)
+  uint8_t regdeps_reg_opnds = 0;
+  uint8_t regdeps_dropped[REGDEPS_DROP_KINDS] = {};
 };
 
 #define XED_OP_NAME(ins, op) \

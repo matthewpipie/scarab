@@ -28,6 +28,8 @@
 #ifndef MEMTRACE_READER_MEMTRACE_H
 #define MEMTRACE_READER_MEMTRACE_H
 
+#include <array>
+
 #include "globals/assert.h"
 
 #include "frontend/pt_memtrace/memtrace_trace_reader.h"
@@ -94,6 +96,8 @@ class TraceReaderMemtrace : public TraceReader {
   ctype_pin_inst ctx_switch_barrier_ = {};
   // Static info per instruction PC, decoded once. Per reader: each core's trace has its own address space.
   std::unordered_map<uint64_t, std::tuple<int, bool, bool, bool, ctype_pin_inst>> ctype_inst_map_ = {};
+  // DR_ISA_REGDEPS: per pc, {register operands, dropped by regdeps_drop_kind...} (MEMTRACE_REGDEPS_*)
+  std::unordered_map<uint64_t, std::array<uint8_t, 1 + REGDEPS_DROP_KINDS>> regdeps_opnd_counts_ = {};
   uint64_t mt_warn_target_ = 0;
   uint64_t mt_ctx_switches_ = 0;
 };
