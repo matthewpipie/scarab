@@ -3926,6 +3926,15 @@ Flag mlc_fill_line(Mem_Req* req) {
 
   /* if it can't get a write port, fail */
 
+  /* REPL_INST_PARTITION's tie-break reads this fill's type to decide which side to evict;
+     it must be staged before the peek below, not just before the real cache_insert, or the
+     peek and the real insert can disagree on the victim (the peek always seeing "no fill
+     staged yet" and defaulting to data) -- one line gets written back while a different
+     line is the one actually evicted, silently dropping its data and double-queuing a
+     writeback for the phantom victim once it's genuinely evicted later. */
+  if (MLC(req->proc_id)->cache.repl_policy == REPL_INST_PARTITION)
+    cache_set_inst_part_next_insert(mem_req_type_is_inst(req->type));
+
   /* Do not insert the line yet, just check which line we
      need to replace. If that line is dirty, it's possible
      that we won't be able to insert the writeback into the
@@ -4062,8 +4071,6 @@ Flag mlc_fill_line(Mem_Req* req) {
   if (MLP_ORACLE)
     mlp_oracle_insert(&MLC(req->proc_id)->cache, req);
   mockingjay_fill(&MLC(req->proc_id)->cache, req);
-  if (MLC(req->proc_id)->cache.repl_policy == REPL_INST_PARTITION)
-    cache_set_inst_part_next_insert(mem_req_type_is_inst(req->type));
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers
