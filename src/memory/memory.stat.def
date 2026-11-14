@@ -4164,3 +4164,35 @@ DEF_STAT(  L1_LACS_FINAL_THRESHOLD,    COUNT, NO_RATIO)
 DEF_STAT(  L1_LACS_EVICTIONS,          COUNT, NO_RATIO)
 DEF_STAT(  L1_LACS_EVICT_AGING,        COUNT, NO_RATIO)
 DEF_STAT(  L1_LACS_EVICT_TIES,         COUNT, NO_RATIO)
+
+/* REPL_MOCKINGJAY (memory/mockingjay.c). The MLC and L1 blocks must stay in Mj_Stat's order:
+   mockingjay.c offsets from each block's first stat.
+   HIT: hits that re-predicted their line (writebacks do not). FILL: fills inserted, other than
+   writebacks; COLD of them with no prediction for their signature yet, SCAN predicted past
+   MAX_RD. WB_FILL: writebacks inserted (overdue at once). BYPASS: fills not inserted.
+   EVICT_FUTURE / ZERO / PAST: victims whose estimated time remaining was positive, zero, or
+   negative (overdue). TRAIN: sampled-cache reuses that trained the predictor. DETRAIN: sampled
+   lines that aged out unseen and trained their signature as a scan. */
+DEF_STAT(  MLC_MJ_HIT,                 COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_FILL,                COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_FILL_COLD,           COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_FILL_SCAN,           COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_WB_FILL,             COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_BYPASS,              COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_EVICT_FUTURE,        COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_EVICT_ZERO,          COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_EVICT_PAST,          COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_TRAIN,               COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_DETRAIN,             COUNT, NO_RATIO)
+
+DEF_STAT(  L1_MJ_HIT,                  COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_FILL,                 COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_FILL_COLD,            COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_FILL_SCAN,            COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_WB_FILL,              COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_BYPASS,               COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_EVICT_FUTURE,         COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_EVICT_ZERO,           COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_EVICT_PAST,           COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_TRAIN,                COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_DETRAIN,              COUNT, NO_RATIO)

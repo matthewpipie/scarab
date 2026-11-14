@@ -190,6 +190,18 @@ DEF_PARAM(icarus_costly_fetch, ICARUS_COSTLY_FETCH, uns, uns, 0, )
 DEF_PARAM(icarus_costly_cycles, ICARUS_COSTLY_CYCLES, uns, uns, 40, )
 DEF_PARAM(icarus_costly_trigger_pct, ICARUS_COSTLY_TRIGGER_PCT, uns, uns, 8, )
 
+/* Mockingjay (REPL_MOCKINGJAY, Shah, Jain & Lin, HPCA 2022) at the MLC or the L1: evicts the
+   line whose predicted next use is furthest away. See memory/mockingjay.c. Every other
+   constant is the ChampSim artifact's, scaled to the cache running the policy. */
+/* Bypass a fill predicted to be reused after every line in its set (the artifact does). */
+DEF_PARAM(mockingjay_bypass, MOCKINGJAY_BYPASS, Flag, Flag, TRUE, )
+/* Flex-MIN: how much longer a reuse interval that ends in a prefetch trains as. 0 = the
+   artifact's 2 - log2(cores sharing the cache) / 4, i.e. 2 for a private cache. */
+DEF_PARAM(mockingjay_pf_penalty, MOCKINGJAY_PF_PENALTY, float, float, 0.0, )
+/* Sets the sampled cache watches, a power of two. 0 = the artifact's 2^(log2(cache bytes) -
+   16), i.e. 32 for 2 MB, at least 2. */
+DEF_PARAM(mockingjay_sampled_sets, MOCKINGJAY_SAMPLED_SETS, uns, uns, 0, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be

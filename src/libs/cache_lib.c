@@ -44,6 +44,7 @@
 #include "memory/memory.param.h"
 
 #include "frontend/frontend_intf.h"
+#include "memory/mockingjay.h"
 
 #include "statistics.h"
 
@@ -2488,6 +2489,7 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_SHIP,    ship_action_init,     general_action_repl,  ship_update_hit,    ship_update_insert,   ship_update_evict   },
   { REPL_LACS,    lacs_action_init,     general_action_repl,  lacs_update_hit,    lacs_update_insert,   lacs_update_evict   },
   { REPL_ICARUS,  icarus_action_init,   general_action_repl,  icarus_update_hit,  icarus_update_insert, icarus_update_evict },
+  { REPL_MOCKINGJAY, mockingjay_action_init, general_action_repl, mockingjay_update_hit, mockingjay_update_insert, mockingjay_update_evict },
   { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL                },
 };
 // clang-format on
