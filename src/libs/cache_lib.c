@@ -230,9 +230,6 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
   cache->mlp_victim_valid = FALSE;
   cache->mlp_victim_mark = MLP_MARK_NONE;
   cache->mlp_victim_used = FALSE;
-  if (repl_policy == REPL_MLP)
-    ASSERTM(0, !MLP_BOOST_COUNTDOWN_NO_REVIVE || mlp_countdown_on(),
-            "mlp_boost_countdown_no_revive requires mlp_boost_countdown without mlp_boost_in_fills\n");
 
   /* allocate memory for all the sets (pointers to line arrays)  */
   cache->entries = (Cache_Entry**)malloc(sizeof(Cache_Entry*) * num_sets);

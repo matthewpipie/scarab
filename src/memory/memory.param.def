@@ -240,8 +240,9 @@ DEF_PARAM(no_repl_after_queue_size, NO_REPL_AFTER_QUEUE_SIZE, uns, uns, 0,)
    argmin(Recency + boost), Recency the LRU stack position (0 = LRU). A line filled by a load
    marked data-bound (mlp_data_bound) gets a flat boost of mlp_lin_data_lambda, and one filled by
    an instruction fetch marked instruction-bound (mlp_instr_mark) gets mlp_lin_instr_lambda;
-   everything else gets 0, so both at their 0.0 default reproduces plain LRU. Recommended settings,
-   and the runs behind them, are in docs/repl-mlp.md. */
+   everything else gets 0, so both at their 0.0 default reproduces plain LRU. Recommended settings
+   (64 / 16 fill-counted, 96 / 24 with the countdown), and the runs behind them, are in
+   docs/repl-mlp.md. */
 DEF_PARAM(mlp_lin_data_lambda, MLP_LIN_DATA_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
 /* Data-bound marking: a fill some load waited on is marked if the count mlp_data_bound picks
@@ -303,7 +304,8 @@ DEF_PARAM(mlp_boost_in_fills, MLP_BOOST_IN_FILLS, Flag, Flag, FALSE, )
 /* mlp_boost_countdown (default on): keep REPL_MLP's boost as a 2-bit countdown per line and a
    tick per set, instead of mlp_boost_in_fills' fill-count age per line. A set ticks every
    round(lambda / 3) fills into it. A marked line's countdown is set to 3 when it is filled and on
-   every hit, and each tick of its set decrements it. The line is protected while its countdown is
+   a hit while it is still counting (on every hit with mlp_boost_countdown_no_revive 0), and each
+   tick of its set decrements it. The line is protected while its countdown is
    nonzero, so protection lasts between 2/3 lambda and lambda fills after its last touch. The
    victim is the least recently used unprotected line; if every line is protected, the least
    recently used line, or with mlp_boost_countdown_tiered (default on) the one with the fewest
@@ -318,13 +320,14 @@ DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, TRUE, )
    close to expiry it is. It changes the victim only when every line in the set is protected. No
    effect unless the countdown is in use (mlp_boost_countdown on, mlp_boost_in_fills off). */
 DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, TRUE, )
-/* mlp_boost_countdown_no_revive: only restart a marked line's countdown on a hit if it is still
-   mid-countdown (mlp_ticks_left > 0); a line whose countdown already reached 0 stays at 0 until
-   it is next filled, instead of a hit reviving it to MLP_COUNTDOWN_TICKS regardless. This makes
-   mlp_ticks_left == 0 mean "not protected" uniformly, so a lapsed marked line and a line that was
-   never marked need no separate bit to tell apart. Requires the countdown to be in use
-   (mlp_boost_countdown on, mlp_boost_in_fills off); asserted at init. */
-DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Flag, FALSE, )
+/* mlp_boost_countdown_no_revive (default on): only restart a marked line's countdown on a hit if it
+   is still mid-countdown (mlp_ticks_left > 0); a line whose countdown already reached 0 stays at 0
+   until it is next filled, instead of a hit reviving it to MLP_COUNTDOWN_TICKS regardless. This
+   makes mlp_ticks_left == 0 mean "not protected" uniformly, so a lapsed marked line and a line that
+   was never marked need no separate bit to tell apart. Its loss against reviving is won back with
+   larger lambdas (96 / 24 instead of 64 / 16; docs/repl-mlp.md). No effect unless the countdown is
+   in use (mlp_boost_countdown on, mlp_boost_in_fills off). */
+DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Flag, TRUE, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
    18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
    mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /
