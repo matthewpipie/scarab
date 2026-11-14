@@ -277,10 +277,10 @@ void cmp_cores(void) {
       }
       cmp_set_all_data(proc_id, 0);
       update_eip();
-      pref_update_icache(proc_id);
-      /* PDIP issues after demand fetch and FDIP have had the icache ports */
+      /* PDIP queues its lines behind FDIP's and EIP's; then the icache queue drains */
       if (PDIP_ENABLE)
         update_pdip(proc_id);
+      pref_update_icache(proc_id);
 
       cmp_measure_chip_util();
     }

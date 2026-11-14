@@ -628,12 +628,15 @@ DEF_STAT(PDIP_PQ_ENQ, COUNT, NO_RATIO)
 DEF_STAT(PDIP_PQ_DROP_DUP, COUNT, NO_RATIO)
 DEF_STAT(PDIP_PQ_DROP_FULL, COUNT, NO_RATIO)
 DEF_STAT(PDIP_PQ_DROP_MSHR, COUNT, NO_RATIO)
-/* Issue: dropped (MSHRs short, line in the FTQ, icache probe hit), retried for a busy icache
-   port, and sent: a new request, merged into one in flight, refused */
+/* Issue. To the icache prefetch queue: dropped (MSHRs short, line in the FTQ), retried for a
+   full icache queue, queued. Out of it (pdip_pref_issued): dropped (no bank port with
+   --pref_retry 0, icache hit), and sent: a new request, merged into one in flight, refused */
 DEF_STAT(PDIP_ISSUE_DROP_MSHR, COUNT, NO_RATIO)
 DEF_STAT(PDIP_ISSUE_DROP_FTQ, COUNT, NO_RATIO)
+DEF_STAT(PDIP_ICQ_RETRY, COUNT, NO_RATIO)
+DEF_STAT(PDIP_ICQ_ENQ, COUNT, NO_RATIO)
+DEF_STAT(PDIP_ISSUE_DROP_PORT, COUNT, NO_RATIO)
 DEF_STAT(PDIP_ISSUE_DROP_ICACHE_HIT, COUNT, NO_RATIO)
-DEF_STAT(PDIP_PORT_RETRY, COUNT, NO_RATIO)
 DEF_STAT(PDIP_PREF_ISSUED, COUNT, NO_RATIO)
 DEF_STAT(PDIP_PREF_MERGED, COUNT, NO_RATIO)
 DEF_STAT(PDIP_PREF_FAILED, COUNT, NO_RATIO)

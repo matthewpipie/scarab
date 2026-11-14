@@ -56,6 +56,7 @@
 #include "prefetcher/eip.h"
 #include "prefetcher/fdip.h"
 #include "prefetcher/l2l1pref.h"
+#include "prefetcher/pdip.h"
 #include "prefetcher/pref_2dc.h"
 #include "prefetcher/pref_berti.h"
 #include "prefetcher/pref_ghb.h"
@@ -562,8 +563,8 @@ static Flag pref_queue_add(List* q, HWP_Type dest, uns latency, Pref_Mem_Req* re
 /* A data prefetch to a level's queue. With PREF_QUEUE_FILTER_DUPS a candidate whose line is
    already queued, from any prefetcher, is dropped and reported queued, as ChampSim's PQ merges
    one. The queue's entry keeps its prefetcher and metadata. The duplicate writes nothing, so it
-   takes neither an insertion nor an entry. The icache queue is not filtered: FDIP and EIP each
-   expect an issue report (pref_drain_queue) for every line they queued. */
+   takes neither an insertion nor an entry. The icache queue is not filtered: FDIP, EIP and PDIP
+   each expect an issue report (pref_drain_queue) for every line they queued. */
 static Flag pref_data_queue_add(List* q, HWP_Type dest, uns latency, Pref_Mem_Req* req, Stat_Enum full_stat,
                                 Stat_Enum dup_stat) {
   if (PREF_QUEUE_FILTER_DUPS) {
@@ -591,8 +592,8 @@ Flag pref_addto_dl0req_queue(uns8 proc_id, Addr line_index, uns8 prefetcher_id) 
                              PREF_DL0REQ_QUEUE_FULL, PREF_DL0REQ_QUEUE_DUP);
 }
 
-/* An instruction prefetch (FDIP per branch predictor, or EIP) to the icache. It only matches
-   the tags, without the data read, so its lookup takes one cycle less than a demand's. */
+/* An instruction prefetch (FDIP per branch predictor, EIP or PDIP) to the icache. It only
+   matches the tags, without the data read, so its lookup takes one cycle less than a demand's. */
 Flag pref_addto_icache_queue(uns8 proc_id, Addr line_addr, uns8 bp_id, Mem_Req_Type type, Flag off_path,
                              Flag conf_off_path, uns32 ghist, uns32 fetch_ghist) {
   Pref_Mem_Req req = {.proc_id = proc_id,
@@ -866,6 +867,8 @@ static void pref_drain_queue(uns proc_id, List* q, Destination dest) {
       break; /* the head retries next cycle; the rest wait behind it */
     if (icache && pf->prefetcher_id == EIP_PREF_ID)
       eip_pref_issued(pf->line_addr, result == PREF_ISSUE_NEW || result == PREF_ISSUE_MERGED);
+    else if (icache && pf->prefetcher_id == PDIP_PREF_ID)
+      pdip_pref_issued(pf_proc_id, pf->line_addr, result);
     else if (icache)
       fdip_pref_issued(pf_proc_id, pf->prefetcher_id, pf->line_addr, pf->off_path, pf->conf_off_path, pf->fetch_ghist,
                        result);

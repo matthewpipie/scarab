@@ -33,6 +33,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "prefetcher/pref_common.h"
+
+/* PDIP's prefetcher id in the icache prefetch queue (FDIP's are its branch predictors' ids). */
+#define PDIP_PREF_ID (UINT8_MAX - 1)
 
 struct Op_struct;
 
@@ -67,8 +71,12 @@ void pdip_recover(uns proc_id, Flag fetch_redirected);
 /* Retirement: track the last taken branch; train the table on a stamped op. */
 void pdip_retire(struct Op_struct* op);
 
-/* Once per cycle, after the icache stage, the DFE and FDIP: drain the prefetch queue. */
+/* Once per cycle, after the icache stage, the DFE, FDIP and EIP: move up to --pdip_issue_width
+   lines from PDIP's prefetch queue to the icache's, behind FDIP's and EIP's. */
 void update_pdip(uns proc_id);
+
+/* The icache prefetch queue's outcome for a line PDIP queued (pref_drain_queue). */
+void pdip_pref_issued(uns proc_id, Addr line, Pref_Issue_Result result);
 
 #ifdef __cplusplus
 }
