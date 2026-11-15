@@ -214,6 +214,28 @@ DEF_PARAM(mockingjay_sampled_sets, MOCKINGJAY_SAMPLED_SETS, uns, uns, 0, )
    the full algorithm, including how the partition is (not) enforced before a set fills. */
 DEF_PARAM(mlc_inst_part_ways, MLC_INST_PART_WAYS, uns, uns, 0, )
 
+/* EMISSARY (REPL_EMISSARY, Nagendra, Godala et al., ISCA 2023) at the MLC only: an instruction
+   line whose icache miss starved decode gets a priority bit P, which reaches the MLC copy when
+   the icache evicts the line, and each MLC set protects up to N P = 1 lines from eviction. See
+   memory/emissary.c and the EMISSARY section of libs/cache_lib.c. The defaults are the paper's
+   preferred P(8):S&E&R(1/32).
+   emissary_n: N, the high-priority lines per MLC set that are protected (the paper's P(N)).
+   emissary_select: which icache misses are selected for P = 1 at the icache fill.
+     0  every miss (the paper's R(r) alone, with emissary_rand_denom)
+     1  S: the miss starved decode for at least one cycle
+     2  S&E: in at least one of those cycles the issue queue was also empty
+   emissary_rand_denom: R(1/d): a selected miss gets P = 1 with probability 1/d. 1 = always.
+   emissary_reset_interval: clear every P bit (icache and MLC) every this many retired
+     instructions (the paper's §6 uses 128M). 0 = never.
+   emissary_passive: select and carry P bits even when the MLC is not running REPL_EMISSARY, for
+     the EMISSARY_* stats under another policy. P is metadata only, so this must not change
+     timing. */
+DEF_PARAM(emissary_n, EMISSARY_N, uns, uns, 8, )
+DEF_PARAM(emissary_select, EMISSARY_SELECT, uns, uns, 2, )
+DEF_PARAM(emissary_rand_denom, EMISSARY_RAND_DENOM, uns, uns, 32, )
+DEF_PARAM(emissary_reset_interval, EMISSARY_RESET_INTERVAL, Counter, uns64, 0, )
+DEF_PARAM(emissary_passive, EMISSARY_PASSIVE, Flag, Flag, FALSE, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be

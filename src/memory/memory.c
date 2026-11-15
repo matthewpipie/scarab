@@ -396,6 +396,15 @@ void init_uncores(void) {
   ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !(mem_exclusive_mlc_dcache() || mem_exclusive_mlc_icache()),
           "REPL_MOCKINGJAY does not support an exclusive MLC (every fill would be a victim writeback)\n");
   mockingjay_configure(&mlc->cache, NUM_CORES, MLC_MJ_HIT);
+  /* REPL_EMISSARY: P reaches the MLC from the icache's evictions, by marking the MLC's copy.
+     An MLC exclusive of the icache holds no copy and would need P carried on the demoted line,
+     which is not modeled. */
+  ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_EMISSARY || (MLC_PRESENT && !mem_exclusive_mlc_icache()),
+          "REPL_EMISSARY needs an MLC that is not exclusive of the icache\n");
+  ASSERTM(0, (MLC_CACHE_REPL_POLICY != REPL_EMISSARY && !EMISSARY_PASSIVE) || EMISSARY_SELECT <= 2,
+          "--emissary_select must be 0 (every miss), 1 (S) or 2 (S&E), got %u\n", EMISSARY_SELECT);
+  ASSERTM(0, (MLC_CACHE_REPL_POLICY != REPL_EMISSARY && !EMISSARY_PASSIVE) || EMISSARY_RAND_DENOM >= 1,
+          "--emissary_rand_denom must be at least 1\n");
 
   /* Initialize LLC */
   if (PRIVATE_L1) {
@@ -438,6 +447,8 @@ void init_uncores(void) {
 
   ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !mem_exclusive_l1(),
           "REPL_MOCKINGJAY does not support an exclusive L1 (every fill would be an MLC victim writeback)\n");
+  ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_EMISSARY,
+          "REPL_EMISSARY is MLC-only: P bits reach only the MLC (--mlc_cache_repl_policy)\n");
 
   if (L1_CACHE_REPL_POLICY == REPL_PARTITION) {
     // initially equally partition
@@ -771,6 +782,11 @@ static inline Flag mem_exclusive_mlc_for(Mem_Req_Type type) {
    macros, not visible to memory/lacs.c. */
 Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot) {
   return (slot == LACS_SLOT_MLC) ? &MLC(proc_id)->cache : &L1(proc_id)->cache;
+}
+
+/* The MLC's cache for this core, or NULL without an MLC (memory/emissary.c). */
+Cache* mem_mlc_cache(uns8 proc_id) {
+  return MLC_PRESENT ? &MLC(proc_id)->cache : NULL;
 }
 
 /* The file a miss below the core enters: the icache's or the dcache's, each waiting at
@@ -2626,6 +2642,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->icarus_starved_cycles = 0;
   new_req->icarus_costly_trained = FALSE;
   new_req->pdip_pref = FALSE;
+  new_req->emissary_s = FALSE;
+  new_req->emissary_se = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
   new_req->ld_bound_req_cycles = 0;

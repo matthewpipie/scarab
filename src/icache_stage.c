@@ -51,6 +51,7 @@
 #include "frontend/pin_trace_fe.h"
 #include "libs/list_lib.h"
 #include "libs/port_lib.h"
+#include "memory/emissary.h"
 #include "memory/icarus.h"
 #include "memory/memory.h"
 #include "memory/mshr.h"
@@ -77,7 +78,7 @@
 #include "topdown.h"
 #include "uop_queue_stage.h"
 
-static inline Inst_Info** icache_insert_line(Addr fill_addr, Addr* line_addr, Addr* repl_line_addr);
+static inline Inst_Info** icache_insert_line(Mem_Req* req, Addr fill_addr, Addr* line_addr, Addr* repl_line_addr);
 
 /**************************************************************************************/
 /* Macros */
@@ -436,7 +437,7 @@ Inst_Info** lookup_icache() {
       STAT_EVENT(ic->proc_id, L2_IDEAL_FILL_ICACHE);
       // actually bring it into the L1 icache; a refused victim writeback leaves it a miss this cycle
       Addr dummy_repl_line_addr;
-      line = icache_insert_line(ic->fetch_addr, &dummy_line_addr, &dummy_repl_line_addr);
+      line = icache_insert_line(NULL, ic->fetch_addr, &dummy_line_addr, &dummy_repl_line_addr);
       if (line)
         cache_cmix_fill(&ic->icache, ic->fetch_addr, cmix_class(TRUE, FALSE));
     } else
@@ -1039,6 +1040,10 @@ void execute_coupled_FSM() {
          than 40 cycles". */
       if (ICARUS_COSTLY_FETCH && !cur_data->op_count)
         icarus_note_costly_stall(ic->proc_id, ic->line_addr, ifetch_req);
+      /* EMISSARY: decode starves waiting on this miss (S), with the issue queue empty too or
+         not (E). No off-path gate: hardware can't tell; off_path only splits the stats. */
+      if (topdown_fe_reason == TD_FE_ICACHE_MISS)
+        emissary_note_fetch_starve(ic->proc_id, ifetch_req, issue_queue_is_empty(), ic->off_path);
     }
   }
 
@@ -1216,8 +1221,10 @@ static inline Flag icache_demote_victim(Addr fill_addr) {
 
 /* A request issued while its line was resident fills it again: inserting it again would demote
    a victim and then keep it (cache_insert reuses the line's own way). The line is still made
-   MRU, as the insert did, which EIP's model of the icache relies on. */
-static inline Inst_Info** icache_insert_line(Addr fill_addr, Addr* line_addr, Addr* repl_line_addr) {
+   MRU, as the insert did, which EIP's model of the icache relies on. req: the request filling
+   the line, or NULL for an insert no request made (the ideal L2 prefetcher, the prefetch
+   cache). */
+static inline Inst_Info** icache_insert_line(Mem_Req* req, Addr fill_addr, Addr* line_addr, Addr* repl_line_addr) {
   Inst_Info** line = (Inst_Info**)cache_access(&ic->icache, fill_addr, line_addr, TRUE);
   if (line) {
     STAT_EVENT(ic->proc_id, ICACHE_FILL_RESIDENT);
@@ -1225,7 +1232,12 @@ static inline Inst_Info** icache_insert_line(Addr fill_addr, Addr* line_addr, Ad
   }
   if (!icache_demote_victim(fill_addr))
     return NULL; /* a refused victim writeback leaves the icache untouched */
-  return (Inst_Info**)cache_insert(&ic->icache, ic->proc_id, fill_addr, line_addr, repl_line_addr);
+  /* EMISSARY: the victim's P bit goes to its MLC copy, and the new line's is selected from the
+     starvation its miss caused. Peek at the victim's before the insert replaces it. */
+  Flag victim_p = emissary_l1i_victim_p(ic->proc_id, &ic->icache, fill_addr);
+  line = (Inst_Info**)cache_insert(&ic->icache, ic->proc_id, fill_addr, line_addr, repl_line_addr);
+  emissary_l1i_insert(ic->proc_id, &ic->icache, req, fill_addr, *repl_line_addr, victim_p);
+  return line;
 }
 
 /**************************************************************************************/
@@ -1260,7 +1272,7 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
     Flag to_pref_cache = IC_PREF_CACHE_ENABLE &&  // cmp FIXME prefetchers
                          (USE_CONFIRMED_OFF ? req->off_path_confirmed : req->off_path);
     if (!to_pref_cache) {
-      line = icache_insert_line(ic->fetch_addr, &ic->line_addr, &repl_line_addr);
+      line = icache_insert_line(req, ic->fetch_addr, &ic->line_addr, &repl_line_addr);
       if (!line)  // a refused victim writeback: the fill retries
         return FALSE;
       /* fetch is waiting on this line, so it is demanded whatever brought it */
@@ -1350,7 +1362,7 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
       return TRUE;
     }
 
-    line = icache_insert_line(req->addr, &dummy_addr, &repl_line_addr);
+    line = icache_insert_line(req, req->addr, &dummy_addr, &repl_line_addr);
     if (!line)  // a refused victim writeback: the fill retries
       return FALSE;
     cache_cmix_fill(&ic->icache, req->addr, mem_req_cmix(req));
@@ -1440,7 +1452,7 @@ Inst_Info** ic_pref_cache_access(void) {
   }
 
   if (line) {
-    inserted_line = icache_insert_line(ic->fetch_addr, &ic->line_addr, &repl_line_addr);
+    inserted_line = icache_insert_line(NULL, ic->fetch_addr, &ic->line_addr, &repl_line_addr);
     if (!inserted_line)  // a refused victim writeback leaves the line in the prefetch cache, served from there
       return line;
     cache_cmix_fill(&ic->icache, ic->fetch_addr, cmix_class(TRUE, FALSE));
