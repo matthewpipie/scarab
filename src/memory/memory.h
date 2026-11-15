@@ -293,6 +293,9 @@ Mshr* mem_core_file(uns8 proc_id, Mem_Req_Type type);
    file's own MLC()/L1() macros). */
 Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot);
 
+/* The MLC's cache for this core, or NULL without an MLC. */
+Cache* mem_mlc_cache(uns8 proc_id);
+
 /**************************************************************************************/
 /* Externs */
 
