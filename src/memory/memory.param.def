@@ -213,6 +213,11 @@ DEF_PARAM(mockingjay_sampled_sets, MOCKINGJAY_SAMPLED_SETS, uns, uns, 0, )
    asserts this is <= --mlc_assoc. See the REPL_INST_PARTITION section of libs/cache_lib.c for
    the full algorithm, including how the partition is (not) enforced before a set fills. */
 DEF_PARAM(mlc_inst_part_ways, MLC_INST_PART_WAYS, uns, uns, 0, )
+/* REPL_INST_PARTITION: put only fills a demand instruction fetch waits on (a demand fetch, or a
+   prefetch one merged into before the fill) on the instruction side. FDIP and other instruction
+   prefetches no demand fetch reached go on the data side. Off: every instruction-type fill is on
+   the instruction side. See inst_part_fill_is_inst in memory/memory.c. */
+DEF_PARAM(mlc_inst_part_fdip_data, MLC_INST_PART_FDIP_DATA, Flag, Flag, FALSE, )
 
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )

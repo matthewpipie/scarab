@@ -1063,6 +1063,11 @@ DEF_STAT(  MLC_ICARUS_EVICT_10		       , COUNT  , NO_RATIO  )
 // REPL_INST_PARTITION: fixed instruction/data way partition at the MLC
 DEF_STAT(  MLC_INST_PART_EVICT_INSTR      , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_INST_PART_EVICT_DATA       , COUNT  , NO_RATIO  )
+// MLC fills by the side they land on; IPREF_DATA: instruction-type fills (prefetches no demand
+// fetch reached) that --mlc_inst_part_fdip_data put on the data side
+DEF_STAT(  MLC_INST_PART_FILL_INSTR       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_INST_PART_FILL_DATA        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_INST_PART_FILL_IPREF_DATA  , COUNT  , NO_RATIO  )
 
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
