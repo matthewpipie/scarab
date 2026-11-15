@@ -3174,6 +3174,25 @@ static void mem_fill_waiters(Mshr* file, Mem_Req* req, Mem_Req** reqs) {
   ASSERT(req->proc_id, reqs[0] == req);
 }
 
+/* REPL_INST_PARTITION: whether an MLC fill of req's line lands on the instruction side. By
+   default every instruction type does (mem_req_type_is_inst: demand fetches and instruction
+   prefetches, FDIP's included). With --mlc_inst_part_fdip_data only a fill a demand instruction
+   fetch waits on does: a demand fetch, or a prefetch that one folded into (mem_req_is_type) or
+   joined behind on the MLC's file before the fill (mem_fill_waiters). Every other fill, an FDIP
+   or other instruction prefetch no demand fetch reached included, lands on the data side. A line's
+   side is fixed at its fill. */
+static Flag inst_part_fill_is_inst(Mem_Req* req) {
+  if (!MLC_INST_PART_FDIP_DATA)
+    return mem_req_type_is_inst(req->type);
+  uns n = mem_fill_waiter_count(&mem->mlc_mshr, req);
+  Mem_Req* waiters[n];
+  mem_fill_waiters(&mem->mlc_mshr, req, waiters);
+  for (uns i = 0; i < n; i++)
+    if (mem_req_is_type(waiters[i], MRT_IFETCH))
+      return TRUE;
+  return FALSE;
+}
+
 /* REPL_MLP's marking of one request, by its own counts. MLP_MARK_DATA: an op merged into it and
    mlp_data_marked says so (a store-only request has no load waiting and is never marked).
    MLP_MARK_INSTR: no op did, a demand fetch reached it, and mlp_instr_marked says so
@@ -3944,8 +3963,10 @@ Flag mlc_fill_line(Mem_Req* req) {
      staged yet" and defaulting to data) -- one line gets written back while a different
      line is the one actually evicted, silently dropping its data and double-queuing a
      writeback for the phantom victim once it's genuinely evicted later. */
-  if (MLC(req->proc_id)->cache.repl_policy == REPL_INST_PARTITION)
-    cache_set_inst_part_next_insert(mem_req_type_is_inst(req->type));
+  Flag inst_part = MLC(req->proc_id)->cache.repl_policy == REPL_INST_PARTITION;
+  Flag inst_part_is_inst = inst_part && inst_part_fill_is_inst(req);
+  if (inst_part)
+    cache_set_inst_part_next_insert(inst_part_is_inst);
 
   /* Do not insert the line yet, just check which line we
      need to replace. If that line is dirty, it's possible
@@ -4104,6 +4125,11 @@ Flag mlc_fill_line(Mem_Req* req) {
                                            &repl_line_addr, mem->pref_replpos, TRUE);
   } else {
     data = (MLC_Data*)cache_insert(&MLC(req->proc_id)->cache, req->proc_id, req->addr, &line_addr, &repl_line_addr);
+  }
+  if (inst_part) {
+    STAT_EVENT(req->proc_id, inst_part_is_inst ? MLC_INST_PART_FILL_INSTR : MLC_INST_PART_FILL_DATA);
+    if (!inst_part_is_inst && mem_req_type_is_inst(req->type))
+      STAT_EVENT(req->proc_id, MLC_INST_PART_FILL_IPREF_DATA);
   }
   mlp_count_mlc_evict(req->proc_id, &MLC(req->proc_id)->cache);
   mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, mlp_req_side(req) == MLP_SIDE_INSTR, fill_mark);

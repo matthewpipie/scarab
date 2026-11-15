@@ -2592,7 +2592,9 @@ Flag cache_icarus_mark_critical(Cache* cache, Addr addr) {
 /* INST_PARTITION -- fixed instruction/data way partition at the MLC.
  *
  * --mlc_inst_part_ways (N) reserves N ways per set for instruction lines (demand fetches and
- * FDIP prefetches, mem_req_type_is_inst); the remaining assoc - N ways are data's. The
+ * FDIP prefetches, mem_req_type_is_inst; with --mlc_inst_part_fdip_data only fills a demand
+ * fetch waits on, see inst_part_fill_is_inst in memory.c); the remaining assoc - N ways are
+ * data's. The
  * partition is soft until the set fills: compulsory misses land in empty ways with no
  * eviction, so one side can temporarily hold more than its share (e.g. the first N+2 fills
  * being instruction gives instruction N+2 ways, with no data lines yet to contest them).

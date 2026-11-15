@@ -132,7 +132,8 @@ typedef struct Cache_Entry_struct {
   Flag icarus_reused;   /* REPL_ICARUS: hit at least once since it was filled */
 
   Flag part_is_inst; /* REPL_INST_PARTITION: TRUE if this line was filled by an instruction-side
-                         request (mem_req_type_is_inst: a demand fetch or an FDIP prefetch), set
+                         request (inst_part_fill_is_inst in memory.c: a demand fetch or an FDIP
+                         prefetch; only a demand fetch's with --mlc_inst_part_fdip_data), set
                          once at fill via cache_set_inst_part_next_insert. Determines which of
                          the set's two way-quotas (--mlc_inst_part_ways instruction ways, the
                          rest data) this line counts against. */
@@ -342,7 +343,7 @@ void cache_set_icarus_next_insert(Flag valid, Flag critical);
 Flag cache_icarus_mark_critical(Cache* cache, Addr addr);
 
 /* REPL_INST_PARTITION: stage whether the NEXT cache_insert[_replpos] call's fill is on the
-   instruction side (mem_req_type_is_inst(req->type)) or the data side. Call right before a
+   instruction side (inst_part_fill_is_inst in memory.c) or the data side. Call right before a
    fill-time cache_insert on a cache running REPL_INST_PARTITION. Consumed and reset by
    inst_part_update_insert; also read (without being consumed) by inst_part_update_evict to
    break ties when both quotas are exactly met (see cache_lib.c). */
