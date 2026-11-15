@@ -47,6 +47,9 @@ extern "C" {
 
 void memtrace_init(void);
 int memtrace_trace_read(int proc_id, ctype_pin_inst* pt_next_pi);
+// PC of the raw trace instruction after the one memtrace_trace_read last returned (the reader's
+// one-entry lookahead), for prefetch hints only: it may be one the next read skips. FALSE if none.
+Flag memtrace_peek_next_pc(int proc_id, uint64_t* pc);
 void memtrace_setup(uns proc_id);
 
 #ifdef __cplusplus
