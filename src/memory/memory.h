@@ -257,6 +257,7 @@ Flag new_mem_ic_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns
                        Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath);
 Flag mlc_fill_line(Mem_Req* req);
 Flag l1_fill_line(Mem_Req* req);
+void mlp_share_data_mark(Mem_Req* head); /* REPL_MLP mlp_data_mark_share, from node_retire */
 
 void mark_ops_as_l1_miss_satisfied(Mem_Req* req);
 void mem_stat_served(uns8 proc_id, Mem_Req_Type type, Stat_Enum level, Counter latency);

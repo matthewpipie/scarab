@@ -125,6 +125,8 @@ A data fill is one that at least one load merged into. From the time a load merg
 
 **`mlp_lin_data_thresh`** (float, default `0`): `0` means no ratio test. Above 0, the fill must also have fu_wait load-cycles ÷ window load-cycles above the threshold. `1` or more marks nothing.
 
+**`mlp_data_mark_share`** (flag, default `0`) shares the mark of the miss blocking retirement with every other load miss in flight past the L2. Each cycle that counts toward `mlp_data_bound`, the core checks the request the ROB-head load waits on. If that request has missed the L2, has not been filled into it yet, and its own counts already mark it, every request of the core that a load waits on and that is still waiting in the L2 MSHR file gets a sticky mark. A request with the sticky mark is marked data-bound at its fill, whatever its own counts. Only `mlp_data_bound` 2 and 3 can share; any other value aborts at startup. In hardware this is one broadcast set-bit across the L2 MSHRs that have a load waiting, triggered by the ROB head's MSHR counter.
+
 Useful combinations:
 
 | Flags | Marks |
@@ -193,6 +195,8 @@ All of these are in `memory.stat.<core>.out`.
 | `MLP_MARKED_LOAD` | Marked data fills |
 | `MLP_MARKED_FETCH` | Marked instruction fills |
 | `MLP_MARKED_MERGE` | Marked fills that more than one memory op, or more than one request type, merged into |
+| `MLP_MARKED_SHARED` | Marked data fills whose mark came only from `mlp_data_mark_share` |
+| `MLP_SHARE_CYCLES`, `MLP_SHARE_SET` | `mlp_data_mark_share`: cycles the ROB-head miss shared its mark, and requests that got the shared mark |
 | `MLP_FE_ABANDON` | Resteers away from a line fetch was stuck on, under every policy |
 | `MLP_FE_ABANDON_REREACH` | Abandoned lines a demand fetch reached again before the fill |
 | `MLP_COUNTDOWN_EXPIRE` | Countdowns that reached 0 |

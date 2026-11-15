@@ -329,6 +329,9 @@ void init_memory() {
   /* Per-core LLC timing would make the LLC's latency differ per request, and the
      lookup scan relies on one latency per level. */
   ASSERTM(0, !L1_USE_CORE_FREQ, "l1_use_core_freq is not supported by the MSHR lookup scan\n");
+  /* mlp_data_mark_share shares from the ROB-head counts only */
+  ASSERTM(0, !MLP_DATA_MARK_SHARE || MLP_DATA_BOUND == 2 || MLP_DATA_BOUND == 3,
+          "mlp_data_mark_share needs mlp_data_bound 2 or 3, not %u\n", MLP_DATA_BOUND);
   mshr_init(&mem->mlc_mshr, "MLC_MSHR", MSHR_MLC, MLC_MSHRS);
   mshr_init(&mem->l1_mshr, "L1_MSHR", MSHR_L1, L1_MSHRS);
   mshr_init(&mem->mlc_wb, "MLC_WB", MSHR_MLC_WB, MLC_MSHRS);
@@ -2622,6 +2625,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->ld_bound_last_cycle = MAX_CTR;
   new_req->rob_stall_cycles = 0;
   new_req->rob_stall_noissue_cycles = 0;
+  new_req->mlp_data_shared = FALSE;
   new_req->mlp_mlc_peeked = FALSE;
   new_req->mlp_mlc_lapsed = FALSE;
   new_req->fe_stall_cycles = 0;
@@ -3145,6 +3149,38 @@ static Flag mlp_data_marked(Mem_Req* req) {
   return mlp_data_bound_count(req) >= MLP_DATA_BOUND_MIN;
 }
 
+/* Whether req is a miss in flight past the MLC: on the MLC's request file, its line not yet
+   filled into the MLC. */
+static Flag mlp_mlc_miss_in_flight(Mem_Req* req) {
+  Mshr_Line* line = mshr_line(&mem->mlc_mshr, req->addr);
+  return line && !mshr_line_filled(line) && mshr_holds(&mem->mlc_mshr, req);
+}
+
+/* mlp_data_mark_share: node_retire calls this in each cycle that counts toward mlp_data_bound,
+   with the request the ROB-head load waits on. If that request is an MLC miss in flight that its
+   own counts mark, every request of the core in flight past the MLC that a load waits on gets the
+   sticky mark mlp_req_mark reads. */
+void mlp_share_data_mark(Mem_Req* head) {
+  if (!mlp_mlc_miss_in_flight(head) || !mlp_data_marked(head))
+    return;
+  STAT_EVENT(head->proc_id, MLP_SHARE_CYCLES);
+  Mshr* file = &mem->mlc_mshr;
+  for (Mshr_Line* line = mshr_first(file); line; line = mshr_next(file, line)) {
+    if (mshr_line_filled(line))
+      continue;
+    uns n = mshr_line_count(line);
+    Mem_Req* reqs[n];
+    mshr_line_reqs(line, reqs);
+    for (uns i = 0; i < n; i++) {
+      Mem_Req* r = reqs[i];
+      if (r->proc_id != head->proc_id || !r->op_count || !r->ld_window_cycles || r->mlp_data_shared)
+        continue;
+      r->mlp_data_shared = TRUE;
+      STAT_EVENT(r->proc_id, MLP_SHARE_SET);
+    }
+  }
+}
+
 /* The requests a fill of req's line serves, req first. On the fill walk (mem_fill_line_at), req is
    the first request on its line in `file`, and any others joined the line behind it
    (mem_merge_at_level): a request that reached this level while the line was already on its way,
@@ -3168,10 +3204,11 @@ static void mem_fill_waiters(Mshr* file, Mem_Req* req, Mem_Req** reqs) {
    MLP_MARK_INSTR: no op did, a demand fetch reached it, and mlp_instr_marked says so
    (mem_req_is_type, so a late instruction prefetch a demand fetch merged into counts like a demand
    fetch). The data counts accrue on the request through op->req (lsq_tag_inflight_loads,
-   node_stage.c), so a load flushed before the fill keeps what it accrued. */
+   node_stage.c), so a load flushed before the fill keeps what it accrued. With mlp_data_mark_share,
+   a request a ROB-head load's marked miss shared its mark with is marked as well. */
 static uns8 mlp_req_mark(Mem_Req* req) {
   if (req->op_count)
-    return mlp_data_marked(req) ? MLP_MARK_DATA : MLP_MARK_NONE;
+    return req->mlp_data_shared || mlp_data_marked(req) ? MLP_MARK_DATA : MLP_MARK_NONE;
   if (mem_req_is_type(req, MRT_IFETCH))
     return mlp_instr_marked(req) ? MLP_MARK_INSTR : MLP_MARK_NONE;
   return MLP_MARK_NONE;
@@ -3235,6 +3272,8 @@ static uns8 mlp_stage_fill_boost(Cache* cache, Mshr* file, Mem_Req* req) {
       STAT_EVENT(by->proc_id, MLP_MARKED_MERGE);
     if (by != req)
       STAT_EVENT(by->proc_id, MLP_MARKED_JOINED);
+    if (data && by->mlp_data_shared && !mlp_data_marked(by))
+      STAT_EVENT(by->proc_id, MLP_MARKED_SHARED);
   }
   if (boosts)
     cache_set_next_fill_mlp_boost(boost);
