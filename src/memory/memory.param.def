@@ -198,7 +198,9 @@ DEF_PARAM(icarus_costly_trigger_pct, ICARUS_COSTLY_TRIGGER_PCT, uns, uns, 8, )
 /* Mockingjay (REPL_MOCKINGJAY, Shah, Jain & Lin, HPCA 2022) at the MLC or the L1: evicts the
    line whose predicted next use is furthest away. See memory/mockingjay.c. Every other
    constant is the ChampSim artifact's, scaled to the cache running the policy. */
-/* Bypass a fill predicted to be reused after every line in its set (the artifact does). */
+/* Bypass a fill predicted to be reused after every line in its set (the artifact does). At the
+   MLC over an exclusive LLC (--exclusive_l1), a bypassed line goes down to the LLC as a clean
+   MLC victim would. */
 DEF_PARAM(mockingjay_bypass, MOCKINGJAY_BYPASS, Flag, Flag, TRUE, )
 /* Flex-MIN: how much longer a reuse interval that ends in a prefetch trains as. 0 = the
    artifact's 2 - log2(cores sharing the cache) / 4, i.e. 2 for a private cache. */
