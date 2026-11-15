@@ -238,6 +238,19 @@ DEF_PARAM(emissary_rand_denom, EMISSARY_RAND_DENOM, uns, uns, 32, )
 DEF_PARAM(emissary_reset_interval, EMISSARY_RESET_INTERVAL, Counter, uns64, 0, )
 DEF_PARAM(emissary_passive, EMISSARY_PASSIVE, Flag, Flag, FALSE, )
 
+/* REPL_CLIP (--mlc_cache_repl_policy 25; Code Line Preservation, Jaleel et al., HPCA 2015) at
+   the MLC only. In CLIP mode data inserts distant and is never promoted, while code inserts far
+   and is promoted on a hit; the baseline is SRRIP. See the REPL_CLIP section of
+   libs/cache_lib.c. The defaults are the paper's.
+   Sets that always run the baseline and count the code share of lookups (hits plus misses).
+   0: no sampling, every set always runs CLIP mode. */
+DEF_PARAM(mlc_clip_sampled_sets, MLC_CLIP_SAMPLED_SETS, uns, uns, 32, )
+/* θ: the other sets run CLIP mode while code is more than this percent of the sampled lookups,
+   else the baseline. 100: never CLIP mode (the cache is then SRRIP). */
+DEF_PARAM(mlc_clip_theta_pct, MLC_CLIP_THETA_PCT, uns, uns, 25, )
+/* The sampled code and total lookup counts halve together when the total reaches 2^N. */
+DEF_PARAM(mlc_clip_counter_bits, MLC_CLIP_COUNTER_BITS, uns, uns, 12, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be

@@ -79,6 +79,9 @@ typedef enum Repl_Policy_enum {
   REPL_EMISSARY,       /* protect up to N starvation-causing instruction lines per set
                           (Nagendra, Godala et al., ISCA 2023); MLC only, see
                           memory/emissary.c */
+  REPL_CLIP,           /* Code Line Preservation (Jaleel et al., HPCA 2015): RRIP that inserts
+                          data distant and never promotes it, set-sampled; MLC only -- see the
+                          REPL_CLIP section of libs/cache_lib.c */
 
   NUM_REPL
 } Repl_Policy;
@@ -372,6 +375,18 @@ Cache_Emissary_Mark cache_emissary_set_p(Cache* cache, Addr addr);
 Counter cache_emissary_clear_all(Cache* cache);
 /* hist[k] += the number of sets holding k valid P = 1 lines; k is capped at nbuckets - 1. */
 void cache_emissary_set_census(Cache* cache, Counter* hist, uns nbuckets);
+
+/* REPL_CLIP: stage whether the request behind the NEXT replacement update of this cache -- a hit
+   (cache_access with update_repl) or a fill (cache_insert[_replpos]) -- is code. Call it with
+   valid TRUE right before that call and with valid FALSE right after, so a lookup that missed
+   leaves nothing behind; the update consumes it, and an update with nothing staged is an error.
+   No-op on a cache running another policy. */
+void cache_clip_stage(Cache* cache, Flag valid, Flag is_code);
+
+/* REPL_CLIP: a request's lookup of addr hit or missed. Call once per request (a writeback is
+   not a lookup). If addr's set is sampled, it counts toward the code share CLIP's mode follows.
+   No-op on a cache running another policy. */
+void cache_clip_note_lookup(Cache* cache, uns8 proc_id, Addr addr, Flag is_code, Flag hit);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);

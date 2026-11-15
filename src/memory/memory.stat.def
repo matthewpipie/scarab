@@ -1108,6 +1108,24 @@ DEF_STAT(  EMISSARY_END_SETS_P14              , COUNT  , NO_RATIO  )
 DEF_STAT(  EMISSARY_END_SETS_P15              , COUNT  , NO_RATIO  )
 DEF_STAT(  EMISSARY_END_SETS_P16              , COUNT  , NO_RATIO  )
 
+// REPL_CLIP: Code Line Preservation at the MLC
+// lookups (one per request, no writebacks) that map to a sampled set; their code share picks the mode
+DEF_STAT(  MLC_CLIP_SAMPLE_CODE_HIT       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_SAMPLE_CODE_MISS      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_SAMPLE_DATA_HIT       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_SAMPLE_DATA_MISS      , COUNT  , NO_RATIO  )
+// switches of the follower sets' mode
+DEF_STAT(  MLC_CLIP_MODE_TO_CLIP          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_MODE_TO_BASE          , COUNT  , NO_RATIO  )
+// fills, by set and mode, and by side
+DEF_STAT(  MLC_CLIP_INSERT_SAMPLED        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_INSERT_CLIP           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_INSERT_BASE           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_INSERT_CODE           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_CLIP_INSERT_DATA           , COUNT  , NO_RATIO  )
+// data hits in CLIP mode, which leave the line unpromoted
+DEF_STAT(  MLC_CLIP_HIT_DATA_NOT_PROMOTED , COUNT  , NO_RATIO  )
+
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
 

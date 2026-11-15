@@ -449,6 +449,9 @@ void init_uncores(void) {
           "REPL_MOCKINGJAY does not support an exclusive L1 (every fill would be an MLC victim writeback)\n");
   ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_EMISSARY,
           "REPL_EMISSARY is MLC-only: P bits reach only the MLC (--mlc_cache_repl_policy)\n");
+  /* REPL_CLIP: only the MLC's lookups and fills stage the code/data side (cache_clip_stage); the
+     paper also warns that CLIP at the LLC sends data to memory. */
+  ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_CLIP, "REPL_CLIP is supported at the MLC only\n");
 
   if (L1_CACHE_REPL_POLICY == REPL_PARTITION) {
     // initially equally partition
@@ -1125,6 +1128,19 @@ static inline void mem_report_miss(Cache* cache, Mem_Req* req) {
     cache_report_miss(cache, req->proc_id, req->addr);
 }
 
+/* REPL_CLIP: whether a request is code -- an instruction fetch or prefetch, or a writeback of an
+   instruction line -- for the MLC's insertion and promotion. */
+static inline Flag clip_req_is_code(Mem_Req* req) {
+  return (mem_req_cmix(req) & CMIX_INST) != 0;
+}
+
+/* REPL_CLIP: a request's MLC lookup hit or missed (once per request; a writeback is not a
+   lookup). No-op unless the MLC runs REPL_CLIP. */
+static inline void clip_note_mlc_lookup(Mem_Req* req, Flag hit) {
+  if (!fill_req_is_wb(req))
+    cache_clip_note_lookup(&MLC(req->proc_id)->cache, req->proc_id, req->addr, clip_req_is_code(req), hit);
+}
+
 /* With both levels exclusive these three are mutually exclusive, and each one knows
    what the others imply: a fill claimed by a cache level was asked for by that level,
    so nothing in the core is waiting on it, and a fill that reaches the dcache was asked
@@ -1281,6 +1297,7 @@ Flag mem_process_mlc_hit_access(Mem_Req* req, Addr* line_addr, MLC_Data* data, i
 
     if (data) { /* not perfect mlc */
       mlp_count_mlc_lookup(req, TRUE);
+      clip_note_mlc_lookup(req, TRUE);
       /* REPL_MOCKINGJAY: once per request, not on every retry of the lookup */
       if (PREFETCH_UPDATE_LRU_MLC || !mem_req_type_is_prefetch(req->type))
         mockingjay_hit(&MLC(req->proc_id)->cache, req);
@@ -1463,6 +1480,7 @@ static Flag mem_process_mlc_miss_access(Mem_Req* req, Addr* line_addr, MLC_Data*
   if (!req->mlc_miss) {  // have we marked this as MLC miss already (and thus
                          // collected the statistics)?
     mlp_count_mlc_lookup(req, FALSE);
+    clip_note_mlc_lookup(req, FALSE);
     mem_report_miss(&MLC(req->proc_id)->cache, req);
     if (req->type == MRT_DPRF || req->type == MRT_IPRF || req->demand_match_prefetch) {
       STAT_EVENT(req->proc_id, MLC_PREF_REQ_MISS);
@@ -1782,7 +1800,9 @@ static void mem_complete_mlc_access(Mem_Req* req) {
     req->mlp_mlc_peeked = TRUE;
     req->mlp_mlc_lapsed = cache_mlp_lapsed(&MLC(req->proc_id)->cache, req->addr);
   }
+  cache_clip_stage(&MLC(req->proc_id)->cache, TRUE, clip_req_is_code(req));  // REPL_CLIP: the side a hit promotes by
   data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);  // access MLC
+  cache_clip_stage(&MLC(req->proc_id)->cache, FALSE, FALSE);
   req->mlc_hit = data ? TRUE : FALSE;
   if (data)
     icarus_mlc_hit(&MLC(req->proc_id)->cache, req);
@@ -1804,7 +1824,9 @@ static void mem_complete_mlc_access(Mem_Req* req) {
         STAT_EVENT(req->proc_id, MLP_ORACLE_INSTALL_RETRY);
         return;
       }
+      cache_clip_stage(&MLC(req->proc_id)->cache, TRUE, clip_req_is_code(req));
       data = (MLC_Data*)cache_access(&MLC(req->proc_id)->cache, req->addr, &line_addr, update_mlc_lru);
+      cache_clip_stage(&MLC(req->proc_id)->cache, FALSE, FALSE);
       if (!data)
         STAT_EVENT(req->proc_id, MLP_ORACLE_NOT_INSTALLED);
     } else if (!data && req->mlp_oracle_force && !mlp_oracle_pass_on(req)) {
@@ -2934,6 +2956,7 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
         new_req->mlc_miss = TRUE;
         new_req->mlc_miss_cycle = cycle_count;
         lacs_note_miss(LACS_SLOT_MLC, &MLC(proc_id)->cache, new_req);
+        clip_note_mlc_lookup(new_req, FALSE);
         mem_report_miss(&MLC(proc_id)->cache, new_req);
         break;
       case DEST_L1:
@@ -4130,11 +4153,14 @@ Flag mlc_fill_line(Mem_Req* req) {
       mem->pref_replpos = INSERT_REPL_LOWQTR;
       STAT_EVENT(req->proc_id, PREF_REPL_LOWQTR);
     }
+    cache_clip_stage(&MLC(req->proc_id)->cache, TRUE, clip_req_is_code(req));  // REPL_CLIP: the side it inserts by
     data = (MLC_Data*)cache_insert_replpos(&MLC(req->proc_id)->cache, req->proc_id, req->addr, &line_addr,
                                            &repl_line_addr, mem->pref_replpos, TRUE);
   } else {
+    cache_clip_stage(&MLC(req->proc_id)->cache, TRUE, clip_req_is_code(req));
     data = (MLC_Data*)cache_insert(&MLC(req->proc_id)->cache, req->proc_id, req->addr, &line_addr, &repl_line_addr);
   }
+  cache_clip_stage(&MLC(req->proc_id)->cache, FALSE, FALSE);
   mlp_count_mlc_evict(req->proc_id, &MLC(req->proc_id)->cache);
   mlp_rd_fill(req->proc_id, req->addr, fill_load, fill_ifetch, mlp_req_side(req) == MLP_SIDE_INSTR, fill_mark);
   /* this will make it bring the line into the mlc and then modify it */
