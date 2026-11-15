@@ -171,6 +171,14 @@ int roi(const ctype_pin_inst* pi) {
   return is_xchg_rcx_rcx(pi) ? 1 : 0;
 }
 
+Flag memtrace_peek_next_pc(int proc_id, uint64_t* pc) {
+  TraceReader::bufferEntry next;
+  if (!trace_readers[proc_id] || trace_readers[proc_id]->peekInstructionAtIndex(1, next) != TraceReader::ENTRY_VALID)
+    return FALSE;
+  *pc = next->pc;
+  return TRUE;
+}
+
 int memtrace_trace_read(int proc_id, ctype_pin_inst* next_onpath_pi) {
   InstInfo* insi;
   // A core-sharded file already contains exactly the instruction stream of one

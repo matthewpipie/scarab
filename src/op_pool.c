@@ -176,6 +176,15 @@ Op* alloc_op(uns proc_id) {
   ASSERT(0, !new_op->op_pool_valid);
   new_op->op_pool_valid = TRUE;
 
+  // Prefetch, for write, the op the next alloc_op will clear. Free ops are reused LIFO but sit idle
+  // for a pipeline's worth of ops first, so their lines are often out of the host's L1/L2 by then,
+  // and op_pool_setup_op's memset of a ~1 KB Op stalls on them. A hint only; no other effect.
+  if (new_op->op_pool_next) {
+    const char* next = (const char*)new_op->op_pool_next;
+    for (size_t off = 0; off < sizeof(Op); off += 64)
+      __builtin_prefetch(next + off, 1);
+  }
+
   op_pool_setup_op(proc_id, new_op);
 
   op_pool_active_ops++;

@@ -833,11 +833,28 @@ static uns generate_uops(uns8 proc_id, ctype_pin_inst* pi, Trace_Uop** trace_uop
 // and frees it after the split).
 static Inst_Info fake_inst_info_scratch[MAX_NUM_PROCS];
 
+// The interned Inst_Info of uop ii of pi's macro. Once that uop has been interned, its
+// Static_Op_Info (si->uops[ii]) carries a back-pointer to it, which skips the hash lookup; that
+// pointer is exactly what the lookup would return (the tables are never erased and their nodes
+// never move), and the entry already exists, so *new_entry is FALSE as the lookup would report.
+static inline Inst_Info* macro_uop_info(uns8 proc_id, ctype_pin_inst* pi, Static_Inst_Info* si, int ii,
+                                        uint16_t mem_shape, Flag* new_entry) {
+  Static_Op_Info* so = ii < STATIC_INST_MAX_UOPS ? si->uops[ii] : NULL;
+  if (so && so->info) {
+    *new_entry = FALSE;
+    return so->info;
+  }
+  return cpp_hash_table_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb, ii,
+                                      mem_shape, pi->cf_type, new_entry);
+}
+
 void convert_pinuop_to_t_uop(uns8 proc_id, ctype_pin_inst* pi, Trace_Uop** trace_uop) {
   Flag new_entry = FALSE;
   Inst_Info* info;
   int ii;
   int num_uop = 0;
+  Static_Inst_Info* macro_si = NULL;  // real ops: the interned per-macro struct, looked up once
+  unsigned char macro_si_new = 0;
 
   if (pi->is_string) {
     pi->branch_target = pi->instruction_addr;
@@ -871,8 +888,12 @@ void convert_pinuop_to_t_uop(uns8 proc_id, ctype_pin_inst* pi, Trace_Uop** trace
     convert_dyn_uop(proc_id, info, pi, trace_uop[0], info->table_info.mem_size, TRUE);
   } else {
     const uint16_t mem_shape = mem_shape_of(pi);
-    info = cpp_hash_table_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb, 0,
-                                        mem_shape, pi->cf_type, &new_entry);
+    // One lookup per macro: a macro seen before reaches its uops' Inst_Info and Static_Op_Info
+    // through macro_si->uops[], so only its first sighting pays the per-uop hash lookups. The key
+    // fields are not modified below, so this is the struct the per-uop loop at the end would find.
+    macro_si = cpp_static_inst_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb,
+                                             mem_shape, pi->cf_type, &macro_si_new);
+    info = macro_uop_info(proc_id, pi, macro_si, 0, mem_shape, &new_entry);
     info->fake_inst = FALSE;
     info->fake_inst_reason = WPNM_NOT_IN_WPNM;
 
@@ -886,8 +907,7 @@ void convert_pinuop_to_t_uop(uns8 proc_id, ctype_pin_inst* pi, Trace_Uop** trace
 
       for (ii = 0; ii < num_uop; ii++) {
         if (ii > 0) {
-          info = cpp_hash_table_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb,
-                                              ii, mem_shape, pi->cf_type, &new_entry);
+          info = macro_uop_info(proc_id, pi, macro_si, ii, mem_shape, &new_entry);
           info->fake_inst = FALSE;
           info->fake_inst_reason = WPNM_NOT_IN_WPNM;
         }
@@ -927,8 +947,7 @@ void convert_pinuop_to_t_uop(uns8 proc_id, ctype_pin_inst* pi, Trace_Uop** trace
 
       for (ii = 0; ii < num_uop; ii++) {
         if (ii > 0) {
-          info = cpp_hash_table_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb,
-                                              ii, mem_shape, pi->cf_type, &new_entry);
+          info = macro_uop_info(proc_id, pi, macro_si, ii, mem_shape, &new_entry);
         }
         ASSERT(proc_id, !new_entry);
 
@@ -968,15 +987,19 @@ void convert_pinuop_to_t_uop(uns8 proc_id, ctype_pin_inst* pi, Trace_Uop** trace
       so = (pi->fake_inst_reason == WPNM_FAKE_JMP) ? &fake_jmp_static_op : &fake_nop_static_op;
       si->uops[ii] = so;
     } else {
-      unsigned char si_new = 0, so_new = 0;
-      si = cpp_static_inst_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb,
-                                         mem_shape_of(pi), pi->cf_type, &si_new);
-      so = cpp_static_op_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb, ii,
-                                       mem_shape_of(pi), pi->cf_type, &so_new);
-      if (si_new)
+      unsigned char so_new = 0;
+      si = macro_si;
+      // si->uops[ii] is set exactly when uop ii's Static_Op_Info is created, so a non-NULL entry is
+      // what the lookup would return.
+      so = si->uops[ii];
+      if (!so)
+        so = cpp_static_op_access_create(proc_id, pi->instruction_addr, pi->inst_binary_lsb, pi->inst_binary_msb, ii,
+                                         mem_shape_of(pi), pi->cf_type, &so_new);
+      if (macro_si_new && ii == 0)
         populate_static_inst_info(si, trace_uop[ii]->info, pi);
       if (so_new) {
         populate_static_op_info(so, trace_uop[ii]->info);
+        so->info = trace_uop[ii]->info;
         si->uops[ii] = so;
       }
     }

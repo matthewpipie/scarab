@@ -43,6 +43,47 @@ static bool off_path_mode[MAX_NUM_PROCS][MAX_NUM_BPS] = {};
 static uint64_t off_path_addr[MAX_NUM_PROCS][MAX_NUM_BPS] = {};
 static std::unordered_map<uint64_t, ctype_pin_inst> pc_to_inst[MAX_NUM_PROCS];
 
+// Direct-mapped, PC-indexed front cache for pc_to_inst: slot -> that PC's entry. pc_to_inst is never
+// erased and its nodes never move, so a slot whose pc matches holds exactly the entry find() would
+// return. Every off-path inst looks its PC up, and a map lookup is a 64-bit div plus a chain of
+// dependent loads; a slot's address depends only on the PC, so it can be prefetched one inst ahead.
+// Absent PCs are cached too (wrong paths often run into code the trace never executed), as the
+// marker below; that is safe because the on-path emplace in ext_trace_fetch_op, the map's only
+// insertion, rewrites the PC's slot.
+struct Pc_Inst_Slot {
+  uint64_t pc;
+  ctype_pin_inst *inst;  // nullptr: empty slot; &pc_inst_absent: pc is not in the map
+};
+static ctype_pin_inst pc_inst_absent;
+static constexpr unsigned PC_INST_CACHE_LOG2 = 16;  // entries per core (1 MB), allocated on first use
+static std::vector<Pc_Inst_Slot> pc_inst_cache[MAX_NUM_PROCS];
+
+static inline Pc_Inst_Slot *pc_inst_slot(uns proc_id, uint64_t pc) {
+  auto &cache = pc_inst_cache[proc_id];
+  if (cache.empty())
+    cache.resize(size_t{1} << PC_INST_CACHE_LOG2);
+  return &cache[(pc ^ (pc >> PC_INST_CACHE_LOG2)) & ((size_t{1} << PC_INST_CACHE_LOG2) - 1)];
+}
+
+// pc_to_inst[proc_id]'s entry for pc, or nullptr if it has none (what find() reports).
+static inline ctype_pin_inst *pc_inst_find(uns proc_id, uint64_t pc) {
+  Pc_Inst_Slot *slot = pc_inst_slot(proc_id, pc);
+  if (slot->inst && slot->pc == pc)
+    return slot->inst == &pc_inst_absent ? nullptr : slot->inst;
+  auto it = pc_to_inst[proc_id].find(pc);
+  if (it == pc_to_inst[proc_id].end()) {
+    *slot = {pc, &pc_inst_absent};
+    return nullptr;
+  }
+  *slot = {pc, &it->second};
+  return &it->second;
+}
+
+// Hint that pc_inst_find(proc_id, pc) is coming. No other effect.
+static inline void pc_inst_prefetch(uns proc_id, uint64_t pc) {
+  __builtin_prefetch(pc_inst_slot(proc_id, pc));
+}
+
 /* Per-core circular buffer state */
 struct TraceBufState {
   uint64_t rdptr = 0;
@@ -94,9 +135,9 @@ void buf_map_remove(uns proc_id) {
 }
 
 void off_path_generate_inst(uns proc_id, uint64_t *off_path_addr, ctype_pin_inst *inst) {
-  auto op_iter = pc_to_inst[proc_id].find(*off_path_addr);
-  if (op_iter != pc_to_inst[proc_id].end()) {
-    *inst = op_iter->second;
+  const ctype_pin_inst *entry = pc_inst_find(proc_id, *off_path_addr);
+  if (entry) {
+    *inst = *entry;
     (*off_path_addr) += inst->size;
     DEBUG(proc_id, "Generate off-path inst:%lx inst_size:%i ", inst->instruction_addr, inst->size);
   } else {
@@ -272,52 +313,62 @@ void ext_trace_fetch_op(uns proc_id, uns bp_id, Op *op) {
         op->exit = TRUE;
       } else if (!next_onpath_pi[proc_id].is_trace_patch) {
         uint64_t addr = next_onpath_pi[proc_id].instruction_addr;
-        auto it = pc_to_inst[proc_id].find(addr);
-        if (it == pc_to_inst[proc_id].end()) {
-          pc_to_inst[proc_id].emplace(addr, next_onpath_pi[proc_id]);
+        ctype_pin_inst *entry = pc_inst_find(proc_id, addr);
+        if (!entry) {
+          entry = &pc_to_inst[proc_id].emplace(addr, next_onpath_pi[proc_id]).first->second;
+          *pc_inst_slot(proc_id, addr) = {addr, entry};  // also clears a cached "absent"
         } else if (next_onpath_pi[proc_id].encoding_is_new) {
           STAT_EVENT(proc_id, INST_MAP_UPDATE_ENCODING);
-          it->second = next_onpath_pi[proc_id];
-        } else if (next_onpath_pi[proc_id].inst_binary_lsb != it->second.inst_binary_lsb ||
-                   next_onpath_pi[proc_id].inst_binary_msb != it->second.inst_binary_msb) {
+          *entry = next_onpath_pi[proc_id];
+        } else if (next_onpath_pi[proc_id].inst_binary_lsb != entry->inst_binary_lsb ||
+                   next_onpath_pi[proc_id].inst_binary_msb != entry->inst_binary_msb) {
           DEBUG(proc_id, "Previously seen PC references new instruction addr:%lx inst_size:%i lsb:%lx msb:%lx\n ", addr,
                 next_onpath_pi[proc_id].size, next_onpath_pi[proc_id].inst_binary_lsb,
                 next_onpath_pi[proc_id].inst_binary_msb);
           // Handle jitted code
           STAT_EVENT(proc_id, INST_MAP_UPDATE_JITTED);
-          it->second = next_onpath_pi[proc_id];
-        } else if (next_onpath_pi[proc_id].instruction_next_addr != it->second.instruction_next_addr) {
-          ASSERT(proc_id, next_onpath_pi[proc_id].op_type == it->second.op_type);
+          *entry = next_onpath_pi[proc_id];
+        } else if (next_onpath_pi[proc_id].instruction_next_addr != entry->instruction_next_addr) {
+          ASSERT(proc_id, next_onpath_pi[proc_id].op_type == entry->op_type);
           if (next_onpath_pi[proc_id].cf_type) {
-            ASSERT(proc_id, next_onpath_pi[proc_id].cf_type == it->second.cf_type);
+            ASSERT(proc_id, next_onpath_pi[proc_id].cf_type == entry->cf_type);
             // This can fail for java pt traces
             // ASSERT(proc_id, next_onpath_pi[proc_id].cf_type == CF_CBR ||
             //                 next_onpath_pi[proc_id].cf_type >= CF_IBR ||
             //                 next_onpath_pi[proc_id].last_inst_from_trace);
           }
           STAT_EVENT(proc_id, INST_MAP_UPDATE_NPC_INV + next_onpath_pi[proc_id].op_type);
-          it->second = next_onpath_pi[proc_id];
-        } else if (!ctype_pin_inst_same_mem_vaddr(next_onpath_pi[proc_id], it->second)) {
-          ASSERT(proc_id, next_onpath_pi[proc_id].op_type == it->second.op_type);
+          *entry = next_onpath_pi[proc_id];
+        } else if (!ctype_pin_inst_same_mem_vaddr(next_onpath_pi[proc_id], *entry)) {
+          ASSERT(proc_id, next_onpath_pi[proc_id].op_type == entry->op_type);
           STAT_EVENT(proc_id, INST_MAP_UPDATE_MEM_INV + next_onpath_pi[proc_id].op_type);
-          it->second = next_onpath_pi[proc_id];
+          *entry = next_onpath_pi[proc_id];
         } else {
           if (DEBUG_TRACE_READ && DEBUG_RANGE_COND(proc_id)) {
-            assert_ctype_pin_inst_same(proc_id, next_onpath_pi[proc_id], it->second);
+            assert_ctype_pin_inst_same(proc_id, next_onpath_pi[proc_id], *entry);
           }
         }
         // Poison the oracle memory addresses of the replay-buffer entry for this
         // PC; they are only ever read back to replay off-path instructions.
         if (POISON_REPLAY_BUFFER_ORACLE_VA) {
-          ctype_pin_inst &replay_entry = pc_to_inst[proc_id][addr];
+          // `entry` is this PC's entry (found or just emplaced; the map never erases), i.e. what
+          // pc_to_inst[proc_id][addr] would return, without a second lookup.
+          ctype_pin_inst &replay_entry = *entry;
           for (uns i = 0; i < MAX_LD_NUM; i++)
             replay_entry.ld_vaddr[i] = REPLAY_BUFFER_POISON_VA;
           for (uns i = 0; i < MAX_ST_NUM; i++)
             replay_entry.st_vaddr[i] = REPLAY_BUFFER_POISON_VA;
         }
       }
+      // Prefetch hint, no other effect: the trace reader already holds the next macro, whose
+      // pc_to_inst lookup comes when this one ends.
+      uint64_t peek_pc;
+      if (success && FRONTEND == FE_MEMTRACE && !TRACE_BUF_SIZE && memtrace_peek_next_pc(proc_id, &peek_pc))
+        pc_inst_prefetch(proc_id, peek_pc);
     } else {
       off_path_generate_inst(proc_id, off_path_addr_, next_offpath_pi_);
+      // Prefetch hint, no other effect: the fall-through is the likely next off-path PC.
+      pc_inst_prefetch(proc_id, *off_path_addr_);
     }
   }
   DEBUG(proc_id, "Fetch op is_on_path:%i on_path:%lx off_path:%lx\n", off_path_mode_,

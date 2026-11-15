@@ -83,6 +83,12 @@ typedef struct Static_Inst_Info_struct {
 
 /* Per-uop static info: one instance per uop. Interned by {addr, opcode bytes, uop_idx}. */
 typedef struct Static_Op_Info_struct {
+  // Decode cache: the interned Inst_Info of the same {addr, binary, uop_idx} key, so a macro seen
+  // before reaches its per-uop Inst_Info through si->uops[ii] instead of a hash lookup. NULL for
+  // the shared fake-op structs. First, so it shares a cache line with the fields the pipeline
+  // reads (op_type, mem_type, ...) instead of costing decode a line of its own.
+  struct Inst_Info_struct* info;
+
   uns uop_seq_num;  // index of this uop within its macro-instruction
 
   Op_Type op_type;
