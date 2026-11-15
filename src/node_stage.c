@@ -474,8 +474,13 @@ void node_retire() {
         op->req->rob_stall_cycles++;
         /* issue_queue_update ran earlier this cycle, so node->sd holds the ops issued to the FUs
            this cycle */
-        if (node->sd.op_count == 0)
+        Flag noissue = node->sd.op_count == 0;
+        if (noissue)
           op->req->rob_stall_noissue_cycles++;
+        /* REPL_MLP mlp_data_mark_share: in a cycle that counts toward mlp_data_bound, the head's
+           marked MLC miss shares its mark with the core's other load misses past the MLC */
+        if (MLP_DATA_MARK_SHARE && (MLP_DATA_BOUND == 2 || noissue))
+          mlp_share_data_mark(op->req);
       }
       break;
     }

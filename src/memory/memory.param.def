@@ -289,6 +289,15 @@ DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.0, )
 DEF_PARAM(mlp_data_bound, MLP_DATA_BOUND, uns, uns, 3, )
 DEF_PARAM(mlp_data_bound_min, MLP_DATA_BOUND_MIN, uns, uns, 16, )
+/* mlp_data_mark_share: share the head's data-bound mark with every load miss in flight past the
+   MLC. In a cycle that counts toward mlp_data_bound (2: a ROB-head stall; 3: one in which no op
+   issued either), if the request the ROB-head load waits on has itself missed the MLC and would be
+   marked by its own counts (mlp_data_bound_min, and the ratio if mlp_lin_data_thresh is set), every
+   request of that core waiting in the MLC MSHR file with a load merged into it, not yet filled
+   into the MLC, gets a sticky mark. A request with the sticky mark is marked data-bound at its
+   fill whatever its own counts. Needs mlp_data_bound 2 or 3. Uses only what the core sees (the
+   ROB head, the MSHR file); never off_path. */
+DEF_PARAM(mlp_data_mark_share, MLP_DATA_MARK_SHARE, Flag, Flag, FALSE, )
 DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
 /* mlp_instr_mark: which instruction fills REPL_MLP marks instruction-bound. Only a fill a demand
    fetch reached can be marked: one a demand fetch created, or a prefetch a demand fetch merged

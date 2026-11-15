@@ -367,6 +367,12 @@ DEF_STAT(  MLP_MARKED_MERGE		           , COUNT  , NO_RATIO  )
 // Marked fills whose mark came from a request that joined the line behind its first (a demand
 // that reached the level while a prefetch or another type's request was already fetching it)
 DEF_STAT(  MLP_MARKED_JOINED               , COUNT  , NO_RATIO  )
+// mlp_data_mark_share: marked data fills whose mark came only from a shared mark (the request's
+// own counts would not have marked it); cycles a ROB-head load's marked MLC miss shared its mark;
+// requests that got the shared mark (each once).
+DEF_STAT(  MLP_MARKED_SHARED               , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_SHARE_CYCLES                , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_SHARE_SET                   , COUNT  , NO_RATIO  )
 // Stats only, under every policy: MLC fills a load waited on from a request that joined the line
 // behind its first. These requests are in the MLP_LD_*_LOG2 histograms too.
 DEF_STAT(  MLP_LD_JOINED                   , COUNT  , NO_RATIO  )
