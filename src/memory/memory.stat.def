@@ -1074,8 +1074,9 @@ DEF_STAT(  MLP_ORACLE_REF_OFFSET_25            , DIST  , NO_RATIO  )
 // a load waiting on the request. COST_FE: cycles the backend got no ops while the on-path
 // icache waited on it. BOUND_LD / BOUND_FE: REPL_MLP's ld_bound_cycles / fe_bound_cycles,
 // summed the same way for comparison. COST_ROB_NOISSUE: the part of COST_ROB in which no op
-// issued (rob_stall_noissue_cycles, the count mlp_data_bound 3 marks by). BOUND_FE_STARVE: the
-// part of BOUND_FE in which the backend was idle as mlp_instr_starve defines it (fe_starve_cycles,
+// issued (rob_stall_noissue_cycles, the count the default mlp_data_bound 1/mlp_data_scope 0
+// marks by). BOUND_FE_STARVE: the part of BOUND_FE in which the backend was idle as
+// mlp_instr_starve defines it (fe_starve_cycles,
 // the count mlp_instr_starve marks by; always 0 with mlp_instr_starve 0).
 DEF_STAT(  REQ_COST_ROB_MLC                , COUNT  , NO_RATIO  )
 DEF_STAT(  REQ_COST_ROB_LLC                , COUNT  , NO_RATIO  )
