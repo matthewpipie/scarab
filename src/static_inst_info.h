@@ -103,6 +103,11 @@ typedef struct Static_Op_Info_struct {
   uns store_seq_num;
 
   Flag trigger_op_fetched_hook;  // fire the model's fetch hook for this uop
+
+  // Decode cache: the interned Inst_Info of the same {addr, binary, uop_idx} key, so a macro seen
+  // before reaches its per-uop Inst_Info through si->uops[ii] instead of a hash lookup. NULL for
+  // the shared fake-op structs.
+  struct Inst_Info_struct* info;
 } Static_Op_Info;
 
 #ifdef __cplusplus

@@ -274,7 +274,7 @@ void ext_trace_fetch_op(uns proc_id, uns bp_id, Op *op) {
         uint64_t addr = next_onpath_pi[proc_id].instruction_addr;
         auto it = pc_to_inst[proc_id].find(addr);
         if (it == pc_to_inst[proc_id].end()) {
-          pc_to_inst[proc_id].emplace(addr, next_onpath_pi[proc_id]);
+          it = pc_to_inst[proc_id].emplace(addr, next_onpath_pi[proc_id]).first;
         } else if (next_onpath_pi[proc_id].encoding_is_new) {
           STAT_EVENT(proc_id, INST_MAP_UPDATE_ENCODING);
           it->second = next_onpath_pi[proc_id];
@@ -309,7 +309,9 @@ void ext_trace_fetch_op(uns proc_id, uns bp_id, Op *op) {
         // Poison the oracle memory addresses of the replay-buffer entry for this
         // PC; they are only ever read back to replay off-path instructions.
         if (POISON_REPLAY_BUFFER_ORACLE_VA) {
-          ctype_pin_inst &replay_entry = pc_to_inst[proc_id][addr];
+          // `it` is this PC's entry (found or just emplaced; the map never erases), i.e. what
+          // pc_to_inst[proc_id][addr] would return, without a second lookup.
+          ctype_pin_inst &replay_entry = it->second;
           for (uns i = 0; i < MAX_LD_NUM; i++)
             replay_entry.ld_vaddr[i] = REPLAY_BUFFER_POISON_VA;
           for (uns i = 0; i < MAX_ST_NUM; i++)
