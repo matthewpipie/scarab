@@ -101,36 +101,48 @@ With `mlp_instr_mark 0`, these counted cycles also replace the stuck cycles in t
 
 ### Data marking
 
-A data fill is one that at least one load merged into. From the time a load merges into the request until the fill, REPL_MLP keeps these counts for it. An **fu_wait** cycle is one in which at most `topdown_fu_exec_few` functional units were busy and the ROB was not empty.
+A data fill is one that at least one load merged into. From the time a load merges into the request until the fill, REPL_MLP keeps these counts for it. An **fu_wait** cycle is one in which at most `topdown_fu_exec_few` functional units were busy and the ROB was not empty. A **no-issue** cycle is one in which no op issued to the functional units.
 
-| Count | Adds, each cycle |
+Two params pick which of these counts is checked against the minimum: **`mlp_data_bound`** picks the stall signal, **`mlp_data_scope`** picks which loads a cycle of that signal is charged to.
+
+**`mlp_data_bound`** (default `1`, `no_issue`):
+
+| Value | Signal |
 |---|---|
-| ROB-head stall cycles | 1 if nothing retired because the ROB head was a load waiting on this request |
-| No-issue ROB-head stall cycles | 1 if it is a ROB-head stall cycle and no op issued to the functional units either |
-| fu_wait cycles | 1 if it is an fu_wait cycle and at least one load is waiting on this request |
-| fu_wait load-cycles | 1 per load waiting on this request, in an fu_wait cycle |
-| Window load-cycles | 1 per load waiting on this request |
-
-**`mlp_data_bound`** (default `3`) picks the count that is checked against the minimum:
-
-| Value | Count |
-|---|---|
-| `0` | fu_wait load-cycles. A request several loads merged into counts faster. |
-| `1` | fu_wait cycles, once per request however many loads wait on it |
-| `2` | ROB-head stall cycles. Each stall cycle is charged to one request, where fu_wait charges every miss in flight. The default before #42. |
-| `3` | No-issue ROB-head stall cycles: the cycles of `2` in which no new work started either |
+| `0` | `fu_wait` |
+| `1` | `no_issue` |
 | Other | Aborts |
 
-**`mlp_data_bound_min`** (unsigned, default `16`): the fill is marked if the count reached this. `0` drops the minimum.
+**`mlp_data_scope`** (default `0`, `rob_head`):
 
-**`mlp_lin_data_thresh`** (float, default `0`): `0` means no ratio test. Above 0, the fill must also have fu_wait load-cycles ÷ window load-cycles above the threshold. `1` or more marks nothing.
+| Value | Scope |
+|---|---|
+| `0` | `rob_head`: only cycles in which nothing retired because the ROB head was a load waiting on this request. |
+| `1` | `all_loads`: cycles in which any load waiting on this request (anywhere in the LSQ, not just the ROB head) saw the signal. |
+| Other | Aborts |
+
+Either way, a cycle counts at most once per request: a request several loads merged into does not count faster than one several loads did not. `all_loads` only widens which loads' outstanding-ness can make the cycle count.
+
+The four combinations, and the counter each backs:
+
+| `mlp_data_bound` | `mlp_data_scope` | Counter |
+|---|---|---|
+| `fu_wait` (`0`) | `rob_head` (`0`) | `rob_stall_fuwait_cycles` |
+| `fu_wait` (`0`) | `all_loads` (`1`) | `ld_bound_req_cycles` |
+| `no_issue` (`1`) | `rob_head` (`0`) | `rob_stall_noissue_cycles` (the default) |
+| `no_issue` (`1`) | `all_loads` (`1`) | `ld_bound_noissue_req_cycles` |
+
+Two more counts are kept for comparison but are not selectable through these params, both stats only: `rob_stall_cycles` (ROB-head stall cycles with no stall-signal gate at all, the default before #42), and the per-load (not deduped to one per request) versions of the two `all_loads` counters, `ld_bound_cycles` and `ld_bound_noissue_cycles` (`MLP_LD_HEAD_LOG2_*`, `MLP_LD_BOUND_LOG2_*`, `MLP_LD_BOUNDNI_LOG2_*`).
+
+**`mlp_data_bound_min`** (unsigned, default `16`): the fill is marked if the picked counter reached this. `0` drops the minimum.
+
+**`mlp_lin_data_thresh`** (float, default `0`): `0` means no ratio test. Above 0, the fill must also have `ld_bound_cycles` (always the per-load `fu_wait` count, whatever `mlp_data_bound`/`mlp_data_scope` pick for the minimum check) ÷ window load-cycles above the threshold. `1` or more marks nothing.
 
 Useful combinations:
 
 | Flags | Marks |
 |---|---|
 | None (default) | Fills with at least 16 no-issue ROB-head stall cycles |
-| `--mlp_data_bound 2` | Fills with at least 16 ROB-head stall cycles, the default before #42 |
 | `--mlp_data_bound 0 --mlp_data_bound_min 0 --mlp_lin_data_thresh 0.7` | The old ratio marking, the default before #35 |
 | `--mlp_data_bound_min 0` | Every fill a load waited on |
 
@@ -250,7 +262,7 @@ The L2 marks every fill under any policy and whatever the λs. Marking just labe
 - Google: 12 workloads (63 simpoints), 10M warmup + 50M measured instructions.
 - SPEC2006: 55 workloads (294 simpoints). SPEC2017: 36 (168). Geekbench: 13 (78). Datacenter: 7 (36). All at 10M warmup + 10M measured.
 
-Each number is the geomean IPC gain over L2 LRU. The last column is the geomean of the five suite gains, suites weighted equally. The marked share of load fills for the default is 34% (Google), 37% (SPEC2006), 21% (SPEC2017), 62% (Geekbench) and 53% (Datacenter). "ROB head" rows count every cycle the ROB head was a load waiting on the request and nothing retired (`--mlp_data_bound 2`); "no-issue" rows count only those cycles in which no op issued either (`--mlp_data_bound 3`).
+Each number is the geomean IPC gain over L2 LRU. The last column is the geomean of the five suite gains, suites weighted equally. The marked share of load fills for the default is 34% (Google), 37% (SPEC2006), 21% (SPEC2017), 62% (Geekbench) and 53% (Datacenter). "ROB head" rows count every cycle the ROB head was a load waiting on the request and nothing retired (`--mlp_data_bound 2` before `mlp_data_bound`/`mlp_data_scope` split the signal and scope into separate params; now `rob_stall_cycles`, stats only); "no-issue" rows count only those cycles in which no op issued either (`--mlp_data_bound 3` before the split; now the default, `--mlp_data_bound 1 --mlp_data_scope 0`).
 
 | Data marking, γd 16 | Google | SPEC2006 | SPEC2017 | Geekbench | Datacenter | 5 suites |
 |---|---|---|---|---|---|---|

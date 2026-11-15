@@ -269,25 +269,34 @@ DEF_PARAM(no_repl_after_queue_size, NO_REPL_AFTER_QUEUE_SIZE, uns, uns, 0,)
    docs/repl-mlp.md. */
 DEF_PARAM(mlp_lin_data_lambda, MLP_LIN_DATA_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
-/* Data-bound marking: a fill some load waited on is marked if the count mlp_data_bound picks
-   reached mlp_data_bound_min, as mlp_instr_starve_min is on the instruction side. If
-   mlp_lin_data_thresh is above 0, its ld_bound_cycles / ld_window_cycles ratio must also clear
-   mlp_lin_data_thresh. Every count runs from when a load merges into the request until the MLC
-   fill. mlp_data_bound picks the count:
-     0  ld_bound_cycles: per cycle with fu_wait (no FU busy, ROB not empty; topdown.c), one per
-        load waiting on the request, so a request several loads merged into counts faster.
-     1  the cycles of 0, counted once per request however many loads wait on it.
-     2  rob_stall_cycles: cycles nothing retired because the ROB head was a load waiting on the
-        request. Charges each stall cycle to one request, where fu_wait charges every miss in flight.
-     3  rob_stall_noissue_cycles: the cycles of 2 in which no op issued to the FUs either, so no
-        new work started while the load blocked retirement.
-   The default, no-issue ROB-head cycles >= 16 with no ratio, is a 5-bit saturating counter per
-   MSHR. It and mode 2 replaced the 0.7 ratio (--mlp_data_bound 0 --mlp_data_bound_min 0
+/* Data-bound marking: a fill some load waited on is marked if the count mlp_data_bound and
+   mlp_data_scope pick together reached mlp_data_bound_min, as mlp_instr_starve_min is on the
+   instruction side. If mlp_lin_data_thresh is above 0, its ld_bound_cycles / ld_window_cycles
+   ratio must also clear mlp_lin_data_thresh (this ratio is always the fu_wait, per-load count,
+   whatever mlp_data_bound and mlp_data_scope pick for the min check). Every count runs from when
+   a load merges into the request until the MLC fill, and uses only what the core sees; never
+   off_path.
+
+   mlp_data_bound picks the stall signal:
+     0  fu_wait: no FU busy and the ROB not empty (topdown.c).
+     1  no_issue: no op issued to the FUs this cycle.
+   mlp_data_scope picks which loads a cycle of that signal is charged to, counting each cycle at
+   most once per request either way (a request several loads merged into does not count faster):
+     0  rob_head: only cycles in which nothing retired because the ROB head was a load waiting on
+        the request.
+     1  all_loads: cycles in which any load waiting on the request (anywhere in the LSQ, not just
+        the ROB head) saw the signal.
+   mlp_data_bound_min then applies to whichever of the four (fu_wait/no_issue x rob_head/all_loads)
+   counters that picks: rob_stall_fuwait_cycles, ld_bound_req_cycles, rob_stall_noissue_cycles or
+   ld_bound_noissue_req_cycles respectively (mlp_data_bound_count in memory.c).
+
+   The default, no_issue x rob_head cycles >= 16 with no ratio, is a 5-bit saturating counter per
+   MSHR. It replaced the 0.7 ratio (--mlp_data_bound 0 --mlp_data_bound_min 0
    --mlp_lin_data_thresh 0.7), which both beat on five suites (docs/repl-mlp.md). With
-   mlp_lin_data_thresh 0 and mlp_data_bound_min 0, every fill a load waited on is marked. Each
-   count uses only what the core sees; never off_path. */
+   mlp_lin_data_thresh 0 and mlp_data_bound_min 0, every fill a load waited on is marked. */
 DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.0, )
-DEF_PARAM(mlp_data_bound, MLP_DATA_BOUND, uns, uns, 3, )
+DEF_PARAM(mlp_data_bound, MLP_DATA_BOUND, uns, uns, 1, )
+DEF_PARAM(mlp_data_scope, MLP_DATA_SCOPE, uns, uns, 0, )
 DEF_PARAM(mlp_data_bound_min, MLP_DATA_BOUND_MIN, uns, uns, 16, )
 DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
 /* mlp_instr_mark: which instruction fills REPL_MLP marks instruction-bound. Only a fill a demand
