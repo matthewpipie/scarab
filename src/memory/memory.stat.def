@@ -917,6 +917,34 @@ DEF_STAT(  MLP_OCC_INWINDOW                , COUNT  , NO_RATIO  )
 // fill, clearing the flag.
 DEF_STAT(  MLP_FE_ABANDON                  , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
+// mlp_data_branch (on): each data request judged at its fill, by which rule marks it. The order
+// is NONE + bound + 2 * branch.
+DEF_STAT(  MLP_DATA_FILL_NONE              , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_DATA_FILL_BOUND             , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_DATA_FILL_BRANCH            , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_DATA_FILL_BOTH              , COUNT  , NO_RATIO  )
+// Retired conditional branches by TAGE provider confidence at prediction (op->bp_confidence),
+// under every policy, and those of them that recovered at exec (mispredicted).
+DEF_STAT(  MLP_BR_CONF_0_RETIRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_1_RETIRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_2_RETIRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_3_RETIRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_0_MISPRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_1_MISPRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_2_MISPRED           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_CONF_3_MISPRED           , COUNT  , NO_RATIO  )
+// mlp_data_branch (on): retired branches in the mode's scope (mode 1 conditional; mode 2 also
+// indirect jumps, calls and coroutines), by whether at rename they named an in-flight load (FED),
+// whether they counted as hard (HARD), and whether they recovered at exec (MISP). The order is
+// UNFED_EASY_OK + fed + 2 * hard + 4 * mispredicted.
+DEF_STAT(  MLP_BR_RET_UNFED_EASY_OK        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_FED_EASY_OK          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_UNFED_HARD_OK        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_FED_HARD_OK          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_UNFED_EASY_MISP      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_FED_EASY_MISP        , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_UNFED_HARD_MISP      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLP_BR_RET_FED_HARD_MISP        , COUNT  , NO_RATIO  )
 // REPL_MLP with mlp_boost_countdown: protections whose countdown reached 0, and victims taken while
 // every line in the set was protected.
 DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )

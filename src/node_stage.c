@@ -103,6 +103,7 @@ void node_precommit_update(void);
 void node_precommit_retire(Op* op);
 
 void node_fuse_op(Op* op);
+static void node_mlp_branch_retire_stats(Op* op);
 
 /**************************************************************************************/
 /* set_node_stage:*/
@@ -439,6 +440,22 @@ void node_fill_rob(Stage_Data* src_sd) {
 }
 
 /**************************************************************************************/
+/* node_mlp_branch_retire_stats: MLP_BR_CONF_* for every retired conditional branch, and with
+   mlp_data_branch on, MLP_BR_RET_* for retired branches in its scope (stats only; retire is on the
+   correct path). */
+
+static void node_mlp_branch_retire_stats(Op* op) {
+  Flag misp = op->bp_pred_info && op->bp_pred_info->recovery_point == RECOVER_AT_EXEC;
+  if (op->uop->cf_type == CF_CBR && op->bp_confidence >= 0 && op->bp_confidence < 4) {
+    STAT_EVENT(op->proc_id, MLP_BR_CONF_0_RETIRED + op->bp_confidence);
+    if (misp)
+      STAT_EVENT(op->proc_id, MLP_BR_CONF_0_MISPRED + op->bp_confidence);
+  }
+  if (MLP_DATA_BRANCH && mlp_branch_in_scope(op))
+    STAT_EVENT(op->proc_id, MLP_BR_RET_UNFED_EASY_OK + op->mlp_br_fed + 2 * op->mlp_br_hard + 4 * misp);
+}
+
+/**************************************************************************************/
 /* node_retire:*/
 
 void node_retire() {
@@ -568,6 +585,7 @@ void node_retire() {
         bp_resolve_op(g_bp_data, op);
       }
       bp_retire_op(g_bp_data, op);
+      node_mlp_branch_retire_stats(op);
     }
 
     if (op->uop->mem_type == MEM_LD && (op_get_done_cycle(op) - op_get_sched_cycle(op)) < 5) {

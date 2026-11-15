@@ -282,6 +282,23 @@ DEF_PARAM(mlp_lin_instr_lambda, MLP_LIN_INSTR_LAMBDA, float, float, 0.0, )
 DEF_PARAM(mlp_lin_data_thresh, MLP_LIN_DATA_THRESH, float, float, 0.0, )
 DEF_PARAM(mlp_data_bound, MLP_DATA_BOUND, uns, uns, 3, )
 DEF_PARAM(mlp_data_bound_min, MLP_DATA_BOUND_MIN, uns, uns, 16, )
+/* Branch-feeding data marking, ORed with the data-bound marking above: a fill some load waited on
+   is also marked if a branch counted as hard read that load's value, directly or through non-load
+   ops, by the time of the MLC fill. At rename every op takes the youngest in-flight load its
+   register sources derive from (a load takes itself), as a per-physical-register load tag would;
+   a hard branch flags that load and its outstanding request (map_stage.c). mlp_data_branch:
+     0  off (default; identical to no branch marking)
+     1  conditional branches whose TAGE provider confidence (op->bp_confidence, bp_mech tage64k)
+        is in the mlp_data_branch_conf bitmask. bp_confidence is 1 for the weakest counter, 0 for
+        the next, 2 medium, 3 saturated (or a saturated bimodal entry); the default 0x3 takes the
+        two weakest. Uses only what the core sees.
+     2  CHEAT, not implementable: on-path conditional and indirect (jump, call, coroutine) branches
+        the simulator knows will mispredict and recover at exec (reads off_path and the oracle
+        recovery point). An upper bound for mode 1.
+   To mark by the branch rule alone, disable the data-bound rule with --mlp_lin_data_thresh 1.0
+   (ld_bound_cycles never exceeds ld_window_cycles, so the ratio can't clear it). */
+DEF_PARAM(mlp_data_branch, MLP_DATA_BRANCH, uns, uns, 0, )
+DEF_PARAM(mlp_data_branch_conf, MLP_DATA_BRANCH_CONF, uns, uns, 3, )
 DEF_PARAM(mlp_lin_instr_thresh, MLP_LIN_INSTR_THRESH, float, float, 0.7, )
 /* mlp_instr_mark: which instruction fills REPL_MLP marks instruction-bound. Only a fill a demand
    fetch reached can be marked: one a demand fetch created, or a prefetch a demand fetch merged

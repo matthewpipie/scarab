@@ -2337,6 +2337,8 @@ Flag mem_adjust_matching_request(Mem_Req* req, Mem_Req_Type type, Addr addr, uns
     ASSERT(req->proc_id, req->type != MRT_WB && req->type != MRT_WB_NODIRTY);
 
     req->op_count++;
+    if (op->mlp_feeds_hard_branch)
+      req->feeds_hard_branch = TRUE;
     op_ptr = sl_list_add_tail(&req->op_ptrs);
     *op_ptr = op;
     op_unique = sl_list_add_tail(&req->op_uniques);
@@ -2622,6 +2624,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->ld_bound_last_cycle = MAX_CTR;
   new_req->rob_stall_cycles = 0;
   new_req->rob_stall_noissue_cycles = 0;
+  new_req->feeds_hard_branch = op && op->mlp_feeds_hard_branch;
   new_req->mlp_mlc_peeked = FALSE;
   new_req->mlp_mlc_lapsed = FALSE;
   new_req->fe_stall_cycles = 0;
@@ -3136,13 +3139,25 @@ static Counter mlp_data_bound_count(Mem_Req* req) {
 
 /* Whether a fill some load waited on is marked data-bound: the ratio (unless mlp_lin_data_thresh
    is 0) and the mlp_data_bound count. */
-static Flag mlp_data_marked(Mem_Req* req) {
+static Flag mlp_data_bound_marked(Mem_Req* req) {
   if (!req->ld_window_cycles)
     return FALSE;
   if (MLP_LIN_DATA_THRESH > 0.0 &&
       !((double)req->ld_bound_cycles / (double)req->ld_window_cycles > (double)MLP_LIN_DATA_THRESH))
     return FALSE;
   return mlp_data_bound_count(req) >= MLP_DATA_BOUND_MIN;
+}
+
+/* The data-bound rule ORed with mlp_data_branch's (a load waiting on the request fed a branch
+   counted as hard). MLP_DATA_FILL_* (with mlp_data_branch on) counts each request judged by which
+   rules mark it. */
+static Flag mlp_data_marked(Mem_Req* req) {
+  Flag bound = mlp_data_bound_marked(req);
+  if (!MLP_DATA_BRANCH)
+    return bound;
+  Flag branch = req->feeds_hard_branch;
+  STAT_EVENT(req->proc_id, MLP_DATA_FILL_NONE + bound + 2 * branch);
+  return bound || branch;
 }
 
 /* The requests a fill of req's line serves, req first. On the fill walk (mem_fill_line_at), req is

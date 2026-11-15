@@ -45,6 +45,7 @@
 #include "memory/memory.param.h"
 
 #include "bp/bp.h"
+#include "memory/mem_req.h"
 
 #include "ft.h"
 #include "map.h"
@@ -248,11 +249,79 @@ void update_map_stage(Stage_Data* src_sd) {
 /**************************************************************************************/
 /* Local methods */
 
+/* REPL_MLP mlp_data_branch: a load still in the machine that src names as its feed load. */
+static inline Op* mlp_live_feed(Op* src, Counter src_unique) {
+  if (!src || !src->op_pool_valid || src->unique_num != src_unique)
+    return NULL;
+  Op* load = src->mlp_feed_load;
+  if (!load || !load->op_pool_valid || load->unique_num != src->mlp_feed_load_unique)
+    return NULL;
+  return load;
+}
+
+/* REPL_MLP mlp_data_branch: whether op is a branch the mode looks at (see memory.param.def). */
+Flag mlp_branch_in_scope(Op* op) {
+  ASSERTM(op->proc_id, MLP_DATA_BRANCH <= 2, "mlp_data_branch %u is not 0, 1 or 2\n", MLP_DATA_BRANCH);
+  Cf_Type t = op->uop->cf_type;
+  if (MLP_DATA_BRANCH == 1)
+    return t == CF_CBR;
+  if (MLP_DATA_BRANCH == 2)
+    return t == CF_CBR || t == CF_IBR || t == CF_ICALL || t == CF_ICO;
+  return FALSE;
+}
+
+/* REPL_MLP mlp_data_branch: whether an in-scope branch counts as hard. Mode 1 reads the TAGE
+   provider confidence the predictor gave this op; mode 2 cheats with the simulator's knowledge that
+   this on-path branch mispredicts and recovers at exec. */
+static Flag mlp_branch_is_hard(Op* op) {
+  if (MLP_DATA_BRANCH == 1)
+    return op->bp_confidence >= 0 && op->bp_confidence < 32 && ((MLP_DATA_BRANCH_CONF >> op->bp_confidence) & 1);
+  return !op->off_path && op->bp_pred_info && op->bp_pred_info->recovery_point == RECOVER_AT_EXEC;
+}
+
+/* REPL_MLP mlp_data_branch, at rename: the op takes the youngest in-flight load among its register
+   sources' feed loads (a load takes itself, its value being the load's), modeling a load tag per
+   physical register. A hard in-scope branch flags that load, and the request the load is waiting
+   on if it has one (a later request it creates or joins copies the flag; memory.c), so the line's
+   MLC fill is marked. A source whose producer or feed load has left the machine names no load: its
+   data is back, so its fill has happened. */
+static void mlp_branch_rename(Op* op) {
+  if (!MLP_DATA_BRANCH)
+    return;
+  Op* feed = NULL;
+  if (op->uop->mem_type == MEM_LD) {
+    feed = op;
+  } else {
+    for (uns ii = 0; ii < op->num_srcs; ii++) {
+      if (op->src_info[ii].type != REG_DATA_DEP)
+        continue;
+      Op* load = mlp_live_feed(op->src_info[ii].op, op->src_info[ii].unique_num);
+      if (load && (!feed || load->unique_num > feed->unique_num))
+        feed = load;
+    }
+  }
+  op->mlp_feed_load = feed;
+  op->mlp_feed_load_unique = feed ? feed->unique_num : 0;
+
+  if (!op->uop->cf_type || !mlp_branch_in_scope(op))
+    return;
+  op->mlp_br_fed = feed != NULL;
+  op->mlp_br_hard = mlp_branch_is_hard(op);
+  if (feed && op->mlp_br_hard) {
+    feed->mlp_feeds_hard_branch = TRUE;
+    if (feed->req && op_get_done_cycle(feed) == MAX_CTR)
+      feed->req->feeds_hard_branch = TRUE;
+  }
+}
+
 static inline void stage_process_op(Op* op) {
   ASSERT(map->proc_id, map->proc_id == td->proc_id);
 
   if (op->uop->cf_type == CF_CBR)
     STAT_EVENT(op->proc_id, op->uop->num_src_regs ? MAP_CBR_WITH_SRC_REGS : MAP_CBR_NO_SRC_REGS);
+
+  /* REPL_MLP mlp_data_branch: before map_wakeup_list_add invalidates retired sources */
+  mlp_branch_rename(op);
 
   /* register renaming allocation */
   reg_file_rename(op);

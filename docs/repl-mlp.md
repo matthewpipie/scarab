@@ -134,6 +134,8 @@ Useful combinations:
 | `--mlp_data_bound 0 --mlp_data_bound_min 0 --mlp_lin_data_thresh 0.7` | The old ratio marking, the default before #35 |
 | `--mlp_data_bound_min 0` | Every fill a load waited on |
 
+**`mlp_data_branch`** (default `0`, off) ORs a second rule into data marking: a fill is also marked if a branch counted as hard to predict read the waiting load's value. Mode `1` counts a conditional branch as hard by its TAGE confidence (`mlp_data_branch_conf`); mode `2` is a cheat that uses the simulator's knowledge of mispredicts. It gained little across the benchmarks; see [mlp-data-branch.md](mlp-data-branch.md).
+
 **`topdown_fu_exec_few`** (unsigned, default `0`, in `src/core.param.def`) sets how many busy functional units still count as "few". It affects `mlp_data_bound` 0 and 1, the data ratio, and `mlp_instr_starve 5`. It is shared with the top-down stats, so changing it also changes `TOPDOWN_EXEC_STALLS_CYCLES`.
 
 ### Replacement mode
@@ -377,6 +379,11 @@ On the same runs, REPL_MLP gained +2.60 at γi 64, γd 0 and +2.78 at γi 64, γ
   - On Google, DRRIP alone is −0.95 vs LRU.
   - DRRIP with instruction credits of 16 (`--mlp_rrip_boost 2`) got +1.36 (`mlp_instr_mark 2` alone, top 2 simpoints), against +1.75 for LRU with γ64.
   - It was still rising at 16, and larger credits have not been run.
+
+- **Branch-feeder data marking (`--mlp_data_branch`)**
+  - Even the cheat mode's upper bound is at most +0.39% per suite (data side only, 213 workloads).
+  - Only high-mispredict workloads like soplex and xgboost gain.
+  - Details in [mlp-data-branch.md](mlp-data-branch.md).
 
 ## Open
 

@@ -242,6 +242,15 @@ struct Op_struct {
 
   struct Mem_Req_struct* req;  // pointer to memory request responsible for waking up the op
 
+  /* REPL_MLP mlp_data_branch, set at rename (map_stage.c): the youngest in-flight load this op's
+     value derives from (a load names itself), validated by its unique_num; on a load, whether a
+     branch counted as hard read it; on a branch, whether it named a live load and was hard (stats). */
+  Op* mlp_feed_load;
+  Counter mlp_feed_load_unique;
+  Flag mlp_feeds_hard_branch;
+  Flag mlp_br_fed;
+  Flag mlp_br_hard;
+
   Flag marked;  // for algorithms that mark already seen ops
 
   /*------------------------------------------------------------------------------------*/
