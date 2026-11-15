@@ -2701,6 +2701,143 @@ Cache_Entry* inst_part_update_evict(Cache* cache, uns8 proc_id, uns set, uns* wa
 }
 
 /**************************************************************************************/
+/* CLIP -- Code Line Preservation (Jaleel, Nuzman, Moga, Steely & Emer, "High Performing Cache
+ * Hierarchies for Server Workloads", HPCA 2015, Sec. IV.B), at the MLC.
+ *
+ * RRPVs use SRRIP's 2-bit range, and the victim search is rrip_update_evict. Only insertion and
+ * promotion change, by whether the request is code or data. Code means
+ * mem_req_type_is_inst: a demand fetch or any instruction prefetch, FDIP's included. A
+ * writeback is code if the line it carries is.
+ *   - CLIP mode (the paper's Figure 7): code inserts at RRPV 2 (far) and a code hit promotes it
+ *     to 0. Data inserts at RRPV 3 (distant), and a data hit leaves the line as it is.
+ *   - Baseline mode, SRRIP: every line inserts at 2 and every hit promotes to 0. Code is
+ *     treated exactly as in CLIP mode, so the modes differ only for data.
+ *
+ * Set sampling (Sec. IV.B):
+ *   - --mlc_clip_sampled_sets sets always run the baseline. They count the code and the total
+ *     lookups (hits plus misses) that map to them: one per request, writebacks excluded.
+ *   - Every other set runs CLIP mode while code is more than --mlc_clip_theta_pct percent of
+ *     those lookups, and the baseline otherwise.
+ *   - The two counts halve together whenever the total reaches 2^--mlc_clip_counter_bits, so
+ *     the share follows recent behavior. The paper does not say how its counters age.
+ *   - Before any sampled lookup, the share is 0 and every set runs the baseline.
+ *   - With --mlc_clip_sampled_sets 0 there is no sampling, and every set always runs CLIP mode.
+ *
+ * Sampled sets are spread like DRRIP's leaders. The S sets an index can reach are cut into
+ * L = min(--mlc_clip_sampled_sets, S) constituencies of C = S / L sets, and constituency k
+ * samples the set at offset k mod C.
+ *
+ * Which side a hit or fill is on is staged by the cache's owner (cache_clip_stage), since
+ * update_hit and update_insert see only the line. */
+
+typedef struct Clip_State_struct {
+  Flag* sampled;        /* per set: always runs the baseline and counts lookups */
+  Counter code_lookups; /* sampled lookups by code, decayed with all_lookups */
+  Counter all_lookups;
+  Counter halve_at;
+  Flag clip_on; /* the follower sets' mode: CLIP if TRUE, else the baseline */
+  Flag staged;  /* cache_clip_stage */
+  Flag staged_is_code;
+} Clip_State;
+
+void clip_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                      Repl_Policy repl_policy);
+void clip_update_hit(Cache* cache, uns set, uns way, void* arg);
+void clip_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg);
+
+static inline Clip_State* clip_state(Cache* cache) {
+  return (Clip_State*)cache->predictor;
+}
+
+void clip_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                      Repl_Policy repl_policy) {
+  Clip_State* s;
+  uns sets = cache->set_mask + 1;
+  uns samples, constituency, k;
+
+  general_action_init(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
+  ASSERTM(0, MLC_CLIP_THETA_PCT <= 100, "--mlc_clip_theta_pct must be at most 100 (got %u)\n", MLC_CLIP_THETA_PCT);
+  ASSERTM(0, MLC_CLIP_COUNTER_BITS >= 1 && MLC_CLIP_COUNTER_BITS <= 40,
+          "--mlc_clip_counter_bits must be in [1, 40] (got %u)\n", MLC_CLIP_COUNTER_BITS);
+
+  s = (Clip_State*)calloc(1, sizeof(Clip_State));
+  s->sampled = (Flag*)calloc(cache->num_sets, sizeof(Flag));
+  samples = MIN2(MLC_CLIP_SAMPLED_SETS, sets);
+  if (samples) {
+    constituency = sets / samples;
+    for (k = 0; k < samples; k++)
+      s->sampled[k * constituency + k % constituency] = TRUE;
+  }
+  s->halve_at = (Counter)1 << MLC_CLIP_COUNTER_BITS;
+  s->clip_on = samples == 0;
+  cache->predictor = s;
+}
+
+void cache_clip_stage(Cache* cache, Flag valid, Flag is_code) {
+  if (cache->repl_policy != REPL_CLIP)
+    return;
+  clip_state(cache)->staged = valid;
+  clip_state(cache)->staged_is_code = valid && is_code;
+}
+
+static inline Flag clip_take_stage(Cache* cache, uns8 proc_id) {
+  Clip_State* s = clip_state(cache);
+  ASSERTM(proc_id, s->staged, "%s: REPL_CLIP replacement update with no code/data side staged\n", cache->name);
+  s->staged = FALSE;
+  return s->staged_is_code;
+}
+
+void cache_clip_note_lookup(Cache* cache, uns8 proc_id, Addr addr, Flag is_code, Flag hit) {
+  Addr tag, tag_full, line_addr;
+  Clip_State* s;
+  Flag on;
+
+  if (cache->repl_policy != REPL_CLIP)
+    return;
+  s = clip_state(cache);
+  if (!s->sampled[cache_index(cache, addr, &tag, &tag_full, &line_addr)])
+    return;
+
+  STAT_EVENT(proc_id, is_code ? (hit ? MLC_CLIP_SAMPLE_CODE_HIT : MLC_CLIP_SAMPLE_CODE_MISS)
+                              : (hit ? MLC_CLIP_SAMPLE_DATA_HIT : MLC_CLIP_SAMPLE_DATA_MISS));
+  s->all_lookups++;
+  if (is_code)
+    s->code_lookups++;
+  if (s->all_lookups >= s->halve_at) {
+    s->all_lookups >>= 1;
+    s->code_lookups >>= 1;
+  }
+  on = s->code_lookups * 100 > (Counter)MLC_CLIP_THETA_PCT * s->all_lookups;
+  if (on != s->clip_on) {
+    STAT_EVENT(proc_id, on ? MLC_CLIP_MODE_TO_CLIP : MLC_CLIP_MODE_TO_BASE);
+    s->clip_on = on;
+  }
+}
+
+void clip_update_hit(Cache* cache, uns set, uns way, void* arg) {
+  Clip_State* s = clip_state(cache);
+  Cache_Entry* line = &cache->entries[set][way];
+  Flag code = clip_take_stage(cache, line->proc_id);
+
+  if (code || s->sampled[set] || !s->clip_on)
+    line->reference_val = 0;
+  else
+    STAT_EVENT(line->proc_id, MLC_CLIP_HIT_DATA_NOT_PROMOTED);
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_HIT);
+}
+
+void clip_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg) {
+  Clip_State* s = clip_state(cache);
+  Flag code = clip_take_stage(cache, proc_id);
+  Flag clip = !s->sampled[set] && s->clip_on;
+
+  cache->entries[set][way].reference_val = clip && !code ? RRIP_DISTANT_VAL : RRIP_DISTANT_VAL - 1;
+  STAT_EVENT(proc_id, s->sampled[set] ? MLC_CLIP_INSERT_SAMPLED : clip ? MLC_CLIP_INSERT_CLIP : MLC_CLIP_INSERT_BASE);
+  STAT_EVENT(proc_id, code ? MLC_CLIP_INSERT_CODE : MLC_CLIP_INSERT_DATA);
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
+}
+
+/**************************************************************************************/
 /* Driven Table */
 
 // clang-format off
@@ -2715,6 +2852,7 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_ICARUS,  icarus_action_init,   general_action_repl,  icarus_update_hit,  icarus_update_insert, icarus_update_evict, NULL              },
   { REPL_MOCKINGJAY, mockingjay_action_init, general_action_repl, mockingjay_update_hit, mockingjay_update_insert, mockingjay_update_evict, NULL },
   { REPL_INST_PARTITION, inst_part_action_init, general_action_repl, inst_part_update_hit, inst_part_update_insert, inst_part_update_evict, NULL },
+  { REPL_CLIP,    clip_action_init,     general_action_repl,  clip_update_hit,    clip_update_insert,   rrip_update_evict,   NULL              },
   { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL,                NULL              },
 };
 // clang-format on

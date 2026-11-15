@@ -76,6 +76,9 @@ typedef enum Repl_Policy_enum {
   REPL_INST_PARTITION, /* fixed instruction/data way partition at the MLC -- see
                           --mlc_inst_part_ways and the REPL_INST_PARTITION section of
                           libs/cache_lib.c */
+  REPL_CLIP,           /* Code Line Preservation (Jaleel et al., HPCA 2015): RRIP that inserts
+                          data distant and never promotes it, set-sampled; MLC only -- see the
+                          REPL_CLIP section of libs/cache_lib.c */
 
   NUM_REPL
 } Repl_Policy;
@@ -347,6 +350,18 @@ Flag cache_icarus_mark_critical(Cache* cache, Addr addr);
    inst_part_update_insert; also read (without being consumed) by inst_part_update_evict to
    break ties when both quotas are exactly met (see cache_lib.c). */
 void cache_set_inst_part_next_insert(Flag is_inst);
+
+/* REPL_CLIP: stage whether the request behind the NEXT replacement update of this cache -- a hit
+   (cache_access with update_repl) or a fill (cache_insert[_replpos]) -- is code. Call it with
+   valid TRUE right before that call and with valid FALSE right after, so a lookup that missed
+   leaves nothing behind; the update consumes it, and an update with nothing staged is an error.
+   No-op on a cache running another policy. */
+void cache_clip_stage(Cache* cache, Flag valid, Flag is_code);
+
+/* REPL_CLIP: a request's lookup of addr hit or missed. Call once per request (a writeback is
+   not a lookup). If addr's set is sampled, it counts toward the code share CLIP's mode follows.
+   No-op on a cache running another policy. */
+void cache_clip_note_lookup(Cache* cache, uns8 proc_id, Addr addr, Flag is_code, Flag hit);
 
 void* shadow_cache_insert(Cache* cache, uns set, Addr tag, Addr tag_full, Addr base);
 void* access_shadow_lines(Cache* cache, uns set, Addr tag, Addr tag_full, Flag* tag_aliasing);
