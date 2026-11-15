@@ -147,6 +147,11 @@ struct Mem_Req_struct {
   Flag icarus_costly_trained;
   /* PDIP: this request is a PDIP prefetch not yet reached by a demand fetch (stats only). */
   Flag pdip_pref;
+  /* EMISSARY: while this instruction request was outstanding, fetch starved decode waiting on
+     it for at least one cycle (S), and in at least one such cycle the issue queue was also
+     empty (S&E). Set by emissary_note_fetch_starve, read at the icache fill. */
+  Flag emissary_s;
+  Flag emissary_se;
   Counter demand_icache_emitted_cycle; /* cycle when the request is emitted. */
   Counter emitted_cycle;               /* cycle when request of any type was first initialized */
   Counter priority;                    /* priority of the miss */

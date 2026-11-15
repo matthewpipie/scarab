@@ -76,6 +76,9 @@ typedef enum Repl_Policy_enum {
   REPL_INST_PARTITION, /* fixed instruction/data way partition at the MLC -- see
                           --mlc_inst_part_ways and the REPL_INST_PARTITION section of
                           libs/cache_lib.c */
+  REPL_EMISSARY,       /* protect up to N starvation-causing instruction lines per set
+                          (Nagendra, Godala et al., ISCA 2023); MLC only, see
+                          memory/emissary.c */
   REPL_CLIP,           /* Code Line Preservation (Jaleel et al., HPCA 2015): RRIP that inserts
                           data distant and never promotes it, set-sampled; MLC only -- see the
                           REPL_CLIP section of libs/cache_lib.c */
@@ -139,6 +142,11 @@ typedef struct Cache_Entry_struct {
                          once at fill via cache_set_inst_part_next_insert. Determines which of
                          the set's two way-quotas (--mlc_inst_part_ways instruction ways, the
                          rest data) this line counts against. */
+
+  Flag emissary_p; /* EMISSARY: the line's priority bit (P = 1: high priority). Cleared at every
+                       insert. On the icache, set at fill when the filling miss is selected; on
+                       the MLC, set when the icache evicts its copy with P = 1 (memory/emissary.c).
+                       Only REPL_EMISSARY reads it. */
 } Cache_Entry;
 
 // DO NOT CHANGE THIS ORDER
@@ -350,6 +358,23 @@ Flag cache_icarus_mark_critical(Cache* cache, Addr addr);
    inst_part_update_insert; also read (without being consumed) by inst_part_update_evict to
    break ties when both quotas are exactly met (see cache_lib.c). */
 void cache_set_inst_part_next_insert(Flag is_inst);
+
+/* EMISSARY: the P bit (Cache_Entry.emissary_p) on any cache. None of these touch replacement
+   state. */
+typedef enum Cache_Emissary_Mark_enum {
+  CACHE_EMISSARY_ABSENT,      /* the cache does not hold the line */
+  CACHE_EMISSARY_NEWLY_SET,   /* P went from 0 to 1 */
+  CACHE_EMISSARY_ALREADY_SET, /* P was already 1 */
+} Cache_Emissary_Mark;
+
+/* Whether the line the next cache_insert of `addr` would evict is valid and has P = 1. */
+Flag cache_emissary_victim_p(Cache* cache, uns8 proc_id, Addr addr);
+/* Set P on the resident line holding `addr`, if there is one. */
+Cache_Emissary_Mark cache_emissary_set_p(Cache* cache, Addr addr);
+/* Clear every P bit in the cache; returns how many were set. */
+Counter cache_emissary_clear_all(Cache* cache);
+/* hist[k] += the number of sets holding k valid P = 1 lines; k is capped at nbuckets - 1. */
+void cache_emissary_set_census(Cache* cache, Counter* hist, uns nbuckets);
 
 /* REPL_CLIP: stage whether the request behind the NEXT replacement update of this cache -- a hit
    (cache_access with update_repl) or a fill (cache_insert[_replpos]) -- is code. Call it with

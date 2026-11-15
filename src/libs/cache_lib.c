@@ -251,6 +251,7 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
       cache->entries[ii][jj].mlp_mark = MLP_MARK_NONE;
       cache->entries[ii][jj].mlp_used = FALSE;
       cache->entries[ii][jj].cmix = 0;
+      cache->entries[ii][jj].emissary_p = FALSE;
       if (data_size) {
         cache->entries[ii][jj].data = (void*)malloc(data_size);
         memset(cache->entries[ii][jj].data, 0, data_size);
@@ -468,6 +469,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   g_next_fill_mlp_mark = MLP_MARK_NONE;
   new_line->mlp_used = FALSE;
   new_line->cmix = 0;
+  new_line->emissary_p = FALSE;
   new_line->mlp_stamp = cache->mlp_set_fills ? cache->mlp_set_fills[set] : 0;
   mlp_countdown_start(new_line);
 
@@ -1285,6 +1287,7 @@ void* cache_insert_lru(Cache* cache, uns8 proc_id, Addr addr, Addr* line_addr, A
   new_line->tag_full = tag_full;
   new_line->base = *line_addr;
   new_line->cmix = 0;
+  new_line->emissary_p = FALSE;
   update_repl_policy(cache, new_line, set, repl_index, TRUE);
   if (cache->repl_policy == REPL_TRUE_LRU)
     new_line->last_access_time = 137;
@@ -1538,6 +1541,7 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
   g_next_fill_mlp_mark = MLP_MARK_NONE;
   new_line->mlp_used = FALSE;
   new_line->cmix = 0;
+  new_line->emissary_p = FALSE;
   repl_policy_func_table[policy].update_insert(cache, proc_id, set, repl_index, NULL);
   new_line->mlp_rrip_credit = MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA ? (uns)new_line->mlp_boost : 0;
 
@@ -2701,6 +2705,134 @@ Cache_Entry* inst_part_update_evict(Cache* cache, uns8 proc_id, uns set, uns* wa
 }
 
 /**************************************************************************************/
+/* EMISSARY -- Nagendra, Godala et al., "EMISSARY: Enhanced Miss Awareness Replacement Policy
+ * for L2 Instruction Caching", ISCA 2023. The P(N) treatment, Algorithm 1, on true LRU.
+ *
+ * Each line carries a priority bit P (Cache_Entry.emissary_p). Which lines get P = 1, and how
+ * the bit reaches this cache, is memory/emissary.c's business; here a fill always inserts with
+ * P = 0, at MRU. Eviction:
+ *   - an invalid way, if the set has one;
+ *   - else, if the set holds at most N (--emissary_n) lines with P = 1, the LRU line with P = 0;
+ *   - else the LRU line with P = 1.
+ * So a set keeps its N most recently used high-priority lines (N + 1 for a moment: the bound is
+ * the paper's "<=") and the remaining assoc - N ways go to everything else, by LRU. Hits update
+ * recency and leave P alone; P never drops while the line is resident unless
+ * --emissary_reset_interval clears it. If N >= assoc and every line has P = 1, the LRU line goes.
+ *
+ * Recency is TRUE_LRU's own: last_access_time = sim_time on insert and hit, the least recent
+ * valid line loses, and ties go to the lowest way. With no line ever marked this is REPL_TRUE_LRU
+ * exactly. The paper's evaluation uses tree pseudo-LRU with one tree per priority class; its §4.2
+ * notes Algorithm 1 is exact on true LRU, which is the baseline here. */
+
+void emissary_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                          Repl_Policy repl_policy);
+void emissary_update_hit(Cache* cache, uns set, uns way, void* arg);
+void emissary_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg);
+Cache_Entry* emissary_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external);
+
+void emissary_action_init(Cache* cache, const char* name, uns cache_size, uns assoc, uns line_size, uns data_size,
+                          Repl_Policy repl_policy) {
+  general_action_init(cache, name, cache_size, assoc, line_size, data_size, repl_policy);
+}
+
+void emissary_update_hit(Cache* cache, uns set, uns way, void* arg) {
+  Cache_Entry* entry = &cache->entries[set][way];
+  entry->last_access_time = sim_time;
+  if (entry->emissary_p)
+    STAT_EVENT(entry->proc_id, EMISSARY_MLC_HIT_HIGH);
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_HIT);
+}
+
+void emissary_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* arg) {
+  cache->entries[set][way].emissary_p = FALSE;
+  cache->entries[set][way].last_access_time = sim_time;
+  cache_debug_print_set(cache, set, way, CACHE_EVENT_INSERT);
+}
+
+Cache_Entry* emissary_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
+  uns ii;
+
+  for (ii = 0; ii < cache->assoc; ii++) {
+    if (!cache->entries[set][ii].valid) {
+      *way = ii;
+      cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+      return &cache->entries[set][*way];
+    }
+  }
+
+  uns high = 0;
+  for (ii = 0; ii < cache->assoc; ii++)
+    high += cache->entries[set][ii].emissary_p ? 1 : 0;
+  /* Algorithm 1: at most N high-priority lines -> evict among the low-priority ones. With no
+     low-priority line left (only when N >= assoc), fall back to the high-priority ones. */
+  Flag evict_high = high > EMISSARY_N || high == cache->assoc;
+
+  int lru_way = -1;
+  Counter lru_time = MAX_CTR;
+  for (ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    if (entry->emissary_p != evict_high)
+      continue;
+    if (entry->last_access_time < lru_time || lru_way == -1) {
+      lru_way = ii;
+      lru_time = entry->last_access_time;
+    }
+  }
+  ASSERT(proc_id, lru_way != -1);
+  *way = lru_way;
+  if (!if_external)
+    STAT_EVENT(proc_id, evict_high ? EMISSARY_MLC_EVICT_HIGH : EMISSARY_MLC_EVICT_LOW);
+  cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+  return &cache->entries[set][*way];
+}
+
+Flag cache_emissary_victim_p(Cache* cache, uns8 proc_id, Addr addr) {
+  Addr tag, tag_full, line_addr;
+  uns way;
+  uns set = cache_index(cache, addr, &tag, &tag_full, &line_addr);
+  Cache_Entry* victim = find_repl_entry(cache, proc_id, set, &way);
+  return victim->valid && victim->emissary_p;
+}
+
+Cache_Emissary_Mark cache_emissary_set_p(Cache* cache, Addr addr) {
+  Addr tag, tag_full, line_addr;
+  uns set = cache_index(cache, addr, &tag, &tag_full, &line_addr);
+  for (uns ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    if (entry->valid && entry->tag == tag) {
+      if (entry->emissary_p)
+        return CACHE_EMISSARY_ALREADY_SET;
+      entry->emissary_p = TRUE;
+      return CACHE_EMISSARY_NEWLY_SET;
+    }
+  }
+  return CACHE_EMISSARY_ABSENT;
+}
+
+Counter cache_emissary_clear_all(Cache* cache) {
+  Counter cleared = 0;
+  for (uns set = 0; set < cache->num_sets; set++) {
+    for (uns ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      if (entry->emissary_p) {
+        cleared += entry->valid ? 1 : 0;
+        entry->emissary_p = FALSE;
+      }
+    }
+  }
+  return cleared;
+}
+
+void cache_emissary_set_census(Cache* cache, Counter* hist, uns nbuckets) {
+  for (uns set = 0; set < cache->num_sets; set++) {
+    uns high = 0;
+    for (uns ii = 0; ii < cache->assoc; ii++)
+      high += cache->entries[set][ii].valid && cache->entries[set][ii].emissary_p ? 1 : 0;
+    hist[MIN2(high, nbuckets - 1)]++;
+  }
+}
+
+/**************************************************************************************/
 /* CLIP -- Code Line Preservation (Jaleel, Nuzman, Moga, Steely & Emer, "High Performing Cache
  * Hierarchies for Server Workloads", HPCA 2015, Sec. IV.B), at the MLC.
  *
@@ -2852,8 +2984,9 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_ICARUS,  icarus_action_init,   general_action_repl,  icarus_update_hit,  icarus_update_insert, icarus_update_evict, NULL              },
   { REPL_MOCKINGJAY, mockingjay_action_init, general_action_repl, mockingjay_update_hit, mockingjay_update_insert, mockingjay_update_evict, NULL },
   { REPL_INST_PARTITION, inst_part_action_init, general_action_repl, inst_part_update_hit, inst_part_update_insert, inst_part_update_evict, NULL },
+  { REPL_EMISSARY, emissary_action_init, general_action_repl, emissary_update_hit, emissary_update_insert, emissary_update_evict, NULL },
   { REPL_CLIP,    clip_action_init,     general_action_repl,  clip_update_hit,    clip_update_insert,   rrip_update_evict,   NULL              },
-  { REPL_VOID,    NULL,                 NULL,                 NULL,               NULL,                 NULL,                NULL              },
+  { REPL_VOID,   NULL,                 NULL,                 NULL,               NULL,                 NULL,                NULL              },
 };
 // clang-format on
 

@@ -1064,6 +1064,50 @@ DEF_STAT(  MLC_ICARUS_EVICT_10		       , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_INST_PART_EVICT_INSTR      , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_INST_PART_EVICT_DATA       , COUNT  , NO_RATIO  )
 
+// EMISSARY (REPL_EMISSARY, Nagendra, Godala et al., ISCA 2023); see memory/emissary.c.
+// Cycles fetch delivered nothing while waiting on an icache miss (S), and the subset with the
+// issue queue empty (S&E, the paper's Fig. 5 metric); counted under every policy.
+DEF_STAT(  EMISSARY_STARVE_CYCLES             , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_STARVE_CYCLES_ONPATH      , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_STARVE_IQE_CYCLES         , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_STARVE_IQE_CYCLES_ONPATH  , COUNT  , NO_RATIO  )
+// Only when EMISSARY is on (REPL_EMISSARY at the MLC, or emissary_passive):
+// icache fills, those whose miss caused S, S&E, and those given P = 1
+DEF_STAT(  EMISSARY_L1I_FILL                  , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_L1I_FILL_S                , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_L1I_FILL_SE               , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_L1I_FILL_HIGH             , COUNT  , NO_RATIO  )
+// icache evictions of P = 1 lines, and what that did to the MLC copy
+DEF_STAT(  EMISSARY_L1I_EVICT_HIGH            , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_MLC_MARK                  , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_MLC_MARK_ALREADY          , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_MLC_MARK_ABSENT           , COUNT  , NO_RATIO  )
+// REPL_EMISSARY at the MLC: hits on P = 1 lines, and which class each eviction took
+DEF_STAT(  EMISSARY_MLC_HIT_HIGH              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_MLC_EVICT_LOW             , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_MLC_EVICT_HIGH            , COUNT  , NO_RATIO  )
+// emissary_reset_interval: resets, and the P = 1 lines they cleared
+DEF_STAT(  EMISSARY_RESET                     , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_RESET_LINES               , COUNT  , NO_RATIO  )
+// End of run: MLC sets holding k P = 1 lines (the paper's Fig. 8); P16 is 16 or more
+DEF_STAT(  EMISSARY_END_SETS_P00              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P01              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P02              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P03              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P04              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P05              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P06              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P07              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P08              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P09              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P10              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P11              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P12              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P13              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P14              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P15              , COUNT  , NO_RATIO  )
+DEF_STAT(  EMISSARY_END_SETS_P16              , COUNT  , NO_RATIO  )
+
 // REPL_CLIP: Code Line Preservation at the MLC
 // lookups (one per request, no writebacks) that map to a sampled set; their code share picks the mode
 DEF_STAT(  MLC_CLIP_SAMPLE_CODE_HIT       , COUNT  , NO_RATIO  )
@@ -4127,6 +4171,8 @@ DEF_STAT(  EXCL_PROMOTE_INVAL_MLC         , COUNT , NO_RATIO  )
 DEF_STAT(  EXCL_PROMOTE_INVAL_LLC         , COUNT , NO_RATIO  )
 DEF_STAT(  EXCL_PROMOTE_KEPT_DIRTY        , COUNT , NO_RATIO  )
 DEF_STAT(  EXCL_PROMOTE_DIRTY_TO_MLC      , COUNT , NO_RATIO  )
+/* MLC fills REPL_MOCKINGJAY bypassed that moved down to the exclusive LLC as clean victims. */
+DEF_STAT(  EXCL_MJ_BYPASS_TO_LLC          , COUNT , NO_RATIO  )
 
 DEF_STAT(  DATA_LD_MLC_ACCESSES_ONPATH, COUNT , NO_RATIO)
 DEF_STAT(  DATA_LD_MLC_ACCESSES_OFFPATH, COUNT , NO_RATIO)

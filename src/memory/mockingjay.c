@@ -77,6 +77,11 @@
  *    prefetch hits. --prefetch_update_lru_mlc/_l1 0 also stops prefetch hits from training.
  *  - A fill whose line this level must keep (a dirty line the MLC is the only holder of) is
  *    never bypassed.
+ *  - At the MLC over an exclusive LLC (--exclusive_l1), which only MLC victims fill, a
+ *    bypassed line goes down to the LLC as a clean MLC victim would (memory.c, via
+ *    mockingjay_bypass_check/_commit); otherwise a clean bypassed line would leave the chip
+ *    once the dcache or icache evicted it. A non-exclusive LLC already got the line on its
+ *    miss, so there nothing moves.
  *  - The sampled cache's partial tag also hashes the core id when the cache is shared:
  *    Scarab tells cores' lines apart only by the top address bits, which the artifact's
  *    tag drops.
@@ -560,7 +565,7 @@ void mockingjay_hit(Cache* cache, Mem_Req* req) {
   mj_stat(s, req->proc_id, MJ_STAT_HIT);
 }
 
-Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty) {
+Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty) {
   if (cache->repl_policy != REPL_MOCKINGJAY || !MOCKINGJAY_BYPASS || dirty)
     return FALSE;
   Mj_Access acc;
@@ -579,11 +584,24 @@ Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty) {
   int max_etr;
   mj_victim(s, set, &max_etr);
   uns64 sig = mj_signature(s, acc.pc, FALSE, acc.prefetch, acc.core);
-  if (!s->rdp_valid[sig] || (s->rdp[sig] <= s->max_rd && s->rdp[sig] / MJ_GRANULARITY <= max_etr))
-    return FALSE;
+  return s->rdp_valid[sig] && !(s->rdp[sig] <= s->max_rd && s->rdp[sig] / MJ_GRANULARITY <= max_etr);
+}
 
+void mockingjay_bypass_commit(Cache* cache, Mem_Req* req) {
+  ASSERT(req->proc_id, cache->repl_policy == REPL_MOCKINGJAY);
+  Mj_Access acc;
+  mj_req_access(cache, req, &acc);
+  Addr tag, line_addr;
+  uns set = ext_cache_index(cache, req->addr, &tag, &line_addr);
+  Mj_State* s = mj_state(cache);
   mj_update(s, set, -1, &acc, FALSE, req->proc_id);
   mj_stat(s, req->proc_id, MJ_STAT_BYPASS);
+}
+
+Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty) {
+  if (!mockingjay_bypass_check(cache, req, dirty))
+    return FALSE;
+  mockingjay_bypass_commit(cache, req);
   return TRUE;
 }
 

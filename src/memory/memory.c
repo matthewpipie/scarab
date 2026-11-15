@@ -396,6 +396,15 @@ void init_uncores(void) {
   ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !(mem_exclusive_mlc_dcache() || mem_exclusive_mlc_icache()),
           "REPL_MOCKINGJAY does not support an exclusive MLC (every fill would be a victim writeback)\n");
   mockingjay_configure(&mlc->cache, NUM_CORES, MLC_MJ_HIT);
+  /* REPL_EMISSARY: P reaches the MLC from the icache's evictions, by marking the MLC's copy.
+     An MLC exclusive of the icache holds no copy and would need P carried on the demoted line,
+     which is not modeled. */
+  ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_EMISSARY || (MLC_PRESENT && !mem_exclusive_mlc_icache()),
+          "REPL_EMISSARY needs an MLC that is not exclusive of the icache\n");
+  ASSERTM(0, (MLC_CACHE_REPL_POLICY != REPL_EMISSARY && !EMISSARY_PASSIVE) || EMISSARY_SELECT <= 2,
+          "--emissary_select must be 0 (every miss), 1 (S) or 2 (S&E), got %u\n", EMISSARY_SELECT);
+  ASSERTM(0, (MLC_CACHE_REPL_POLICY != REPL_EMISSARY && !EMISSARY_PASSIVE) || EMISSARY_RAND_DENOM >= 1,
+          "--emissary_rand_denom must be at least 1\n");
 
   /* Initialize LLC */
   if (PRIVATE_L1) {
@@ -438,6 +447,8 @@ void init_uncores(void) {
 
   ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !mem_exclusive_l1(),
           "REPL_MOCKINGJAY does not support an exclusive L1 (every fill would be an MLC victim writeback)\n");
+  ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_EMISSARY,
+          "REPL_EMISSARY is MLC-only: P bits reach only the MLC (--mlc_cache_repl_policy)\n");
   /* REPL_CLIP: only the MLC's lookups and fills stage the code/data side (cache_clip_stage); the
      paper also warns that CLIP at the LLC sends data to memory. */
   ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_CLIP, "REPL_CLIP is supported at the MLC only\n");
@@ -774,6 +785,11 @@ static inline Flag mem_exclusive_mlc_for(Mem_Req_Type type) {
    macros, not visible to memory/lacs.c. */
 Cache* mem_lacs_cache(uns8 proc_id, Lacs_Slot slot) {
   return (slot == LACS_SLOT_MLC) ? &MLC(proc_id)->cache : &L1(proc_id)->cache;
+}
+
+/* The MLC's cache for this core, or NULL without an MLC (memory/emissary.c). */
+Cache* mem_mlc_cache(uns8 proc_id) {
+  return MLC_PRESENT ? &MLC(proc_id)->cache : NULL;
 }
 
 /* The file a miss below the core enters: the icache's or the dcache's, each waiting at
@@ -2648,6 +2664,8 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->icarus_starved_cycles = 0;
   new_req->icarus_costly_trained = FALSE;
   new_req->pdip_pref = FALSE;
+  new_req->emissary_s = FALSE;
+  new_req->emissary_se = FALSE;
   new_req->ld_window_cycles = 0;
   new_req->ld_bound_cycles = 0;
   new_req->ld_bound_req_cycles = 0;
@@ -3924,8 +3942,20 @@ Flag mlc_fill_line(Mem_Req* req) {
   }
 
   /* REPL_MOCKINGJAY: a line predicted to be reused after everything in its set is not
-     inserted, unless it carries dirty data only this level would hold. */
-  if (mockingjay_bypass(&MLC(req->proc_id)->cache, req, promoted_dirty)) {
+     inserted, unless it carries dirty data only this level would hold. Over an exclusive LLC,
+     which only MLC victims fill, the bypassed line moves down as a clean victim does (below):
+     otherwise its only copy left on chip would be in the dcache or icache, gone when they
+     evict it clean. Training waits until the line has its writeback slot, so a refused fill
+     that retries trains once. */
+  if (mockingjay_bypass_check(&MLC(req->proc_id)->cache, req, promoted_dirty)) {
+    if (mem_exclusive_l1()) {
+      Addr line_addr = req->addr & ~(Addr)(MLC_LINE_SIZE - 1);
+      if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count,
+                              mem_req_cmix(req)))
+        return FAILURE;
+      STAT_EVENT(req->proc_id, EXCL_MJ_BYPASS_TO_LLC);
+    }
+    mockingjay_bypass_commit(&MLC(req->proc_id)->cache, req);
     mlc_miss_is_satisfied(req);
     return TRUE;
   }

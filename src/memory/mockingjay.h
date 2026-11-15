@@ -69,6 +69,12 @@ void mockingjay_hit(Cache* cache, Mem_Req* req);
    writeback, a fill into a set with a free way, or (dirty) a line this level must keep. */
 Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty);
 
+/* mockingjay_bypass in two steps, for a caller that has more to do before it can commit to the
+   bypass and may have to retry: _check decides and changes nothing; _commit trains (call it
+   once, after _check returned TRUE and only when the line is really not inserted). */
+Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty);
+void mockingjay_bypass_commit(Cache* cache, Mem_Req* req);
+
 /* Stage req for the cache_insert that immediately follows, which trains and predicts the new
    line. Call after mockingjay_bypass returned FALSE. */
 void mockingjay_fill(Cache* cache, Mem_Req* req);
