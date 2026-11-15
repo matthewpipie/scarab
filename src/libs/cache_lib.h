@@ -122,6 +122,9 @@ typedef struct Cache_Entry_struct {
                           marks under any policy; see mlp_stage_fill_boost) */
   Flag mlp_used;       /* stats only: a demand access hit the line since its fill (cache_mlp_demand_hit) */
 
+  uns8 cmix; /* stats only (cache_mix): CMIX_* bits, 0 until the cache's owner classifies the
+                 line after inserting it (cache_cmix_fill) */
+
   Flag icarus_critical; /* REPL_ICARUS: CIT said this (instruction) line was critical at fill
                             time; always FALSE for data lines */
   Flag icarus_reused;   /* REPL_ICARUS: hit at least once since it was filled */
@@ -279,6 +282,36 @@ Flag cache_mlp_lapsed(Cache* cache, Addr addr);
 /* Add to each count the cache's valid lines, data- and instruction-marked lines, and marked lines
    whose protection is still in effect (see MLP_OCC_INWINDOW in memory.stat.def). */
 void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow);
+
+/* Stats only (cache_mix; CMIX_* in memory.stat.def): whether a line holds instructions or data,
+   and whether it was brought in by a prefetch that no demand access has hit at this cache yet.
+   A demand is an instruction fetch, load or store (on or off path); a prefetch is any request
+   mem_req_type_is_prefetch names, unless a demand merged into it before its fill. */
+#define CMIX_SET 0x1  /* classified: an insert leaves cmix 0 until the owner calls cache_cmix_fill */
+#define CMIX_INST 0x2 /* an instruction line, else data */
+#define CMIX_PREF 0x4 /* prefetched, no demand access here yet */
+typedef enum Cmix_Cat_enum {
+  CMIX_CAT_INST_DEMAND, /* instruction line a demand filled or has since hit */
+  CMIX_CAT_INST_PREF,   /* instruction line prefetched, not yet demanded */
+  CMIX_CAT_DATA_DEMAND,
+  CMIX_CAT_DATA_PREF,
+  CMIX_CAT_UNKNOWN, /* valid but never classified: an insert path cache_cmix_fill does not cover */
+  CMIX_CAT_INVALID, /* empty way */
+  CMIX_NUM_CATS
+} Cmix_Cat;
+static inline uns8 cmix_class(Flag inst, Flag pref) {
+  return CMIX_SET | (inst ? CMIX_INST : 0) | (pref ? CMIX_PREF : 0);
+}
+/* Classify addr's line after a fill (cls from cmix_class). A line already classified -- a fill
+   of a resident line, which keeps its way -- keeps its side and is only marked demanded, if
+   this fill is a demand's. No-op if addr is not resident. */
+void cache_cmix_fill(Cache* cache, Addr addr, uns8 cls);
+/* A demand access hit addr's line: it is no longer an unused prefetch. */
+void cache_cmix_demand(Cache* cache, Addr addr);
+/* addr's line's CMIX_* bits, 0 if it is not resident; read a victim's before inserting over it. */
+uns8 cache_cmix_get(Cache* cache, Addr addr);
+/* Add the cache's lines, by Cmix_Cat, to counts. */
+void cache_cmix_census(Cache* cache, Counter counts[CMIX_NUM_CATS]);
 
 /* REPL_LACS: stage the cost the NEXT cache_insert (strategy path) should stamp on the new
    line. Call right before a fill-time cache_insert on a cache running REPL_LACS; `valid`

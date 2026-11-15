@@ -288,6 +288,7 @@ Dcache_Data* dc_pref_cache_access(Op* op) {
     Addr dcache_line_addr;
     old_data =
         (Dcache_Data*)cache_insert(&dc->dcache, dc->proc_id, op->oracle_info.va, &dcache_line_addr, &repl_line_addr);
+    cache_cmix_fill(&dc->dcache, op->oracle_info.va, cmix_class(FALSE, FALSE));
 
     STAT_EVENT(0, DC_PREF_MOVE_DC);
     DEBUG(dc->proc_id, "pref_dcache fill dcache  addr:0x%s  :%7s index:%7s\n", hexstr64s(op->oracle_info.va),

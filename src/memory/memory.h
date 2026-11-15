@@ -251,10 +251,19 @@ void mem_clear_crit_path(void);
    cycle; otherwise *hit says whether the line is already there. */
 Flag mem_pref_probe(uns8 proc_id, Destination dest, Addr line_addr, Flag update_repl, Flag* hit);
 void print_mshr_files(void);
+/* Stats only (cache_mix): the CMIX_* class a fill of req gives its line -- instruction or data
+   and prefetched or demanded by its type; a writeback's carries its line's class from above. */
+uns8 mem_req_cmix(Mem_Req* req);
+/* cache_mix_interval (stats only): call cache_mix_update once per core cycle and cache_mix_done
+   when the core finishes, before its stats are dumped. */
+void cache_mix_update(uns8 proc_id);
+void cache_mix_done(uns8 proc_id);
+/* cmix: the evicted line's CMIX_* bits (cache_cmix_get, stats only), which the writeback
+   gives the line where it is inserted */
 Flag new_mem_dc_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath);
+                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath, uns8 cmix);
 Flag new_mem_ic_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath);
+                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath, uns8 cmix);
 Flag mlc_fill_line(Mem_Req* req);
 Flag l1_fill_line(Mem_Req* req);
 

@@ -84,7 +84,7 @@ static void cmp_redirect(void);
 static void cmp_measure_chip_util(void);
 static void cmp_istreams(void);
 static void cmp_cores(void);
-static void warmup_uncore(uns proc_id, Addr addr, Flag write);
+static void warmup_uncore(uns proc_id, Addr addr, Flag write, Flag inst);
 
 /**************************************************************************************/
 /* cmp_init */
@@ -283,6 +283,7 @@ void cmp_cores(void) {
       pref_update_icache(proc_id);
 
       cmp_measure_chip_util();
+      cache_mix_update(proc_id);
     }
   }
 }
@@ -341,6 +342,7 @@ void cmp_done() {
 void cmp_per_core_done(uns8 proc_id) {
   topdown_done(proc_id);
   stats_per_core_collect(proc_id);
+  cache_mix_done(proc_id);
   if (PREF_FRAMEWORK_ON)
     pref_per_core_done(proc_id);
   lacs_done(proc_id);
@@ -442,7 +444,7 @@ void cmp_retire_hook(Op* op) {
   ft_free_op(op);
 }
 
-void warmup_uncore(uns proc_id, Addr addr, Flag write) {
+void warmup_uncore(uns proc_id, Addr addr, Flag write, Flag inst) {
   Addr dummy_line_addr;
   ASSERTM(0, !MLC_PRESENT, "Warmup for MLC not implemented\n");
 
@@ -451,6 +453,8 @@ void warmup_uncore(uns proc_id, Addr addr, Flag write) {
   if (l1_data) {  // hit
     if (write)
       l1_data->dirty = TRUE;
+    else
+      cache_cmix_demand(l1_cache, addr);
   } else {  // miss
     Addr repl_line_addr;
     Flag repl_line_valid;
@@ -466,6 +470,7 @@ void warmup_uncore(uns proc_id, Addr addr, Flag write) {
     l1_data = (L1_Data*)cache_insert(l1_cache, proc_id, addr, &dummy_line_addr, &repl_line_addr);
     l1_data->proc_id = proc_id;
     l1_data->dirty = write;
+    cache_cmix_fill(l1_cache, addr, cmix_class(inst, FALSE));
   }
   if (L1_PART_SHADOW_WARMUP)
     cache_part_l1_warmup(proc_id, addr);
@@ -494,9 +499,10 @@ void cmp_warmup(Op* op) {
     line_info = (Icache_Data*)cache_access(&ic->icache_line_info, ia, &dummy_line_addr2, TRUE);
 
   if (ic_data == NULL) {
-    warmup_uncore(proc_id, ia, FALSE);
+    warmup_uncore(proc_id, ia, FALSE, TRUE);
     Addr repl_line_addr;
     ic_data = (Inst_Info**)cache_insert(icache, proc_id, ia, &dummy_line_addr, &repl_line_addr);
+    cache_cmix_fill(icache, ia, cmix_class(TRUE, FALSE));
     if (WP_COLLECT_STATS) {
       Addr repl_line_addr2;
       line_info = (Icache_Data*)cache_insert(&ic->icache_line_info, proc_id, ia, &dummy_line_addr2, &repl_line_addr2);
@@ -526,11 +532,12 @@ void cmp_warmup(Op* op) {
       dc_data->read_count[0] += is_load;
       dc_data->write_count[0] += is_store;
     } else {
-      warmup_uncore(proc_id, va, FALSE);
+      warmup_uncore(proc_id, va, FALSE, FALSE);
       Addr repl_line_addr;
       dc_data = (Dcache_Data*)cache_insert(dcache, proc_id, va, &dummy_line_addr, &repl_line_addr);
+      cache_cmix_fill(dcache, va, cmix_class(FALSE, FALSE));
       if (dc_data->dirty)
-        warmup_uncore(proc_id, repl_line_addr, TRUE);
+        warmup_uncore(proc_id, repl_line_addr, TRUE, FALSE);
       dc_data->dirty = is_store;
       dc_data->read_count[0] = is_load;
       dc_data->write_count[0] = is_store;
