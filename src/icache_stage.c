@@ -421,6 +421,8 @@ Inst_Info** lookup_icache() {
 
   Inst_Info** line = NULL;
   line = (Inst_Info**)cache_access(&ic->icache, ic->fetch_addr, &ic->line_addr, TRUE);
+  if (line)
+    cache_cmix_demand(&ic->icache, ic->fetch_addr);
   if (PERFECT_ICACHE && !line)
     line = (Inst_Info**)INIT_CACHE_DATA_VALUE;
 
@@ -435,6 +437,8 @@ Inst_Info** lookup_icache() {
       // actually bring it into the L1 icache; a refused victim writeback leaves it a miss this cycle
       Addr dummy_repl_line_addr;
       line = icache_insert_line(ic->fetch_addr, &dummy_line_addr, &dummy_repl_line_addr);
+      if (line)
+        cache_cmix_fill(&ic->icache, ic->fetch_addr, cmix_class(TRUE, FALSE));
     } else
       STAT_EVENT(ic->proc_id, L2_IDEAL_MISS_ICACHE);
   }
@@ -1202,7 +1206,7 @@ static inline Flag icache_demote_victim(Addr fill_addr) {
   if (!repl_line_valid)
     return TRUE;
   if (!new_mem_ic_wb_req(MRT_WB_NODIRTY, get_proc_id_from_cmp_addr(repl_line_addr), repl_line_addr, ICACHE_LINE_SIZE, 1,
-                         NULL, NULL, unique_count, TRUE)) {
+                         NULL, NULL, unique_count, TRUE, cache_cmix_get(&ic->icache, repl_line_addr))) {
     STAT_EVENT(ic->proc_id, ICACHE_WB_REFUSED);
     return FALSE;
   }
@@ -1259,6 +1263,8 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
       line = icache_insert_line(ic->fetch_addr, &ic->line_addr, &repl_line_addr);
       if (!line)  // a refused victim writeback: the fill retries
         return FALSE;
+      /* fetch is waiting on this line, so it is demanded whatever brought it */
+      cache_cmix_fill(&ic->icache, ic->fetch_addr, mem_req_cmix(req) & ~CMIX_PREF);
     }
     INC_STAT_EVENT(ic->proc_id, MISS_WAIT_TIME, cycle_count - ic->wait_for_miss_start);
     if (to_pref_cache) {
@@ -1347,6 +1353,7 @@ Flag icache_fill_line(Mem_Req* req)  // cmp FIXME maybe needed to be optimized
     line = icache_insert_line(req->addr, &dummy_addr, &repl_line_addr);
     if (!line)  // a refused victim writeback: the fill retries
       return FALSE;
+    cache_cmix_fill(&ic->icache, req->addr, mem_req_cmix(req));
 
     if (WP_COLLECT_STATS) {  // cmp IGNORE
       line_info =
@@ -1436,6 +1443,7 @@ Inst_Info** ic_pref_cache_access(void) {
     inserted_line = icache_insert_line(ic->fetch_addr, &ic->line_addr, &repl_line_addr);
     if (!inserted_line)  // a refused victim writeback leaves the line in the prefetch cache, served from there
       return line;
+    cache_cmix_fill(&ic->icache, ic->fetch_addr, cmix_class(TRUE, FALSE));
     DEBUG(ic->proc_id, "ic_pref cache hit:fetch_addr:0x%s \n", hexstr64(ic->fetch_addr));
     STAT_EVENT(ic->proc_id, IC_PREF_MOVE_IC);
 

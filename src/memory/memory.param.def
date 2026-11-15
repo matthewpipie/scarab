@@ -668,3 +668,9 @@ DEF_PARAM(dumb_model_avg_row_hits_per_core, DUMB_MODEL_AVG_ROW_HITS_PER_CORE,
 DEF_PARAM(dumb_model_mlp, DUMB_MODEL_MLP, uns, uns, 1, )
 DEF_PARAM(dumb_model_mlp_per_core, DUMB_MODEL_MLP_PER_CORE, char*, string,
           NULL, )
+
+/* cache_mix_interval (stats only): take a census of what each cache (icache, dcache, MLC, LLC)
+   holds -- instruction or data lines, demanded or prefetched and not yet demanded -- every this
+   many instructions (the count inst_limit and full_warmup use) after warmup, into CMIX_* in
+   memory.stat.def; one more census at the end of the run fills CMIX_END_*. 0 turns both off. */
+DEF_PARAM(cache_mix_interval, CACHE_MIX_INTERVAL, uns64, uns64, 100000, )

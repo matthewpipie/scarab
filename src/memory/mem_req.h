@@ -242,6 +242,7 @@ struct Mem_Req_struct {
                                               */
   Flag wb_used_onpath;                       /* is this a writeback that was used onpath? */
   Flag wb_from_icache;                       /* is this a writeback the icache evicted (in icache_wb)? */
+  uns8 wb_cmix; /* stats only: a writeback's line's CMIX_* bits at the level that evicted it (0: unknown) */
   Addr loadPC;                               /* load PC of the oldest load requesting this address */
   uns8 prefetcher_id;                        /* which Prefetcher sent this prefetch */
 

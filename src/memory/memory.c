@@ -177,7 +177,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
 static inline void mem_admit_to_level(Mem_Req* req, Mshr* mshr);
 
 static Flag new_mem_mlc_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                               Flag done_func(Mem_Req*), Counter unique_num);
+                               Flag done_func(Mem_Req*), Counter unique_num, uns8 cmix);
 static Flag new_mem_l1_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
                               Flag done_func(Mem_Req*), Counter unique_num);
 
@@ -753,6 +753,13 @@ static inline Flag mem_req_type_is_inst(Mem_Req_Type type) {
          type == MRT_FDIPPRFOFF || type == MRT_FDIPPRFALT;
 }
 
+uns8 mem_req_cmix(Mem_Req* req) {
+  if (req->type == MRT_WB || req->type == MRT_WB_NODIRTY)
+    return req->wb_cmix ? req->wb_cmix : cmix_class(req->wb_from_icache, FALSE);
+  return cmix_class(mem_req_type_is_inst(req->type),
+                    mem_req_type_is_prefetch(req->type) && !req->demand_match_prefetch);
+}
+
 /* Whether the MLC is exclusive of the first-level cache a request of this type is bound
    for: the icache for an instruction type, the dcache otherwise. A writeback counts as
    data, which changes nothing: the MLC inserts a writeback either way. */
@@ -1150,6 +1157,7 @@ Flag mem_process_l1_hit_access(Mem_Req* req, Addr* line_addr, L1_Data* data, int
     if (PREFETCH_UPDATE_LRU_L1 || !mem_req_type_is_prefetch(req->type))
       mockingjay_hit(&L1(req->proc_id)->cache, req);
     if ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (req->type == MRT_IFETCH)) {
+      cache_cmix_demand(&L1(req->proc_id)->cache, req->addr);
       if (L1_CACHE_HIT_POSITION_COLLECT) {
         ASSERT(data->proc_id, lru_position != -1);
         if (data->prefetch && !data->seen_prefetch)  // prefetch hit
@@ -1261,6 +1269,7 @@ Flag mem_process_mlc_hit_access(Mem_Req* req, Addr* line_addr, MLC_Data* data, i
       if (PREFETCH_UPDATE_LRU_MLC || !mem_req_type_is_prefetch(req->type))
         mockingjay_hit(&MLC(req->proc_id)->cache, req);
       if ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (req->type == MRT_IFETCH)) {
+        cache_cmix_demand(&MLC(req->proc_id)->cache, req->addr);
         if (data->prefetch) {  // prefetch hit
           DEBUG(req->proc_id, "%7lld mlc prefetch hit %d\n", cycle_count, (int)(req->addr));
           STAT_EVENT(req->proc_id, MLC_PREF_HIT);
@@ -2595,6 +2604,7 @@ static void mem_init_new_req(Mem_Req* new_req, Mem_Req_Type type, uns8 proc_id, 
   new_req->dirty_l0 = op && op->uop->mem_type == MEM_ST && !op->off_path;
   new_req->wb_used_onpath = FALSE;
   new_req->wb_from_icache = FALSE;
+  new_req->wb_cmix = 0;
   new_req->mem_seq_num = 0;
   new_req->fq_start_time = MAX_CTR;
   new_req->fq_bank_finish_time = MAX_CTR;
@@ -2954,7 +2964,7 @@ Flag new_mem_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay
    the request is accepted. */
 
 static Flag new_mem_wb_req(Mshr* target, Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                           Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath) {
+                           Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath, uns8 cmix) {
   ASSERT(proc_id, (type == MRT_WB) || (type == MRT_WB_NODIRTY));
   ASSERTM(proc_id, proc_id == get_proc_id_from_cmp_addr(addr), "Proc ID (%d) does not match proc ID in address (%d)!\n",
           proc_id, get_proc_id_from_cmp_addr(addr));
@@ -2986,6 +2996,7 @@ static Flag new_mem_wb_req(Mshr* target, Mem_Req_Type type, uns8 proc_id, Addr a
                    Mem_Req_Priority_Offset[type] + freq_cycle_count(FREQ_DOMAIN_L1), FALSE);
   new_req->wb_used_onpath = used_onpath;
   new_req->wb_from_icache = target->file == MSHR_ICACHE_WB;
+  new_req->wb_cmix = cmix;
   /* A writeback is inserted at the level it goes to, which is what an exclusive
      hierarchy's fill_inserts_at_* read. */
   switch (target->file) {
@@ -3017,9 +3028,9 @@ static Flag new_mem_wb_req(Mshr* target, Mem_Req_Type type, uns8 proc_id, Addr a
 }
 
 Flag new_mem_dc_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath) {
+                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath, uns8 cmix) {
   return new_mem_wb_req(mem_wb_file(MLC_PRESENT ? &mem->uncores[proc_id].dcache_mshr : &mem->mlc_mshr), type, proc_id,
-                        addr, size, delay, op, done_func, unique_num, used_onpath);
+                        addr, size, delay, op, done_func, unique_num, used_onpath, cmix);
 }
 
 static inline Mshr* mem_ic_wb_file(uns8 proc_id) {
@@ -3027,14 +3038,14 @@ static inline Mshr* mem_ic_wb_file(uns8 proc_id) {
 }
 
 Flag new_mem_ic_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath) {
+                       Flag done_func(Mem_Req*), Counter unique_num, Flag used_onpath, uns8 cmix) {
   return new_mem_wb_req(mem_ic_wb_file(proc_id), type, proc_id, addr, size, delay, op, done_func, unique_num,
-                        used_onpath);
+                        used_onpath, cmix);
 }
 
 static Flag new_mem_mlc_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
-                               Flag done_func(Mem_Req*), Counter unique_num) {
-  return new_mem_wb_req(&mem->mlc_wb, type, proc_id, addr, size, delay, op, done_func, unique_num, FALSE);
+                               Flag done_func(Mem_Req*), Counter unique_num, uns8 cmix) {
+  return new_mem_wb_req(&mem->mlc_wb, type, proc_id, addr, size, delay, op, done_func, unique_num, FALSE, cmix);
 }
 
 static Flag new_mem_l1_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns size, uns delay, Op* op,
@@ -3042,7 +3053,7 @@ static Flag new_mem_l1_wb_req(Mem_Req_Type type, uns8 proc_id, Addr addr, uns si
   ASSERT(proc_id, type == MRT_WB && !done_func && !delay);
   if (CONSTANT_MEMORY_LATENCY || STALL_MEM_REQS_ONLY)
     return TRUE; /* DRAM contention is not modeled */
-  return new_mem_wb_req(&mem->l1_wb, type, proc_id, addr, size, delay, op, done_func, unique_num, FALSE);
+  return new_mem_wb_req(&mem->l1_wb, type, proc_id, addr, size, delay, op, done_func, unique_num, FALSE, 0);
 }
 
 /**************************************************************************************/
@@ -3805,6 +3816,7 @@ Flag l1_fill_line(Mem_Req* req) {
      so req->type was promoted to demand) -- matches data->prefetch above. */
   pref_ul1_cache_fill(req->proc_id, req->addr, mem_req_type_is_prefetch(req->type) || req->demand_match_prefetch,
                       repl_line_addr, 0);
+  cache_cmix_fill(&L1(req->proc_id)->cache, req->addr, mem_req_cmix(req));
 
   // WB from dcache does not need a memory access
   data->l1miss_latency = (req->type == MRT_WB) ? 0 : cycle_count - req->l1_miss_cycle;
@@ -3953,13 +3965,15 @@ Flag mlc_fill_line(Mem_Req* req) {
       DEBUG(req->proc_id, "Scheduling writeback of addr:0x%s\n", hexstr64s(repl_line_addr));
       if (0 && DEBUG_EXC_INSERTS)
         printf("Scheduling L2 writeback of addr:0x%s ins addr:0x%s\n", hexstr64s(repl_line_addr), hexstr64s(req->addr));
-      if (!new_mem_mlc_wb_req(MRT_WB, repl_proc_id, repl_line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count))
+      if (!new_mem_mlc_wb_req(MRT_WB, repl_proc_id, repl_line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count,
+                              cache_cmix_get(&MLC(req->proc_id)->cache, repl_line_addr)))
         return FAILURE;
       STAT_EVENT(req->proc_id, MLC_FILL_DIRTY);
     } else if (mem_exclusive_l1()) {
       /* Exclusive LLC: the LLC holds no copy of an MLC line, so a clean victim moves
          down too. */
-      if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, repl_proc_id, repl_line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count))
+      if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, repl_proc_id, repl_line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count,
+                              cache_cmix_get(&MLC(req->proc_id)->cache, repl_line_addr)))
         return FAILURE;
     }
 
@@ -4152,6 +4166,7 @@ Flag mlc_fill_line(Mem_Req* req) {
      so req->type was promoted to demand) -- matches data->prefetch above. */
   pref_umlc_cache_fill(req->proc_id, req->addr, mem_req_type_is_prefetch(req->type) || req->demand_match_prefetch,
                        repl_line_addr, 0);
+  cache_cmix_fill(&MLC(req->proc_id)->cache, req->addr, mem_req_cmix(req));
 
   // WB from dcache does not need a memory access
   data->mlc_miss_latency = (req->type == MRT_WB) ? 0 : cycle_count - req->mlc_miss_cycle;
@@ -4199,7 +4214,8 @@ static Flag mlp_oracle_pass_on(Mem_Req* req) {
     Addr line_addr = req->addr & ~(Addr)(MLC_LINE_SIZE - 1);
     if (mshr_line(&mem->mlc_wb, line_addr))
       return TRUE; /* already on its way down */
-    if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count))
+    if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count,
+                            mem_req_cmix(req)))
       return FALSE;
   } else if (fill_inserts_at_l1(req)) {
     req->l1_miss_cycle = cycle_count;
@@ -4444,6 +4460,7 @@ L1_Data* l1_pref_cache_access(Mem_Req* req) {
     data->fetched_by_offpath = req->off_path;
     data->offpath_op_addr = req->oldest_op_addr;
     data->offpath_op_unique = req->oldest_op_unique_num;
+    cache_cmix_fill(&L1(req->proc_id)->cache, req->addr, mem_req_cmix(req));
 
     l1_miss_is_satisfied(req);
 
@@ -4483,6 +4500,54 @@ void stats_per_core_collect(uns8 proc_id) {
      wrapped to ~1.8e19 and poisoned any sum over runs. */
   if (pref_fill > pref_fill_patial_used + pref_fill_used)
     INC_STAT_EVENT(proc_id, PREF_L1_TOTAL_NOT_USED, pref_fill - (pref_fill_patial_used + pref_fill_used));
+}
+
+/**************************************************************************************/
+/* cache_mix (stats only): each cache's makeup by line class (CMIX_* in memory.stat.def) */
+
+/* Add a census of every cache of proc_id's to the stats from first on, laid out as in
+   memory.stat.def: per cache (icache, dcache, MLC, LLC), one stat per Cmix_Cat. */
+static void cache_mix_census(uns8 proc_id, Stat_Enum first) {
+  Cache* caches[4] = {&cmp_model.icache_stage[proc_id].icache, &cmp_model.dcache_stage[proc_id].dcache,
+                      MLC_PRESENT ? &MLC(proc_id)->cache : NULL, &L1(proc_id)->cache};
+  for (uns ii = 0; ii < 4; ii++) {
+    if (!caches[ii])
+      continue;
+    Counter counts[CMIX_NUM_CATS] = {0};
+    cache_cmix_census(caches[ii], counts);
+    for (uns cat = 0; cat < CMIX_NUM_CATS; cat++)
+      INC_STAT_EVENT(proc_id, first + ii * CMIX_NUM_CATS + cat, counts[cat]);
+  }
+}
+
+static inline Flag cache_mix_on(uns8 proc_id) {
+  return CACHE_MIX_INTERVAL && (!FULL_WARMUP || warmup_dump_done[proc_id]);
+}
+
+/* Once per core cycle: a census every cache_mix_interval instructions, counted from the first
+   cycle past warmup. */
+void cache_mix_update(uns8 proc_id) {
+  static Counter* next_census = NULL; /* per core; 0 until the core's first cycle past warmup */
+  if (!cache_mix_on(proc_id))
+    return;
+  if (!next_census)
+    next_census = (Counter*)calloc(NUM_CORES, sizeof(Counter));
+  Counter insts = USE_FETCHED_COUNT ? inst_count_fetched[proc_id] : inst_count[proc_id];
+  if (!next_census[proc_id]) {
+    next_census[proc_id] = insts + CACHE_MIX_INTERVAL;
+    return;
+  }
+  if (insts < next_census[proc_id])
+    return;
+  next_census[proc_id] += CACHE_MIX_INTERVAL;
+  STAT_EVENT(proc_id, CMIX_SAMPLES);
+  cache_mix_census(proc_id, CMIX_ICACHE_INST_DEMAND);
+}
+
+/* The core is done: the end-of-run census. */
+void cache_mix_done(uns8 proc_id) {
+  if (cache_mix_on(proc_id))
+    cache_mix_census(proc_id, CMIX_END_ICACHE_INST_DEMAND);
 }
 
 /**************************************************************************************/

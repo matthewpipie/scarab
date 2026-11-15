@@ -639,6 +639,9 @@ static inline Flag dcache_miss_new_mem_req(Op* op, Addr line_addr, Mem_Req_Type 
 }
 
 static inline void dcache_cacheline_hit(Op* op, Addr line_addr, Dcache_Data* line, Counter access_done) {
+  /* a software prefetch (MEM_PF) or write hint is not a demand, as its miss is a prefetch (MRT_DPRF) */
+  if (op->uop->mem_type == MEM_LD || op->uop->mem_type == MEM_ST)
+    cache_cmix_demand(&dc->dcache, line_addr);
   /* prefetching handle */
   if (PREF_FRAMEWORK_ON && (PREF_UPDATE_ON_WRONGPATH || !op->off_path)) {
     // if framework is on use new prefetcher. otherwise old one
@@ -858,6 +861,7 @@ static inline Dcache_Data* dcache_fill_get_cacheline(Mem_Req* req) {
   if (data) {
     STAT_EVENT(dc->proc_id, DCACHE_FILL_RESIDENT);
     req->dirty_l0 |= data->dirty;
+    cache_cmix_fill(&dc->dcache, req->addr, mem_req_cmix(req));
     return data;
   }
 
@@ -881,7 +885,8 @@ static inline Dcache_Data* dcache_fill_get_cacheline(Mem_Req* req) {
       ASSERT(dc->proc_id, repl_line_addr || data->fetched_by_offpath || data->HW_prefetched);
     }
     if (!new_mem_dc_wb_req(data->dirty ? MRT_WB : MRT_WB_NODIRTY, get_proc_id_from_cmp_addr(repl_line_addr),
-                           repl_line_addr, DCACHE_LINE_SIZE, 1, NULL, NULL, unique_count, TRUE)) {
+                           repl_line_addr, DCACHE_LINE_SIZE, 1, NULL, NULL, unique_count, TRUE,
+                           cache_cmix_get(&dc->dcache, repl_line_addr))) {
       STAT_EVENT(dc->proc_id, DCACHE_WB_REFUSED);
       return NULL;
     }
@@ -911,6 +916,7 @@ static inline Dcache_Data* dcache_fill_get_cacheline(Mem_Req* req) {
         (req->op_count ? req->oldest_op_unique_num : -1));
 
   data = (Dcache_Data*)cache_insert(&dc->dcache, dc->proc_id, req->addr, &line_addr, &repl_line_addr);
+  cache_cmix_fill(&dc->dcache, req->addr, mem_req_cmix(req));
   ASSERT(dc->proc_id, req->emitted_cycle);
   ASSERT(dc->proc_id, cycle_count >= req->emitted_cycle);
   ASSERT(dc->proc_id, ((int)req->mlc_hit + (int)req->l1_hit) < 2);

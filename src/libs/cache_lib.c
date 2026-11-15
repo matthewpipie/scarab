@@ -250,6 +250,7 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
       cache->entries[ii][jj].mlp_rrip_credit = 0;
       cache->entries[ii][jj].mlp_mark = MLP_MARK_NONE;
       cache->entries[ii][jj].mlp_used = FALSE;
+      cache->entries[ii][jj].cmix = 0;
       if (data_size) {
         cache->entries[ii][jj].data = (void*)malloc(data_size);
         memset(cache->entries[ii][jj].data, 0, data_size);
@@ -466,6 +467,7 @@ void* cache_insert_replpos(Cache* cache, uns8 proc_id, Addr addr, Addr* line_add
   new_line->mlp_mark = g_next_fill_mlp_mark;
   g_next_fill_mlp_mark = MLP_MARK_NONE;
   new_line->mlp_used = FALSE;
+  new_line->cmix = 0;
   new_line->mlp_stamp = cache->mlp_set_fills ? cache->mlp_set_fills[set] : 0;
   mlp_countdown_start(new_line);
 
@@ -1282,6 +1284,7 @@ void* cache_insert_lru(Cache* cache, uns8 proc_id, Addr addr, Addr* line_addr, A
   new_line->tag = tag;
   new_line->tag_full = tag_full;
   new_line->base = *line_addr;
+  new_line->cmix = 0;
   update_repl_policy(cache, new_line, set, repl_index, TRUE);
   if (cache->repl_policy == REPL_TRUE_LRU)
     new_line->last_access_time = 137;
@@ -1534,6 +1537,7 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
   new_line->mlp_mark = g_next_fill_mlp_mark;
   g_next_fill_mlp_mark = MLP_MARK_NONE;
   new_line->mlp_used = FALSE;
+  new_line->cmix = 0;
   repl_policy_func_table[policy].update_insert(cache, proc_id, set, repl_index, NULL);
   new_line->mlp_rrip_credit = MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA ? (uns)new_line->mlp_boost : 0;
 
@@ -2521,6 +2525,48 @@ void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* ima
         (*imark)++;
       if (mlp_protected(cache, set, entry))
         (*inwindow)++;
+    }
+  }
+}
+
+void cache_cmix_fill(Cache* cache, Addr addr, uns8 cls) {
+  uns set;
+  Cache_Entry* entry = mlp_find_line(cache, addr, &set);
+  if (!entry)
+    return;
+  if (!(entry->cmix & CMIX_SET))
+    entry->cmix = cls;
+  else if (!(cls & CMIX_PREF))
+    entry->cmix &= ~CMIX_PREF;
+}
+
+void cache_cmix_demand(Cache* cache, Addr addr) {
+  uns set;
+  Cache_Entry* entry = mlp_find_line(cache, addr, &set);
+  if (entry)
+    entry->cmix &= ~CMIX_PREF;
+}
+
+uns8 cache_cmix_get(Cache* cache, Addr addr) {
+  uns set;
+  Cache_Entry* entry = mlp_find_line(cache, addr, &set);
+  return entry ? entry->cmix : 0;
+}
+
+void cache_cmix_census(Cache* cache, Counter counts[CMIX_NUM_CATS]) {
+  for (uns set = 0; set < cache->num_sets; set++) {
+    for (uns ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      Cmix_Cat cat;
+      if (!entry->valid)
+        cat = CMIX_CAT_INVALID;
+      else if (!(entry->cmix & CMIX_SET))
+        cat = CMIX_CAT_UNKNOWN;
+      else if (entry->cmix & CMIX_INST)
+        cat = (entry->cmix & CMIX_PREF) ? CMIX_CAT_INST_PREF : CMIX_CAT_INST_DEMAND;
+      else
+        cat = (entry->cmix & CMIX_PREF) ? CMIX_CAT_DATA_PREF : CMIX_CAT_DATA_DEMAND;
+      counts[cat]++;
     }
   }
 }
