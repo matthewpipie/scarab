@@ -3901,8 +3901,20 @@ Flag mlc_fill_line(Mem_Req* req) {
   }
 
   /* REPL_MOCKINGJAY: a line predicted to be reused after everything in its set is not
-     inserted, unless it carries dirty data only this level would hold. */
-  if (mockingjay_bypass(&MLC(req->proc_id)->cache, req, promoted_dirty)) {
+     inserted, unless it carries dirty data only this level would hold. Over an exclusive LLC,
+     which only MLC victims fill, the bypassed line moves down as a clean victim does (below):
+     otherwise its only copy left on chip would be in the dcache or icache, gone when they
+     evict it clean. Training waits until the line has its writeback slot, so a refused fill
+     that retries trains once. */
+  if (mockingjay_bypass_check(&MLC(req->proc_id)->cache, req, promoted_dirty)) {
+    if (mem_exclusive_l1()) {
+      Addr line_addr = req->addr & ~(Addr)(MLC_LINE_SIZE - 1);
+      if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count,
+                              mem_req_cmix(req)))
+        return FAILURE;
+      STAT_EVENT(req->proc_id, EXCL_MJ_BYPASS_TO_LLC);
+    }
+    mockingjay_bypass_commit(&MLC(req->proc_id)->cache, req);
     mlc_miss_is_satisfied(req);
     return TRUE;
   }
