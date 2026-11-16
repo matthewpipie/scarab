@@ -44,12 +44,17 @@ enum class CustomOp : uint8_t { NONE, PREFETCH_CODE };
 // Buckets of MEMTRACE_REGDEPS_DROP_* (memtrace_trace_reader_memtrace.cc, regdeps_drop_kind)
 #define REGDEPS_DROP_KINDS 5
 
+struct Memtrace_Ctype_Entry;  // frontend/pt_memtrace/memtrace_trace_reader_memtrace.h
+
 struct InstInfo {
   uint64_t pc = 0;  // instruction address
   union {
     const xed_decoded_inst_t* ins = nullptr;  // XED info
     const ctype_pin_inst* info;
   };
+  // Memtrace reader only: the instruction's decode, packed, when it comes from the reader's per-PC cache
+  // (then `info` is null). Unpack with Memtrace_Ctype_Entry::unpack().
+  const Memtrace_Ctype_Entry* ctype_entry = nullptr;
 
   uint64_t pid = 0;     // process ID
   uint64_t tid = 0;     // thread ID

@@ -154,11 +154,24 @@ static bool is_xchg_rcx_rcx(const ctype_pin_inst* pi) {
          pi->src_regs[1] == SCARAB_REG_RCX;
 }
 
-int ffwd(uns proc_id, const ctype_pin_inst* pi) {
+// The same test on a reader instruction, whose decode may be a packed cache entry.
+static bool is_xchg_rcx_rcx(const InstInfo* insi) {
+  const Memtrace_Ctype_Entry* e = insi->ctype_entry;
+  if (!e)
+    return is_xchg_rcx_rcx(insi->info);
+  auto src_reg = [e](int i) {
+    return e->field<compressed_reg_t>(offsetof(ctype_pin_inst, src_regs) + i * sizeof(compressed_reg_t));
+  };
+  return e->field<decltype(ctype_pin_inst::true_op_type)>(offsetof(ctype_pin_inst, true_op_type)) == XED_ICLASS_XCHG &&
+         e->field<decltype(ctype_pin_inst::num_src_regs)>(offsetof(ctype_pin_inst, num_src_regs)) > 1 &&
+         src_reg(0) == SCARAB_REG_RCX && src_reg(1) == SCARAB_REG_RCX;
+}
+
+int ffwd(uns proc_id, const InstInfo* insi) {
   if (!FAST_FORWARD) {
     return 0;
   }
-  if (is_xchg_rcx_rcx(pi)) {
+  if (is_xchg_rcx_rcx(insi)) {
     return 0;
   }
   if ((USE_FETCHED_COUNT ? ins_id_fetched[proc_id] : ins_id[proc_id]) == FAST_FORWARD_TRACE_INS) {
@@ -218,8 +231,11 @@ int memtrace_trace_read(int proc_id, ctype_pin_inst* next_onpath_pi) {
 
   // Static info (basic_info, deps, simd, cf, etc.) is pre-built in
   // processInst / processDrIsaInst and cached via the reader's ctype_inst_map_.
-  assert(insi->info != nullptr);
-  memcpy(next_onpath_pi, insi->info, sizeof(ctype_pin_inst));
+  assert(insi->info != nullptr || insi->ctype_entry != nullptr);
+  if (insi->ctype_entry)
+    insi->ctype_entry->unpack(next_onpath_pi);
+  else
+    memcpy(next_onpath_pi, insi->info, sizeof(ctype_pin_inst));
   fill_in_dynamic_info(proc_id, next_onpath_pi, insi);
 
   if (insi->is_dr_ins) {
@@ -338,7 +354,7 @@ void memtrace_setup(uns proc_id) {
       if ((inst_count_to_use % 10000000) == 0)
         std::cout << "Fast forwarded " << inst_count_to_use << " instructions." << (insi->valid ? " Valid" : " Invalid")
                   << " instr." << std::endl;
-    } while (ffwd(proc_id, insi->info));
+    } while (ffwd(proc_id, insi));
     std::cout << "Exit fast forward " << inst_count_to_use << std::endl;
   }
 }
