@@ -3240,10 +3240,10 @@ static uns8 mlp_req_mark(Mem_Req* req) {
 }
 
 /* Whether `cache` boosts the lines the marking marks: REPL_MLP, an RRIP policy with mlp_rrip_boost,
-   or REPL_MOCKINGJAY with mlp_mj_boost. */
+   REPL_SHIPPP with mlp_rrip_boost 3, or REPL_MOCKINGJAY with mlp_mj_boost. */
 static Flag mlp_boosts(Cache* cache) {
   return cache->repl_policy == REPL_MLP || (MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)) ||
-         (MLP_MJ_BOOST && cache->repl_policy == REPL_MOCKINGJAY);
+         mlp_rrip_countdown_on(cache) || (MLP_MJ_BOOST && cache->repl_policy == REPL_MOCKINGJAY);
 }
 
 /* How the marking marks the fill req is about to cause into `cache` (whose request file is

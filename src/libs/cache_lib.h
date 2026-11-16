@@ -88,7 +88,8 @@ typedef enum Repl_Policy_enum {
   NUM_REPL
 } Repl_Policy;
 
-/* The policies whose victim search is rrip_update_evict, where mlp_rrip_boost applies */
+/* The policies whose victim search is rrip_update_evict, where mlp_rrip_boost applies. Its countdown
+   (mlp_rrip_boost 3) also applies to REPL_SHIPPP, whose victim search is its own (memory/shippp.c). */
 static inline Flag repl_is_rrip(Repl_Policy policy) {
   return policy == REPL_SRRIP || policy == REPL_BRRIP || policy == REPL_DRRIP || policy == REPL_SHIP;
 }
@@ -97,10 +98,12 @@ static inline Flag repl_is_rrip(Repl_Policy policy) {
 #define MLP_RRIP_BOOST_OFF 0
 #define MLP_RRIP_BOOST_LAMBDA 1
 #define MLP_RRIP_BOOST_GAMMA 2
+#define MLP_RRIP_BOOST_COUNTDOWN 3
 
-/* REPL_MLP's mlp_boost_countdown, and REPL_MOCKINGJAY's mlp_mj_boost: a marked line is protected for
-   this many ticks of its set (a 2-bit countdown), and a set ticks every round(boost /
-   MLP_COUNTDOWN_TICKS) units of the policy's clock (REPL_MLP: fills; Mockingjay: aging steps). */
+/* REPL_MLP's mlp_boost_countdown, REPL_MOCKINGJAY's mlp_mj_boost and the RRIP policies'
+   mlp_rrip_boost 3: a marked line is protected for this many ticks of its set (a 2-bit countdown),
+   and a set ticks every round(boost / MLP_COUNTDOWN_TICKS) units of the policy's clock (REPL_MLP:
+   fills; Mockingjay: aging steps; RRIP: aging rounds). */
 #define MLP_COUNTDOWN_TICKS 3
 
 typedef enum Cache_Repl_Signiture_enum {
@@ -125,14 +128,17 @@ typedef struct Cache_Entry_struct {
   uns8 reference_val; /* for re-reference replacement policy */
   Flag outcome;       /* for replacement policy */
 
-  float mlp_boost;     /* RRIP with mlp_rrip_boost, or REPL_MOCKINGJAY with mlp_mj_boost: eviction-priority
-                           boost staged at fill (see cache_set_next_fill_mlp_boost). Not used by REPL_MLP
-                           itself -- see mlp_mark. */
+  float mlp_boost;     /* RRIP (or REPL_SHIPPP) with mlp_rrip_boost, or REPL_MOCKINGJAY with mlp_mj_boost:
+                           eviction-priority boost staged at fill (see cache_set_next_fill_mlp_boost). Not
+                           used by REPL_MLP itself -- see mlp_mark. */
   Counter mlp_stamp;   /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
                           recency update (fill or hit) */
-  uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown, or REPL_MOCKINGJAY with mlp_mj_boost: set
-                          ticks until the line's protection expires; it is protected while this is
-                          nonzero */
+  uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown, REPL_MOCKINGJAY with mlp_mj_boost, or RRIP (or
+                          REPL_SHIPPP) with mlp_rrip_boost 3: set ticks until the line's protection
+                          expires; it is protected while this is nonzero */
+  uns8 mlp_touch_rrpv; /* RRIP (or REPL_SHIPPP) with mlp_rrip_boost 3: the RRPV the line got at its last
+                          fill or hit, which mlp_rrip_boost_restore_rrpv gives back when its countdown
+                          runs out */
   uns mlp_rrip_credit; /* RRIP with mlp_rrip_boost 2: aging steps the line still absorbs before its
                           RRPV rises; set to its boost at its fill and at every hit */
   uns8 mlp_mark;       /* stats only: which rule marked the line at its fill, MLP_MARK_* (the MLC
@@ -231,6 +237,8 @@ struct Cache_struct {
   void* predictor;
 
   Counter* mlp_set_fills; /* REPL_MLP: fills into each set so far, the clock for mlp_boost_in_fills */
+  Counter* mlp_age_steps; /* RRIP (or REPL_SHIPPP) with mlp_rrip_boost 3: aging rounds of each set so far,
+                             the countdown's clock; NULL on any other cache */
   /* stats only: the line the last cache_insert replaced (valid FALSE if it took an invalid way) */
   Flag mlp_victim_valid;
   uns8 mlp_victim_mark;
@@ -288,6 +296,20 @@ void update_repl_resteer_policy(Cache*, Addr);
    fill-time cache_insert on such a cache; reset to 0 after. */
 void cache_set_next_fill_mlp_boost(float boost);
 
+/* mlp_rrip_boost 3: REPL_MLP's countdown on an RRIP policy (rrip_update_evict) or REPL_SHIPPP
+   (memory/shippp.c), clocked by the set's aging rounds (see memory.param.def). Whether `cache` runs
+   it. */
+Flag mlp_rrip_countdown_on(Cache* cache);
+/* A fill (`fill`) or a hit of `entry`, after the policy set its RRPV: a fill starts a boosted line's
+   countdown, and a hit restarts it while it is still running (on every hit with
+   mlp_boost_countdown_no_revive 0). No-op unless mlp_rrip_countdown_on. */
+void mlp_rrip_countdown_touch(Cache* cache, Cache_Entry* entry, Flag fill);
+/* The victim search with the countdown, once every way of `set` is valid: the lowest way at
+   `distant` among the lines of the lowest countdown tier (the unprotected lines, if the set has
+   any), aging the set until there is one. Each aging round can tick countdowns. Returns the way;
+   counts MLP_COUNTDOWN_EVICT_PROTECTED unless `if_external` (a peek). */
+uns mlp_rrip_countdown_victim(Cache* cache, uns8 proc_id, uns set, uns8 distant, Flag if_external);
+
 /* REPL_MLP (stats only): which rule marked a line at its fill. Staged with the boost, by
    cache_set_next_fill_mlp_mark, and kept on the line until eviction. */
 #define MLP_MARK_NONE 0
@@ -302,8 +324,9 @@ uns8 cache_mlp_mark(Cache* cache, Addr addr);
    mark, as cache_mlp_mark. */
 uns8 cache_mlp_demand_hit(Cache* cache, Addr addr);
 /* Whether addr's line is resident, was boosted at its fill, and is past its protection: with
-   mlp_boost_in_fills, its boost or more fills into its set since its last touch; with
-   mlp_boost_countdown, no ticks left. A stack-position boost (neither) never lapses. A marked line
+   mlp_boost_in_fills, its boost or more fills into its set since its last touch; with a countdown
+   (mlp_boost_countdown, mlp_mj_boost or mlp_rrip_boost 3), no ticks left. A stack-position boost
+   (REPL_MLP with neither) never lapses. A marked line
    with no boost (the cache does not boost, or the side's lambda is 0) was never protected, so it
    does not lapse either. Read it before the access renews the line. */
 Flag cache_mlp_lapsed(Cache* cache, Addr addr);

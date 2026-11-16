@@ -83,6 +83,21 @@
  *  - An MLC exclusive of the dcache or icache is refused (memory.c): every fill would be a
  *    demoted line, i.e. a writeback.
  *
+ * --mlp_rrip_boost 3 (memory.param.def) puts REPL_MLP's countdown on top, as on the RRIP policies,
+ * with SHiP's aging round (every RRPV of the set up by one) as its clock in place of a fill:
+ *  - A line REPL_MLP's marking marks, with a nonzero gamma (mlp_lin_{instr,data}_lambda) for its
+ *    side, starts a 2-bit countdown of MLP_COUNTDOWN_TICKS at its fill, whatever RRPV the SHCT
+ *    gives it, and restarts it on a hit (not a writeback's) while it is still running.
+ *  - Every round(gamma / MLP_COUNTDOWN_TICKS) aging rounds of its set is a tick for the line, which
+ *    decrements the countdown. The line is protected while it is nonzero.
+ *  - The victim is the lowest way at RRPV 3 among the unprotected lines, aging the set until there
+ *    is one; if every line is protected, among the lines with the lowest countdown
+ *    (mlp_rrip_countdown_victim in libs/cache_lib.c).
+ *  - The RRPV ages underneath; mlp_rrip_boost_restore_rrpv instead gives a line whose countdown
+ *    runs out the RRPV of its last fill or hit.
+ * The sampled sets are boosted too, so the SHCT learns reuse under the policy that runs. Modes 1
+ * and 2 of mlp_rrip_boost are DRRIP's and refused here.
+ *
  * Reference implementations, and where this one does not follow them:
  *  - sachinpuranik99/SHiP_Cache_Replacement_Policy (a course project on the CRC1 framework):
  *    3-bit RRPVs, 6-bit counters, an 18-bit signature that also encodes the access type, an
@@ -238,6 +253,9 @@ void shippp_action_init(Cache* cache, const char* name, uns cache_size, uns asso
   ASSERTM(0, (MLC_SHIPPP_FEATURES & ~(uns)SHIPPP_F_ALL) == 0,
           "--mlc_shippp_features 0x%x has bits beyond the five enhancements (0x%x)\n", MLC_SHIPPP_FEATURES,
           SHIPPP_F_ALL);
+  ASSERTM(0, MLP_RRIP_BOOST == MLP_RRIP_BOOST_OFF || MLP_RRIP_BOOST == MLP_RRIP_BOOST_COUNTDOWN,
+          "REPL_SHIPPP takes only --mlp_rrip_boost %u (the countdown), not %u\n", MLP_RRIP_BOOST_COUNTDOWN,
+          MLP_RRIP_BOOST);
 
   Shippp_State* s = (Shippp_State*)calloc(1, sizeof(Shippp_State));
   s->assoc = assoc;
@@ -319,11 +337,16 @@ void shippp_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void* ar
   }
   if (acc->prefetch)
     shippp_stat(s, proc_id, MLC_SHIPPP_INSERT_PREF);
+  /* mlp_rrip_boost 3: a boosted fill the SHCT predicts dead, which the countdown keeps anyway
+     (cache_insert_strategy starts it after this) */
+  if (*rrpv == SHIPPP_RRPV_MAX && cache->entries[set][way].mlp_boost > 0.0 && mlp_rrip_countdown_on(cache))
+    shippp_stat(s, proc_id, MLC_SHIPPP_BOOST_DISTANT);
 }
 
 /* SRRIP's victim search. A free way is taken before any valid line and ages nothing. Called
    with if_external for get_next_repl_line's peek, which may age the set; the insert that
-   follows then finds the same victim without aging it further. Only that insert trains. */
+   follows then finds the same victim without aging it further. Only that insert trains. With
+   mlp_rrip_boost 3 the search skips protected lines (mlp_rrip_countdown_victim). */
 Cache_Entry* shippp_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
   for (uns w = 0; w < cache->assoc; w++) {
     if (!cache->entries[set][w].valid) {
@@ -332,6 +355,10 @@ Cache_Entry* shippp_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
     }
   }
 
+  if (mlp_rrip_countdown_on(cache)) {
+    *way = mlp_rrip_countdown_victim(cache, proc_id, set, SHIPPP_RRPV_MAX, if_external);
+    goto found;
+  }
   for (;;) {
     for (uns w = 0; w < cache->assoc; w++) {
       if (cache->entries[set][w].reference_val >= SHIPPP_RRPV_MAX) {
@@ -408,6 +435,8 @@ void shippp_hit(Cache* cache, Mem_Req* req) {
     *rrpv = 0;
     shippp_stat(s, req->proc_id, MLC_SHIPPP_HIT_PROMOTE);
   }
+  /* mlp_rrip_boost 3: restart a running countdown */
+  mlp_rrip_countdown_touch(cache, &cache->entries[set][way], FALSE);
 
   Shippp_Sample* sample = shippp_sample(s, set, (uns)way);
   if (sample && sample->tracked) {

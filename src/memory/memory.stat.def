@@ -906,7 +906,8 @@ DEF_STAT(  MLP_LINES_IFETCH_IMARK          , COUNT  , NO_RATIO  )
 // MLC census every 4096 cycles, summed over samples (divide by MLP_OCC_SAMPLES): valid lines,
 // data-marked, instruction-marked, and lines boosted at their fill whose protection is still in
 // effect (with mlp_boost_in_fills: fewer than its boost fills into the set since its last touch;
-// with mlp_boost_countdown: ticks left; otherwise every boosted line).
+// with a countdown -- mlp_boost_countdown, mlp_mj_boost, mlp_rrip_boost 3 -- ticks left; otherwise
+// every boosted line).
 DEF_STAT(  MLP_OCC_SAMPLES                 , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_OCC_VALID                   , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_OCC_DMARK                   , COUNT  , NO_RATIO  )
@@ -917,10 +918,14 @@ DEF_STAT(  MLP_OCC_INWINDOW                , COUNT  , NO_RATIO  )
 // fill, clearing the flag.
 DEF_STAT(  MLP_FE_ABANDON                  , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
-// REPL_MLP with mlp_boost_countdown, or REPL_MOCKINGJAY with mlp_mj_boost: protections whose
-// countdown reached 0, and victims taken while every line in the set was protected.
+// REPL_MLP with mlp_boost_countdown, REPL_MOCKINGJAY with mlp_mj_boost, or an RRIP policy or
+// REPL_SHIPPP with mlp_rrip_boost 3: protections whose countdown reached 0, and victims taken while
+// every line in the set was protected.
 DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
+// mlp_rrip_boost 3: aging rounds (every RRPV of a set up by one) of the caches running it, the
+// countdown's clock. Divide by fills to convert gamma between aging rounds and fills.
+DEF_STAT(  MLP_RRIP_AGE_ROUND              , COUNT  , NO_RATIO  )
 
 // mlp_oracle (memory.param.def), per side (I instruction, D data). A miss is as mlp_oracle defines
 // it. MISSES: misses, forced ones included; MISSES_MARKED: the ones that came back marked, which is
@@ -1147,6 +1152,9 @@ DEF_STAT(  MLC_SHIPPP_TRAIN_DEC           , COUNT  , NO_RATIO  )
 // still had its is_prefetched bit set (a prefetched line no demand hit)
 DEF_STAT(  MLC_SHIPPP_EVICT               , COUNT  , NO_RATIO  )
 DEF_STAT(  MLC_SHIPPP_EVICT_PF            , COUNT  , NO_RATIO  )
+// mlp_rrip_boost 3: boosted fills the SHCT predicted dead (inserted at RRPV 3), which the
+// countdown protects anyway
+DEF_STAT(  MLC_SHIPPP_BOOST_DISTANT       , COUNT  , NO_RATIO  )
 
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
