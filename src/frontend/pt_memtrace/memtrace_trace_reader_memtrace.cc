@@ -648,6 +648,7 @@ PATCH_REP:
       ctx_switch_barrier_.is_ifetch_barrier = 1;
       strcpy(ctx_switch_barrier_.pin_iclass, "CTX_SWITCH");
       _prior->info = &ctx_switch_barrier_;
+      _prior->ctype_entry = nullptr;
       _prior->taken = true;
       _prior->mem_addr[0] = 0;
       _prior->mem_addr[1] = 0;
@@ -669,7 +670,10 @@ PATCH_REP:
     } else if (_prior->taken) {  // currently set iif branch
       // non_seq tells us whether the branch was taken for conditional branches.
       // Unconditional branches are always taken even if the target equals fall-through.
-      if (_prior->info && _prior->info->cf_type != CF_CBR && _prior->info->cf_type != CF_REP)
+      const bool prior_has_decode = _prior->ctype_entry || _prior->info;
+      const uint8_t prior_cf_type =
+          _prior->ctype_entry ? _prior->ctype_entry->cf_type : (_prior->info ? _prior->info->cf_type : 0);
+      if (prior_has_decode && prior_cf_type != CF_CBR && prior_cf_type != CF_REP)
         _prior->taken = true;
       else
         _prior->taken = non_seq;
@@ -679,8 +683,15 @@ PATCH_REP:
       // correct target to the BTB.  Indirect branches are excluded because
       // their target varies per execution.
 
-      if (non_seq && _prior->info && _prior->info->cf_type == CF_CBR) {
-        if (_prior->info->branch_target != (Addr)_info->pc) {
+      if (non_seq && prior_has_decode && prior_cf_type == CF_CBR) {
+        // Written into the cached decode itself (packed entry or struct), so later instances see it.
+        if (_prior->ctype_entry) {
+          auto* entry = const_cast<Memtrace_Ctype_Entry*>(_prior->ctype_entry);
+          if (entry->branch_target != (Addr)_info->pc) {
+            entry->branch_target = _info->pc;
+            entry->encoding_is_new = true;
+          }
+        } else if (_prior->info->branch_target != (Addr)_info->pc) {
           const_cast<ctype_pin_inst*>(_prior->info)->branch_target = _info->pc;
           const_cast<ctype_pin_inst*>(_prior->info)->encoding_is_new = true;
         }
@@ -690,6 +701,7 @@ PATCH_REP:
       gap_patch_jmp_ = create_dummy_jump(_prior->pc, _info->pc, XED_ICLASS_JMP);
       gap_patch_jmp_.is_trace_patch = 1;
       _prior->info = &gap_patch_jmp_;
+      _prior->ctype_entry = nullptr;
       _prior->target = _info->pc;
       _prior->taken = true;
       _prior->mem_addr[0] = 0;
@@ -1052,8 +1064,8 @@ void TraceReaderMemtrace::processDrIsaInst(InstInfo* _info, bool has_another_mem
     add_dependency_info(&cinst, predecoded);
     regdeps_opnd_counts_[mt_ref_.instr.addr] = regdeps_count_opnds(predecoded);
     cinst.encoding_is_new = mt_ref_.instr.encoding_is_new;
-    ctype_inst_map_.emplace(mt_ref_.instr.addr,
-                            std::make_tuple(cinst.num_ld + cinst.num_st, false, cinst.cf_type, false, cinst));
+    ctype_inst_map_.emplace(mt_ref_.instr.addr, std::make_tuple(cinst.num_ld + cinst.num_st, false, cinst.cf_type,
+                                                                false, Memtrace_Ctype_Entry(cinst)));
     ctype_inst_iter = ctype_inst_map_.find(mt_ref_.instr.addr);
   } else {
     assert(ctype_inst_iter != ctype_inst_map_.end());
@@ -1071,7 +1083,8 @@ void TraceReaderMemtrace::processDrIsaInst(InstInfo* _info, bool has_another_mem
     else
       _info->regdeps_dropped[k - 1] = n;
   }
-  _info->info = &(std::get<MAP_XED>(ctype_inst_iter->second));
+  _info->info = nullptr;
+  _info->ctype_entry = &(std::get<MAP_XED>(ctype_inst_iter->second));
   _info->pid = mt_ref_.instr.pid;
   _info->tid = mt_ref_.instr.tid;
   _info->target = 0;  // Set when the next instruction is evaluated
@@ -1168,8 +1181,8 @@ void TraceReaderMemtrace::processInst(InstInfo* _info, [[maybe_unused]] instr_t*
     fill_in_cf_info(&cinst, xed_ins);
     cinst.encoding_is_new = mt_ref_.instr.encoding_is_new;
 
-    ctype_inst_map_.emplace(mt_ref_.instr.addr,
-                            std::make_tuple(n_used_mem_ops, unknown_type, cinst.cf_type != NOT_CF, is_rep, cinst));
+    ctype_inst_map_.emplace(mt_ref_.instr.addr, std::make_tuple(n_used_mem_ops, unknown_type, cinst.cf_type != NOT_CF,
+                                                                is_rep, Memtrace_Ctype_Entry(cinst)));
     ctype_inst_iter = ctype_inst_map_.find(mt_ref_.instr.addr);
   } else {
     std::get<MAP_XED>(ctype_inst_iter->second).encoding_is_new = mt_ref_.instr.encoding_is_new;
@@ -1179,7 +1192,8 @@ void TraceReaderMemtrace::processInst(InstInfo* _info, [[maybe_unused]] instr_t*
   tie(mt_mem_ops_, unknown_type, cond_branch, std::ignore, std::ignore) = ctype_inst_iter->second;
 
   _info->is_dr_ins = false;
-  _info->info = &(std::get<MAP_XED>(ctype_inst_iter->second));
+  _info->info = nullptr;
+  _info->ctype_entry = &(std::get<MAP_XED>(ctype_inst_iter->second));
   _info->pid = mt_ref_.instr.pid;
   _info->tid = mt_ref_.instr.tid;
   _info->target = 0;

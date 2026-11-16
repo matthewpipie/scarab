@@ -33,6 +33,7 @@
 #include "globals/assert.h"
 
 #include "frontend/pt_memtrace/memtrace_trace_reader.h"
+#include "frontend/pt_memtrace/packed_pin_inst.h"
 
 #undef ASSERT
 #undef UNUSED
@@ -40,6 +41,40 @@
 #include "raw2trace.h"
 #include "raw2trace_directory.h"
 
+// One entry of the memtrace reader's per-PC decode cache. The decoded ctype_pin_inst is ~1 KB, mostly
+// worst-case arrays that decode leaves zero, and there is one per PC (over a million in a Google sim),
+// so it is kept packed against an all-zero template. The reader rewrites two fields of a cached decode
+// in place (encoding_is_new on every hit, and a conditional branch's branch_target); they live outside
+// the packed image and are applied by unpack(), which therefore reproduces the cached struct as it
+// stands at that moment, byte for byte.
+struct Memtrace_Ctype_Entry {
+  Packed_Pin_Inst image;
+  uint64_t branch_target;
+  bool encoding_is_new;
+  uint8_t cf_type;  // constant after decode; read for every instruction
+
+  explicit Memtrace_Ctype_Entry(const ctype_pin_inst& inst)
+      : branch_target(inst.branch_target), encoding_is_new(inst.encoding_is_new), cf_type(inst.cf_type) {
+    image.pack(inst, zero_template());
+  }
+
+  void unpack(ctype_pin_inst* out) const {
+    image.unpack(out, zero_template());
+    out->branch_target = branch_target;
+    out->encoding_is_new = encoding_is_new;
+  }
+
+  // A field of the decode other than branch_target / encoding_is_new (those are the members above).
+  template <class T>
+  T field(size_t offset) const {
+    return image.field<T>(offset, zero_template());
+  }
+
+  static const Packed_Pin_Inst::Template& zero_template() {
+    static const Packed_Pin_Inst::Template tmpl;
+    return tmpl;
+  }
+};
 
 class TraceReaderMemtrace : public TraceReader {
  public:
@@ -96,7 +131,7 @@ class TraceReaderMemtrace : public TraceReader {
   /// pid/tid change in a core-sharded trace.  See getNextInstruction__().
   ctype_pin_inst ctx_switch_barrier_ = {};
   // Static info per instruction PC, decoded once. Per reader: each core's trace has its own address space.
-  std::unordered_map<uint64_t, std::tuple<int, bool, bool, bool, ctype_pin_inst>> ctype_inst_map_ = {};
+  std::unordered_map<uint64_t, std::tuple<int, bool, bool, bool, Memtrace_Ctype_Entry>> ctype_inst_map_ = {};
   // DR_ISA_REGDEPS: per pc, {register operands, dropped by regdeps_drop_kind...} (MEMTRACE_REGDEPS_*)
   std::unordered_map<uint64_t, std::array<uint8_t, 1 + REGDEPS_DROP_KINDS>> regdeps_opnd_counts_ = {};
   uint64_t mt_warn_target_ = 0;
