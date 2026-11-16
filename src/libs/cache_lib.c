@@ -45,6 +45,7 @@
 
 #include "frontend/frontend_intf.h"
 #include "memory/mockingjay.h"
+#include "memory/shippp.h"
 
 #include "statistics.h"
 
@@ -2986,6 +2987,7 @@ struct repl_policy_func repl_policy_func_table[NUM_REPL] = {
   { REPL_INST_PARTITION, inst_part_action_init, general_action_repl, inst_part_update_hit, inst_part_update_insert, inst_part_update_evict, NULL },
   { REPL_EMISSARY, emissary_action_init, general_action_repl, emissary_update_hit, emissary_update_insert, emissary_update_evict, NULL },
   { REPL_CLIP,    clip_action_init,     general_action_repl,  clip_update_hit,    clip_update_insert,   rrip_update_evict,   NULL              },
+  { REPL_SHIPPP,  shippp_action_init,   general_action_repl,  shippp_update_hit,  shippp_update_insert, shippp_update_evict, NULL              },
   { REPL_VOID,   NULL,                 NULL,                 NULL,               NULL,                 NULL,                NULL              },
 };
 // clang-format on
