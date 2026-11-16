@@ -41,9 +41,9 @@ extern "C" {
 #include "debug/debug_print.h"
 
 #include "bp/bp.h"
+#include "memory/mem_req.h"
 
 #include "exec_ports.h"
-#include "memory/mem_req.h"
 #include "node_stage.h"
 }
 
@@ -364,6 +364,32 @@ void lsq_tag_inflight_loads(Flag fu_wait) {
           req->ld_bound_req_cycles++;
           req->ld_bound_last_cycle = cycle_count;
         }
+      }
+    }
+  }
+}
+
+/* REPL_MLP (mlp_data_bound no_issue, mlp_data_scope all_loads): accumulate ld_bound_noissue_cycles
+   and ld_bound_noissue_req_cycles onto every in-flight load's Mem_Req, once per cycle. Separate
+   from lsq_tag_inflight_loads so ld_window_cycles (its denominator) is bumped exactly once per
+   cycle regardless of how many of these per-signal tagging calls run. Same liveness test and
+   no-off-path-gate as above.
+
+   ld_bound_noissue_req_cycles is deduped the same way ld_bound_req_cycles is: a request several
+   loads merged into is charged once per cycle, not once per load, since the scope param only
+   changes which loads' outstanding-ness gates the signal, not how many times a cycle counts. */
+void lsq_tag_inflight_loads_noissue(Flag no_issue) {
+  if (!LSQ_ENABLE || !no_issue)
+    return;
+
+  const auto& load_entries = lsq_unit->get_queue(MEM_LD)->get_entries();
+  for (const auto& entry : load_entries) {
+    if (entry.op->state >= OS_IN_RS && entry.op->req && op_get_done_cycle(entry.op) == MAX_CTR) {
+      Mem_Req* req = entry.op->req;
+      req->ld_bound_noissue_cycles++;
+      if (req->ld_bound_noissue_last_cycle != cycle_count) {  // once per request per cycle
+        req->ld_bound_noissue_req_cycles++;
+        req->ld_bound_noissue_last_cycle = cycle_count;
       }
     }
   }

@@ -210,15 +210,28 @@ struct Mem_Req_struct {
                                                  work, as mlp_instr_starve defines it */
   Counter ld_window_cycles;                  /* REPL_MLP: cycles any op waiting on this request has been
                                                  in flight, summed across every op merged into it */
-  Counter ld_bound_cycles;                   /* REPL_MLP: subset of ld_window_cycles the core was
-                                                 backend/memory-bound */
-  Counter ld_bound_req_cycles;               /* REPL_MLP (mlp_data_bound 1): the cycles of
-                                                 ld_bound_cycles, once per request */
+  Counter ld_bound_cycles;                   /* Stats only: subset of ld_window_cycles the core was
+                                                 backend/memory-bound, one per load waiting (so a
+                                                 request several loads merged into counts faster) */
+  Counter ld_bound_req_cycles;               /* REPL_MLP (mlp_data_bound fu_wait, mlp_data_scope
+                                                 all_loads): the cycles of ld_bound_cycles, counted
+                                                 once per request no matter how many loads wait on it */
   Counter ld_bound_last_cycle;               /* the last cycle ld_bound_req_cycles counted */
+  Counter ld_bound_noissue_cycles;           /* Stats only: subset of ld_window_cycles in which no
+                                                 op issued to the FUs, one per load waiting */
+  Counter ld_bound_noissue_req_cycles;       /* REPL_MLP (mlp_data_bound no_issue, mlp_data_scope
+                                                 all_loads): the cycles of ld_bound_noissue_cycles,
+                                                 counted once per request no matter how many loads
+                                                 wait on it */
+  Counter ld_bound_noissue_last_cycle;       /* the last cycle ld_bound_noissue_req_cycles counted */
   Counter rob_stall_cycles;                  /* Miss cost (stats only): cycles nothing retired
                                                  because the ROB head was a load waiting on this */
-  Counter rob_stall_noissue_cycles;          /* REPL_MLP (mlp_data_bound 3): of rob_stall_cycles,
-                                                 those in which no op issued to the FUs */
+  Counter rob_stall_fuwait_cycles;           /* REPL_MLP (mlp_data_bound fu_wait, mlp_data_scope
+                                                 rob_head): of rob_stall_cycles, those in which the
+                                                 core was also backend/memory-bound */
+  Counter rob_stall_noissue_cycles;          /* REPL_MLP (mlp_data_bound no_issue, mlp_data_scope
+                                                 rob_head): of rob_stall_cycles, those in which no op
+                                                 issued to the FUs */
   Flag mlp_mlc_peeked;                       /* stats only: mlp_mlc_lapsed is set (at the first
                                                  MLC lookup, before it renewed the line) */
   Flag mlp_mlc_lapsed;                       /* stats only: the line was marked and past its
@@ -247,9 +260,9 @@ struct Mem_Req_struct {
                                               */
   Flag wb_used_onpath;                       /* is this a writeback that was used onpath? */
   Flag wb_from_icache;                       /* is this a writeback the icache evicted (in icache_wb)? */
-  uns8 wb_cmix; /* stats only: a writeback's line's CMIX_* bits at the level that evicted it (0: unknown) */
-  Addr loadPC;                               /* load PC of the oldest load requesting this address */
-  uns8 prefetcher_id;                        /* which Prefetcher sent this prefetch */
+  uns8 wb_cmix;       /* stats only: a writeback's line's CMIX_* bits at the level that evicted it (0: unknown) */
+  Addr loadPC;        /* load PC of the oldest load requesting this address */
+  uns8 prefetcher_id; /* which Prefetcher sent this prefetch */
 
   uns pref_distance; /* prefetch distance (currently works for pref_stream only)
                       */

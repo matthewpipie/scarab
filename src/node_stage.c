@@ -55,6 +55,7 @@
 
 #include "decoupled_frontend.h"
 #include "exec_ports.h"
+#include "exec_stage.h"
 #include "ft.h"
 #include "icache_stage.h"
 #include "issue_queue.h"
@@ -332,6 +333,10 @@ void update_node_stage(Stage_Data* src_sd) {
   /* dispatch ops to the issue queue and issue ops into FUs */
   issue_queue_update();
 
+  /* REPL_MLP (mlp_data_bound no_issue, mlp_data_scope all_loads): no op issued to the FUs this
+     cycle, node->sd now holding what issue_queue_update just set. */
+  lsq_tag_inflight_loads_noissue(node->sd.op_count == 0);
+
   /* get rid of the ops that are finished */
   node_retire();
   if (PC_PROFILE)
@@ -466,12 +471,18 @@ void node_retire() {
             unsstr64(op_get_done_cycle(op)), unsstr64(cycle_count), (unsigned)(OP_DONE(op) ? 1 : 0));
       // op is not ready to retire
       collect_not_ready_to_retire_stats(op);
-      /* Miss cost (stats, and REPL_MLP's mlp_data_bound 2 and 3): nothing retires this cycle
-         because the head is a load still waiting on its memory request, so charge the cycle to
-         that request. Same liveness test as lsq_tag_inflight_loads: op->req is never cleared, but
-         until the load's done_cycle is set it is still the request the load is waiting on. */
+      /* Miss cost (stats, and REPL_MLP's mlp_data_bound/mlp_data_scope rob_head modes): nothing
+         retires this cycle because the head is a load still waiting on its memory request, so
+         charge the cycle to that request. Same liveness test as lsq_tag_inflight_loads: op->req
+         is never cleared, but until the load's done_cycle is set it is still the request the load
+         is waiting on. */
       if (ret_count == 0 && op->uop->mem_type == MEM_LD && op->req && op_get_done_cycle(op) == MAX_CTR) {
         op->req->rob_stall_cycles++;
+        /* fu_wait, as topdown_exec_update computes it: node->node_count != 0 always holds here,
+           since this op is on the ROB. exec->fus_unavailable was set earlier this cycle, in
+           update_exec_stage, which runs before update_node_stage (cmp_model.c). */
+        if (exec->fus_unavailable <= TOPDOWN_FU_EXEC_FEW)
+          op->req->rob_stall_fuwait_cycles++;
         /* issue_queue_update ran earlier this cycle, so node->sd holds the ops issued to the FUs
            this cycle */
         if (node->sd.op_count == 0)
