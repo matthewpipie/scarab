@@ -1048,13 +1048,24 @@ void TraceReaderMemtrace::fill_in_basic_info(ctype_pin_inst* info, instr_t* drin
   info->scarab_marker_roi_end = false;
 }
 
+/* Cache a fresh decode of pc at `it` (ctype_inst_map_.find(pc)). A re-decode (encoding_is_new for a PC already cached)
+   overwrites the entry in place instead of erasing it: an earlier instance of the same PC can still be in flight (the
+   reader's prior instruction, or the lookahead buffer) and point at the entry through InstInfo::ctype_entry, and an
+   erased entry would leave that pointer dangling. In place, the node keeps its address and the in-flight instance
+   reads the new decode. */
+template <class Map>
+static typename Map::iterator cache_decode(Map& map, typename Map::iterator it, uint64_t pc,
+                                           typename Map::mapped_type&& decode) {
+  if (it == map.end())
+    return map.emplace(pc, std::move(decode)).first;
+  it->second = std::move(decode);
+  return it;
+}
+
 void TraceReaderMemtrace::processDrIsaInst(InstInfo* _info, bool has_another_mem, instr_t* predecoded) {
   assert(mt_ref_.instr.size);
   bool unknown_type, cond_branch;
   _info->pc = mt_ref_.instr.addr;
-  if (mt_ref_.instr.encoding_is_new) {
-    ctype_inst_map_.erase(mt_ref_.instr.addr);
-  }
   auto ctype_inst_iter = ctype_inst_map_.find(mt_ref_.instr.addr);
   if (mt_ref_.instr.encoding_is_new) {
     assert(predecoded != nullptr);
@@ -1064,9 +1075,9 @@ void TraceReaderMemtrace::processDrIsaInst(InstInfo* _info, bool has_another_mem
     add_dependency_info(&cinst, predecoded);
     regdeps_opnd_counts_[mt_ref_.instr.addr] = regdeps_count_opnds(predecoded);
     cinst.encoding_is_new = mt_ref_.instr.encoding_is_new;
-    ctype_inst_map_.emplace(mt_ref_.instr.addr, std::make_tuple(cinst.num_ld + cinst.num_st, false, cinst.cf_type,
-                                                                false, Memtrace_Ctype_Entry(cinst)));
-    ctype_inst_iter = ctype_inst_map_.find(mt_ref_.instr.addr);
+    ctype_inst_iter = cache_decode(
+        ctype_inst_map_, ctype_inst_iter, mt_ref_.instr.addr,
+        std::make_tuple(cinst.num_ld + cinst.num_st, false, cinst.cf_type, false, Memtrace_Ctype_Entry(cinst)));
   } else {
     assert(ctype_inst_iter != ctype_inst_map_.end());
     std::get<MAP_XED>(ctype_inst_iter->second).encoding_is_new = mt_ref_.instr.encoding_is_new;
@@ -1112,11 +1123,8 @@ void TraceReaderMemtrace::processInst(InstInfo* _info, [[maybe_unused]] instr_t*
   _info->pc = mt_ref_.instr.addr;
   mt_prior_isize_ = mt_ref_.instr.size;
 
-  if (mt_ref_.instr.encoding_is_new) {
-    ctype_inst_map_.erase(mt_ref_.instr.addr);
-  }
   auto ctype_inst_iter = ctype_inst_map_.find(mt_ref_.instr.addr);
-  if (ctype_inst_iter == ctype_inst_map_.end()) {
+  if (ctype_inst_iter == ctype_inst_map_.end() || mt_ref_.instr.encoding_is_new) {
     // XED decode into a stack-local inst (only the ctype_pin_inst is cached)
     xed_decoded_inst_t xed_inst;
     xed_decoded_inst_zero_set_mode(&xed_inst, &xed_state_);
@@ -1181,9 +1189,9 @@ void TraceReaderMemtrace::processInst(InstInfo* _info, [[maybe_unused]] instr_t*
     fill_in_cf_info(&cinst, xed_ins);
     cinst.encoding_is_new = mt_ref_.instr.encoding_is_new;
 
-    ctype_inst_map_.emplace(mt_ref_.instr.addr, std::make_tuple(n_used_mem_ops, unknown_type, cinst.cf_type != NOT_CF,
-                                                                is_rep, Memtrace_Ctype_Entry(cinst)));
-    ctype_inst_iter = ctype_inst_map_.find(mt_ref_.instr.addr);
+    ctype_inst_iter = cache_decode(
+        ctype_inst_map_, ctype_inst_iter, mt_ref_.instr.addr,
+        std::make_tuple(n_used_mem_ops, unknown_type, cinst.cf_type != NOT_CF, is_rep, Memtrace_Ctype_Entry(cinst)));
   } else {
     std::get<MAP_XED>(ctype_inst_iter->second).encoding_is_new = mt_ref_.instr.encoding_is_new;
   }
