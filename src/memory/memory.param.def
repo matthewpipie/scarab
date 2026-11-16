@@ -251,6 +251,28 @@ DEF_PARAM(mlc_clip_theta_pct, MLC_CLIP_THETA_PCT, uns, uns, 25, )
 /* The sampled code and total lookup counts halve together when the total reaches 2^N. */
 DEF_PARAM(mlc_clip_counter_bits, MLC_CLIP_COUNTER_BITS, uns, uns, 12, )
 
+/* REPL_SHIPPP (--mlc_cache_repl_policy 26; SHiP++, Young et al., CRC2 2017) at the MLC only:
+   SRRIP whose insertion RRPV a per-core table of PC-signature counters (the SHCT) predicts.
+   See memory/shippp.c. The defaults are the paper's.
+   Sets whose lines keep a signature and train the SHCT. 0: every set. */
+DEF_PARAM(mlc_shippp_sampled_sets, MLC_SHIPPP_SAMPLED_SETS, uns, uns, 64, )
+/* SHCT entries per core: 2^N, at most 16 bits. */
+DEF_PARAM(mlc_shippp_shct_bits, MLC_SHIPPP_SHCT_BITS, uns, uns, 14, )
+/* Width of each SHCT counter. A counter at 0 inserts at RRPV 3, at its maximum at RRPV 0. */
+DEF_PARAM(mlc_shippp_counter_bits, MLC_SHIPPP_COUNTER_BITS, uns, uns, 3, )
+/* The SHCT counters' starting value; the paper does not give one. 1: an untrained signature
+   inserts at RRPV 2, as SRRIP would. */
+DEF_PARAM(mlc_shippp_shct_init, MLC_SHIPPP_SHCT_INIT, uns, uns, 1, )
+/* Which of the paper's five enhancements are on, one bit each (SHIPPP_F_* in memory/shippp.h):
+   0x01 max counter inserts at RRPV 0, 0x02 train on a line's first hit only, 0x04 writebacks
+   insert at RRPV 3, 0x08 separate prefetch signatures, 0x10 prefetched lines demoted on their
+   first demand hit and kept on a prefetch hit. 0x1f: SHiP++. 0: SHiP-PC-S. */
+DEF_PARAM(mlc_shippp_features, MLC_SHIPPP_FEATURES, uns, uns, 0x1f, )
+/* Whether instruction prefetches (FDIP, the icache and uop cache prefetchers) are prefetches
+   for enhancements 4 and 5. FALSE: they are treated as demand fetches, and only data
+   prefetches are. */
+DEF_PARAM(mlc_shippp_inst_pref_is_pref, MLC_SHIPPP_INST_PREF_IS_PREF, Flag, Flag, FALSE, )
+
 DEF_PARAM(memory_random_addr, MEMORY_RANDOM_ADDR, Flag, Flag, FALSE, )
 DEF_PARAM(va_page_size_bytes, VA_PAGE_SIZE_BYTES, uns, uns, 4096, )
 // we assume the high bits of the virt address are all 1s or 0s, and can be

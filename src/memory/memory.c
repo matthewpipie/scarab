@@ -66,6 +66,7 @@
 #include "mlp_oracle.h"
 #include "mockingjay.h"
 #include "op.h"
+#include "shippp.h"
 #include "statistics.h"
 // #include "dram.h"
 // #include "dram.param.h"
@@ -396,6 +397,11 @@ void init_uncores(void) {
   ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_MOCKINGJAY || !(mem_exclusive_mlc_dcache() || mem_exclusive_mlc_icache()),
           "REPL_MOCKINGJAY does not support an exclusive MLC (every fill would be a victim writeback)\n");
   mockingjay_configure(&mlc->cache, NUM_CORES, MLC_MJ_HIT);
+  /* REPL_SHIPPP: likewise, an exclusive MLC would insert only demoted lines -- writebacks, which
+     carry no PC and all insert distant. */
+  ASSERTM(0, MLC_CACHE_REPL_POLICY != REPL_SHIPPP || !(mem_exclusive_mlc_dcache() || mem_exclusive_mlc_icache()),
+          "REPL_SHIPPP does not support an exclusive MLC (every fill would be a demoted line)\n");
+  shippp_configure(&mlc->cache, NUM_CORES);
   /* REPL_EMISSARY: P reaches the MLC from the icache's evictions, by marking the MLC's copy.
      An MLC exclusive of the icache holds no copy and would need P carried on the demoted line,
      which is not modeled. */
@@ -452,6 +458,8 @@ void init_uncores(void) {
   /* REPL_CLIP: only the MLC's lookups and fills stage the code/data side (cache_clip_stage); the
      paper also warns that CLIP at the LLC sends data to memory. */
   ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_CLIP, "REPL_CLIP is supported at the MLC only\n");
+  /* REPL_SHIPPP: only the MLC's hits and fills call shippp_hit / shippp_fill. */
+  ASSERTM(0, L1_CACHE_REPL_POLICY != REPL_SHIPPP, "REPL_SHIPPP is supported at the MLC only\n");
 
   if (L1_CACHE_REPL_POLICY == REPL_PARTITION) {
     // initially equally partition
@@ -1298,9 +1306,11 @@ Flag mem_process_mlc_hit_access(Mem_Req* req, Addr* line_addr, MLC_Data* data, i
     if (data) { /* not perfect mlc */
       mlp_count_mlc_lookup(req, TRUE);
       clip_note_mlc_lookup(req, TRUE);
-      /* REPL_MOCKINGJAY: once per request, not on every retry of the lookup */
-      if (PREFETCH_UPDATE_LRU_MLC || !mem_req_type_is_prefetch(req->type))
+      /* REPL_MOCKINGJAY, REPL_SHIPPP: once per request, not on every retry of the lookup */
+      if (PREFETCH_UPDATE_LRU_MLC || !mem_req_type_is_prefetch(req->type)) {
         mockingjay_hit(&MLC(req->proc_id)->cache, req);
+        shippp_hit(&MLC(req->proc_id)->cache, req);
+      }
       if ((req->type == MRT_DFETCH) || (req->type == MRT_DSTORE) || (req->type == MRT_IFETCH)) {
         cache_cmix_demand(&MLC(req->proc_id)->cache, req->addr);
         if (data->prefetch) {  // prefetch hit
@@ -4155,6 +4165,7 @@ Flag mlc_fill_line(Mem_Req* req) {
   if (MLP_ORACLE)
     mlp_oracle_insert(&MLC(req->proc_id)->cache, req);
   mockingjay_fill(&MLC(req->proc_id)->cache, req);
+  shippp_fill(&MLC(req->proc_id)->cache, req);
 
   // Put prefetches in the right position for replacement
   // cmp FIXME prefetchers

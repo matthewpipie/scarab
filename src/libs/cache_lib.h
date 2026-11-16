@@ -82,6 +82,8 @@ typedef enum Repl_Policy_enum {
   REPL_CLIP,           /* Code Line Preservation (Jaleel et al., HPCA 2015): RRIP that inserts
                           data distant and never promotes it, set-sampled; MLC only -- see the
                           REPL_CLIP section of libs/cache_lib.c */
+  REPL_SHIPPP,         /* SHiP++ (Young et al., CRC2 2017): SHiP-PC-S with its five enhancements
+                          (--mlc_shippp_*); MLC only, see memory/shippp.c */
 
   NUM_REPL
 } Repl_Policy;
