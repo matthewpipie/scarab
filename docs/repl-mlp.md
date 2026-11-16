@@ -22,7 +22,7 @@ At 64 / 16 the countdown with `no_revive` loses about a quarter of a point to re
 
 ## How it works
 
-1. **Marking.** Each fill into the L2 is classified once, when it is filled, whatever the L2's policy (only REPL_MLP, or RRIP with `mlp_rrip_boost`, acts on the mark; under LRU it feeds the stats and [`mlp_oracle`](#bounds-mlp_oracle)). The LLC marks its fills only when it runs one of those itself.
+1. **Marking.** Each fill into the L2 is classified once, when it is filled, whatever the L2's policy (only REPL_MLP, RRIP with `mlp_rrip_boost`, or Mockingjay with `mlp_mj_boost` acts on the mark; under LRU it feeds the stats and [`mlp_oracle`](#bounds-mlp_oracle)). The LLC marks its fills only when it runs one of those itself.
    - A fill that a load waited on is a data fill. The [data rule](#data-marking) decides whether it is marked.
    - Otherwise, a fill that a demand fetch reached is an instruction fill. The [instruction rule](#instruction-marking) decides whether it is marked.
    - Nothing else is ever marked. That includes data prefetches no load waited on, instruction prefetches no demand fetch reached, store-only requests and writebacks.
@@ -45,7 +45,7 @@ Under the default flags:
 
 | Flag | Default | Values |
 |---|---|---|
-| `mlc_cache_repl_policy` | `0` (LRU) | `9` runs REPL_MLP at the L2 (MLC). `16` to `19` (SRRIP, BRRIP, DRRIP, SHiP) take the boost only with [`mlp_rrip_boost`](#rrip-as-the-base). |
+| `mlc_cache_repl_policy` | `0` (LRU) | `9` runs REPL_MLP at the L2 (MLC). `16` to `19` (SRRIP, BRRIP, DRRIP, SHiP) take the boost only with [`mlp_rrip_boost`](#rrip-as-the-base), and `22` (Mockingjay) only with [`mlp_mj_boost`](#mockingjay-as-the-base). |
 | `l1_cache_repl_policy` | `0` (LRU) | The same values at the last-level cache, which Scarab calls L1. |
 
 Each cache running REPL_MLP marks its own fills. Every result on this page has REPL_MLP at the L2 only.
@@ -65,6 +65,7 @@ Use values of 0 or more. The unit depends on the mode:
 | Fill-counted (`mlp_boost_in_fills 1`) | Fills into the set | Exact. Fractions are compared as they are. |
 | Stack position | LRU stack positions | γ at or above the associativity (16 on `golden_small`'s L2) means a marked line is never evicted while its set holds an unmarked line. |
 | RRIP base | Ways (`mlp_rrip_boost 1`) or aging steps (`mlp_rrip_boost 2`) | Mode 2 truncates γ to an integer. |
+| Mockingjay base (`mlp_mj_boost 1`) | Mockingjay aging steps (8 accesses to the set: hits, fills and bypasses, not writebacks) | As the countdown: a tick every max(1, round(γ/3)) aging steps. |
 
 ### Instruction marking
 
@@ -183,6 +184,17 @@ In stack position mode, a marked line is evicted ahead of an unmarked line only 
 | `2` | γ in aging steps, lapsing. A marked line absorbs its first γ aging steps after a fill or hit without its RRPV rising, as if it had been inserted or promoted γ levels lower. |
 
 Values above 2 are not checked. They mark lines and count the marking stats, but evict like plain RRIP.
+
+### Mockingjay as the base
+
+**`mlp_mj_boost`** (default `0`) runs REPL_MLP's countdown on Mockingjay (replacement policy 22, at the L2 or the LLC). The clock is Mockingjay's own aging step, every 8 accesses to the set, instead of a fill, and γ is the whole protection in aging steps, as the countdown's γ is in fills.
+
+- **Countdown.** A marked line gets a 2-bit countdown of 3 at its fill. Every max(1, round(γ/3)) aging steps of its set decrement it, so it is protected for 2/3 γ to γ aging steps after its last touch. A hit sets it back to 3 while it is still nonzero (with `mlp_boost_countdown_no_revive 0`, on every hit).
+- **Victim.** Mockingjay's victim (the largest |ETR|, ties to an overdue line) among the lines whose countdown is 0. If every line is protected, the lowest countdown first, then Mockingjay's victim among those (with `mlp_boost_countdown_tiered 0`, Mockingjay's victim among all lines).
+- **Bypass.** A marked fill is never bypassed. An unmarked fill competes only with the unprotected lines, and is bypassed if every line in its set is protected (with `mockingjay_bypass` on).
+- **ETR.** A protected line's ETR keeps aging, so when its countdown runs out it rejoins where plain Mockingjay would have it. **`mlp_mj_boost_restore_etr 1`** instead gives it back the ETR of its last fill or hit, as if touched then, as REPL_MLP's countdown moves an expired line to MRU.
+
+The predictor trains on its sampled cache, which follows the access stream, so the boost does not change what it learns, except that a hit enters its signature. γ 0 is plain Mockingjay. `mlp_boost_countdown` and `mlp_boost_in_fills` do nothing here. `MLC_MJ_BOOST_KEEP` counts marked fills plain Mockingjay would have bypassed, `MLC_MJ_BOOST_BYPASS` unmarked fills bypassed because the whole set was protected, and `MLP_COUNTDOWN_*` the countdowns, as under REPL_MLP.
 
 ### Stats
 

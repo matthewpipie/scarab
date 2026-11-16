@@ -90,10 +90,6 @@ static inline void mlp_note_victim(Cache* cache, Cache_Entry* victim) {
   cache->mlp_victim_used = victim->mlp_used;
 }
 
-/* REPL_MLP with mlp_boost_countdown: a marked line is protected for this many ticks of its set
-   (a 2-bit countdown), and a set ticks every round(mlp_boost / MLP_COUNTDOWN_TICKS) fills. */
-#define MLP_COUNTDOWN_TICKS 3
-
 /* REPL_MLP keeps its boost as a countdown (mlp_boost_countdown, on by default) unless
    mlp_boost_in_fills asks for the fill-count age instead. */
 static inline Flag mlp_countdown_on(void) {
@@ -2470,6 +2466,8 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
 static inline Flag mlp_protected(Cache* cache, uns set, Cache_Entry* entry) {
   if (entry->mlp_boost <= 0.0)
     return FALSE;
+  if (cache->repl_policy == REPL_MOCKINGJAY) /* mlp_mj_boost: always a countdown */
+    return entry->mlp_ticks_left > 0;
   if (mlp_countdown_on())
     return entry->mlp_ticks_left > 0;
   if (MLP_BOOST_IN_FILLS && cache->mlp_set_fills)
