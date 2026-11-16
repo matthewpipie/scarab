@@ -917,8 +917,8 @@ DEF_STAT(  MLP_OCC_INWINDOW                , COUNT  , NO_RATIO  )
 // fill, clearing the flag.
 DEF_STAT(  MLP_FE_ABANDON                  , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
-// REPL_MLP with mlp_boost_countdown: protections whose countdown reached 0, and victims taken while
-// every line in the set was protected.
+// REPL_MLP with mlp_boost_countdown, or REPL_MOCKINGJAY with mlp_mj_boost: protections whose
+// countdown reached 0, and victims taken while every line in the set was protected.
 DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
 
@@ -4240,7 +4240,11 @@ DEF_STAT(  L1_LACS_EVICT_TIES,         COUNT, NO_RATIO)
    MAX_RD. WB_FILL: writebacks inserted (overdue at once). BYPASS: fills not inserted.
    EVICT_FUTURE / ZERO / PAST: victims whose estimated time remaining was positive, zero, or
    negative (overdue). TRAIN: sampled-cache reuses that trained the predictor. DETRAIN: sampled
-   lines that aged out unseen and trained their signature as a scan. */
+   lines that aged out unseen and trained their signature as a scan.
+   With mlp_mj_boost (memory.param.def): BOOST_KEEP: marked fills inserted that plain Mockingjay
+   would have bypassed. BOOST_BYPASS: unmarked fills bypassed because every line in their set was
+   protected (BYPASS counts them too). MLP_COUNTDOWN_EXPIRE and MLP_COUNTDOWN_EVICT_PROTECTED
+   count its countdowns as they do REPL_MLP's. */
 DEF_STAT(  MLC_MJ_HIT,                 COUNT, NO_RATIO)
 DEF_STAT(  MLC_MJ_FILL,                COUNT, NO_RATIO)
 DEF_STAT(  MLC_MJ_FILL_COLD,           COUNT, NO_RATIO)
@@ -4252,6 +4256,8 @@ DEF_STAT(  MLC_MJ_EVICT_ZERO,          COUNT, NO_RATIO)
 DEF_STAT(  MLC_MJ_EVICT_PAST,          COUNT, NO_RATIO)
 DEF_STAT(  MLC_MJ_TRAIN,               COUNT, NO_RATIO)
 DEF_STAT(  MLC_MJ_DETRAIN,             COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_BOOST_KEEP,          COUNT, NO_RATIO)
+DEF_STAT(  MLC_MJ_BOOST_BYPASS,        COUNT, NO_RATIO)
 
 DEF_STAT(  L1_MJ_HIT,                  COUNT, NO_RATIO)
 DEF_STAT(  L1_MJ_FILL,                 COUNT, NO_RATIO)
@@ -4264,6 +4270,8 @@ DEF_STAT(  L1_MJ_EVICT_ZERO,           COUNT, NO_RATIO)
 DEF_STAT(  L1_MJ_EVICT_PAST,           COUNT, NO_RATIO)
 DEF_STAT(  L1_MJ_TRAIN,                COUNT, NO_RATIO)
 DEF_STAT(  L1_MJ_DETRAIN,              COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_BOOST_KEEP,           COUNT, NO_RATIO)
+DEF_STAT(  L1_MJ_BOOST_BYPASS,         COUNT, NO_RATIO)
 // cache_mix (stats only; cache_mix_interval in memory.param.def): what each cache holds, by line.
 // A line is an instruction or a data line by the request that filled it (a writeback carries the
 // class its line had above), and PREF while it was brought in by a prefetch and no demand access

@@ -3229,10 +3229,11 @@ static uns8 mlp_req_mark(Mem_Req* req) {
   return MLP_MARK_NONE;
 }
 
-/* Whether `cache` boosts the lines the marking marks: REPL_MLP, or an RRIP policy with
-   mlp_rrip_boost. */
+/* Whether `cache` boosts the lines the marking marks: REPL_MLP, an RRIP policy with mlp_rrip_boost,
+   or REPL_MOCKINGJAY with mlp_mj_boost. */
 static Flag mlp_boosts(Cache* cache) {
-  return cache->repl_policy == REPL_MLP || (MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy));
+  return cache->repl_policy == REPL_MLP || (MLP_RRIP_BOOST != MLP_RRIP_BOOST_OFF && repl_is_rrip(cache->repl_policy)) ||
+         (MLP_MJ_BOOST && cache->repl_policy == REPL_MOCKINGJAY);
 }
 
 /* How the marking marks the fill req is about to cause into `cache` (whose request file is
@@ -3261,6 +3262,18 @@ static uns8 mlp_fill_mark(Cache* cache, Mshr* file, Mem_Req* req, float* boost, 
     }
   }
   return mark;
+}
+
+/* REPL_MOCKINGJAY with mlp_mj_boost, which never bypasses such a fill: whether the fill req is about
+   to cause into `cache` will be boosted, i.e. the marking marks it on a side whose lambda is nonzero
+   (mlp_fill_mark, which changes nothing). FALSE on any other cache. */
+static Flag mlp_fill_boosted(Cache* cache, Mshr* file, Mem_Req* req) {
+  if (cache->repl_policy != REPL_MOCKINGJAY || !mlp_boosts(cache))
+    return FALSE;
+  float boost;
+  Mem_Req* by;
+  mlp_fill_mark(cache, file, req, &boost, &by);
+  return boost > 0.0;
 }
 
 /* Mark the fill req is about to cause into `cache` (whose request file is `file`; mlp_fill_mark),
@@ -3554,8 +3567,10 @@ Flag l1_fill_line(Mem_Req* req) {
   }
 
   /* REPL_MOCKINGJAY: a line predicted to be reused after everything in its set is not
-     inserted (an L1 fill carries no dirty data: writebacks are never bypassed). */
-  if (mockingjay_bypass(&L1(req->proc_id)->cache, req, FALSE)) {
+     inserted (an L1 fill carries no dirty data: writebacks are never bypassed), nor, with
+     mlp_mj_boost, an unmarked one when every line in its set is protected. */
+  if (mockingjay_bypass(&L1(req->proc_id)->cache, req, FALSE,
+                        mlp_fill_boosted(&L1(req->proc_id)->cache, &mem->l1_mshr, req))) {
     l1_miss_is_satisfied(req);
     return TRUE;
   }
@@ -3946,8 +3961,10 @@ Flag mlc_fill_line(Mem_Req* req) {
      which only MLC victims fill, the bypassed line moves down as a clean victim does (below):
      otherwise its only copy left on chip would be in the dcache or icache, gone when they
      evict it clean. Training waits until the line has its writeback slot, so a refused fill
-     that retries trains once. */
-  if (mockingjay_bypass_check(&MLC(req->proc_id)->cache, req, promoted_dirty)) {
+     that retries trains once. With mlp_mj_boost a marked fill is never bypassed, and an unmarked
+     one is when every line in its set is protected. */
+  if (mockingjay_bypass_check(&MLC(req->proc_id)->cache, req, promoted_dirty,
+                              mlp_fill_boosted(&MLC(req->proc_id)->cache, &mem->mlc_mshr, req))) {
     if (mem_exclusive_l1()) {
       Addr line_addr = req->addr & ~(Addr)(MLC_LINE_SIZE - 1);
       if (!new_mem_mlc_wb_req(MRT_WB_NODIRTY, req->proc_id, line_addr, MLC_LINE_SIZE, 1, NULL, NULL, unique_count,

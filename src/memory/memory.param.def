@@ -404,6 +404,28 @@ DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Fl
         levels lower.
    A boost of 0 is plain RRIP in every mode. See rrip_update_evict in libs/cache_lib.c. */
 DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
+/* mlp_mj_boost: REPL_MLP's countdown on REPL_MOCKINGJAY (at the MLC or the L1), with Mockingjay's
+   aging step (every 8 accesses to the set: hits, fills and bypasses, not writebacks) as the clock
+   in place of a fill. Lines are marked as for REPL_MLP, and a marked line's gamma is
+   mlp_lin_data_lambda / mlp_lin_instr_lambda, the whole protection in aging steps:
+     - A marked line's 2-bit countdown is set to 3 at its fill, and back to 3 on a hit while it is
+       still nonzero (on every hit with mlp_boost_countdown_no_revive 0).
+     - The set counts its aging steps, and every round(gamma / 3) of them is a tick for each line
+       with that gamma, which decrements its countdown. Protection lasts 2/3 gamma to gamma aging
+       steps after the line's last touch.
+     - The victim is Mockingjay's (largest |ETR|, ties to an overdue line) among the lines whose
+       countdown is 0. If every line is protected, the lowest countdown, then Mockingjay's pick
+       (with mlp_boost_countdown_tiered 0: Mockingjay's pick among all lines).
+     - A marked fill is never bypassed. An unmarked fill is checked against the unprotected lines
+       only, and is bypassed if every line in its set is protected (mockingjay_bypass on).
+   A line's ETR ages as usual while it is protected (see mlp_mj_boost_restore_etr). A gamma of 0 is
+   plain Mockingjay. mlp_boost_countdown and mlp_boost_in_fills are REPL_MLP's and do nothing here.
+   See memory/mockingjay.c. */
+DEF_PARAM(mlp_mj_boost, MLP_MJ_BOOST, Flag, Flag, FALSE, )
+/* mlp_mj_boost_restore_etr: when a marked line's countdown reaches 0, give it back the ETR it got at
+   its last fill or hit, as if touched then (as REPL_MLP moves an expired line to MRU). Off: its ETR
+   aged underneath, so it rejoins Mockingjay's order where plain Mockingjay would have it. */
+DEF_PARAM(mlp_mj_boost_restore_etr, MLP_MJ_BOOST_RESTORE_ETR, Flag, Flag, FALSE, )
 /* mlp_oracle: upper bounds for replacement that uses REPL_MLP's marking, and a random control for
    them, at the MLC. Simulator-only: the marking reads only what the core sees, but no hardware can
    force a hit. Run it on LRU (mlc_cache_repl_policy 0) and compare IPC with plain LRU. The marking

@@ -66,13 +66,16 @@ void mockingjay_hit(Cache* cache, Mem_Req* req);
 /* A fill is about to insert req's line, every other check done. If the predictor says the
    line will be reused after everything already in its (full) set, train as the artifact does
    for a bypass and return TRUE: the caller must then not insert the line. Never bypasses a
-   writeback, a fill into a set with a free way, or (dirty) a line this level must keep. */
-Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty);
+   writeback, a fill into a set with a free way, or (dirty) a line this level must keep.
+   With mlp_mj_boost, `boosted` says the fill will be boosted (marked, with a nonzero gamma): it is
+   then never bypassed, and an unboosted fill competes only with the set's unprotected lines. */
+Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty, Flag boosted);
 
 /* mockingjay_bypass in two steps, for a caller that has more to do before it can commit to the
-   bypass and may have to retry: _check decides and changes nothing; _commit trains (call it
-   once, after _check returned TRUE and only when the line is really not inserted). */
-Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty);
+   bypass and may have to retry: _check decides and changes nothing but what the stats of _commit
+   or mockingjay_fill read; _commit trains (call it once, after _check returned TRUE and only when
+   the line is really not inserted). */
+Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty, Flag boosted);
 void mockingjay_bypass_commit(Cache* cache, Mem_Req* req);
 
 /* Stage req for the cache_insert that immediately follows, which trains and predicts the new

@@ -96,6 +96,11 @@ static inline Flag repl_is_rrip(Repl_Policy policy) {
 #define MLP_RRIP_BOOST_LAMBDA 1
 #define MLP_RRIP_BOOST_GAMMA 2
 
+/* REPL_MLP's mlp_boost_countdown, and REPL_MOCKINGJAY's mlp_mj_boost: a marked line is protected for
+   this many ticks of its set (a 2-bit countdown), and a set ticks every round(boost /
+   MLP_COUNTDOWN_TICKS) units of the policy's clock (REPL_MLP: fills; Mockingjay: aging steps). */
+#define MLP_COUNTDOWN_TICKS 3
+
 typedef enum Cache_Repl_Signiture_enum {
   CACHE_REPL_SIGH_PC,
   CACHE_REPL_SIGH_MEM,
@@ -118,12 +123,14 @@ typedef struct Cache_Entry_struct {
   uns8 reference_val; /* for re-reference replacement policy */
   Flag outcome;       /* for replacement policy */
 
-  float mlp_boost;     /* RRIP with mlp_rrip_boost: eviction-priority boost staged at fill (see
-                           cache_set_next_fill_mlp_boost). Not used by REPL_MLP itself -- see mlp_mark. */
+  float mlp_boost;     /* RRIP with mlp_rrip_boost, or REPL_MOCKINGJAY with mlp_mj_boost: eviction-priority
+                           boost staged at fill (see cache_set_next_fill_mlp_boost). Not used by REPL_MLP
+                           itself -- see mlp_mark. */
   Counter mlp_stamp;   /* REPL_MLP with mlp_boost_in_fills: the set's fill count at the line's last
                           recency update (fill or hit) */
-  uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown: set ticks until the line's protection
-                          expires; it is protected while this is nonzero */
+  uns8 mlp_ticks_left; /* REPL_MLP with mlp_boost_countdown, or REPL_MOCKINGJAY with mlp_mj_boost: set
+                          ticks until the line's protection expires; it is protected while this is
+                          nonzero */
   uns mlp_rrip_credit; /* RRIP with mlp_rrip_boost 2: aging steps the line still absorbs before its
                           RRPV rises; set to its boost at its fill and at every hit */
   uns8 mlp_mark;       /* stats only: which rule marked the line at its fill, MLP_MARK_* (the MLC

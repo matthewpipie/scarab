@@ -85,6 +85,22 @@
  *  - The sampled cache's partial tag also hashes the core id when the cache is shared:
  *    Scarab tells cores' lines apart only by the top address bits, which the artifact's
  *    tag drops.
+ *
+ * mlp_mj_boost (memory.param.def) puts REPL_MLP's countdown on top, with the aging step above
+ * (every GRANULARITY accesses to a set) as its clock in place of a fill:
+ *  - A line REPL_MLP's marking marks, with a nonzero gamma (mlp_lin_{instr,data}_lambda) for
+ *    its side, starts a 2-bit countdown of MLP_COUNTDOWN_TICKS at its fill, and restarts it on
+ *    a hit while it is still running (mlp_boost_countdown_no_revive; on every hit without it).
+ *  - Every round(gamma / MLP_COUNTDOWN_TICKS) aging steps of its set is a tick for the line,
+ *    which decrements the countdown (mj_boost_tick). The line is protected while it is nonzero.
+ *  - The victim is the usual largest |ETR| among the lines with the lowest countdown, 0 when
+ *    the set has an unprotected line (mj_victim).
+ *  - A marked fill is never bypassed. An unmarked one is checked against the unprotected lines
+ *    only, and is bypassed if there are none: it would be the victim itself.
+ *  - The ETR ages underneath as usual; mlp_mj_boost_restore_etr instead gives a line whose
+ *    countdown runs out the ETR it got at its last fill or hit.
+ * The predictor never sees the boost: it trains on the sampled cache, which follows the access
+ * stream, not what the real cache keeps. A gamma of 0 is plain Mockingjay.
  ***************************************************************************************/
 
 #include "memory/mockingjay.h"
@@ -127,11 +143,13 @@ typedef enum Mj_Stat_enum {
   MJ_STAT_EVICT_PAST,
   MJ_STAT_TRAIN,
   MJ_STAT_DETRAIN,
+  MJ_STAT_BOOST_KEEP,
+  MJ_STAT_BOOST_BYPASS,
   MJ_NUM_STATS
 } Mj_Stat;
 
-_Static_assert(MLC_MJ_DETRAIN - MLC_MJ_HIT == MJ_STAT_DETRAIN, "MLC_MJ_* stats out of Mj_Stat order");
-_Static_assert(L1_MJ_DETRAIN - L1_MJ_HIT == MJ_STAT_DETRAIN, "L1_MJ_* stats out of Mj_Stat order");
+_Static_assert(MLC_MJ_BOOST_BYPASS - MLC_MJ_HIT == MJ_STAT_BOOST_BYPASS, "MLC_MJ_* stats out of Mj_Stat order");
+_Static_assert(L1_MJ_BOOST_BYPASS - L1_MJ_HIT == MJ_STAT_BOOST_BYPASS, "L1_MJ_* stats out of Mj_Stat order");
 
 /* What an update predicted for the line it touched. */
 typedef enum Mj_Pred_enum {
@@ -173,6 +191,11 @@ typedef struct Mj_State_struct {
   int* rdp;           /* [1 << sig_bits] */
   Flag* rdp_valid;    /* [1 << sig_bits]: the artifact's rdp.count(signature) */
 
+  /* mlp_mj_boost (NULL without it) */
+  Counter* age_steps; /* [num_sets]: aging steps so far, the countdown's clock */
+  int* touch_etr;     /* [num_sets * assoc]: the ETR each line got at its last fill or hit
+                         (mlp_mj_boost_restore_etr only) */
+
   /* mockingjay_configure */
   uns sharers;       /* NUM_CPUS for this cache */
   uns core_bits;     /* bits of the core id in a shared cache's signature */
@@ -197,11 +220,28 @@ static struct {
   Mj_Access acc;
 } g_mj_next_fill;
 
+/* mlp_mj_boost: what the last mockingjay_bypass_check decided for the boost, counted once the
+   fill's fate is settled (by mockingjay_bypass_commit or mockingjay_fill), since a refused fill
+   checks again when it retries. */
+static struct {
+  Cache* cache;
+  Mem_Req* req;
+  Flag all_protected; /* bypassed because every line in its set was protected */
+  Flag kept_marked;   /* a marked fill that plain Mockingjay would have bypassed */
+} g_mj_boost_check;
+
 /**************************************************************************************/
 /* Helpers */
 
 static inline Mj_State* mj_state(Cache* cache) {
   return (Mj_State*)cache->predictor;
+}
+
+/* mlp_mj_boost: the line's countdown tier in the victim search, 0 when it is unprotected. Without
+   mlp_boost_countdown_tiered every protected line is in one tier. */
+static inline uns8 mj_tier(Cache* cache, uns set, uns way) {
+  uns8 ticks = MLP_MJ_BOOST ? cache->entries[set][way].mlp_ticks_left : 0;
+  return ticks && !MLP_BOOST_COUNTDOWN_TIERED ? 1 : ticks;
 }
 
 static inline void mj_stat(Mj_State* s, uns8 proc_id, Mj_Stat stat) {
@@ -271,9 +311,29 @@ static void mj_detrain(Mj_State* s, Mj_Sample_Line* line, uns8 proc_id) {
   mj_stat(s, proc_id, MJ_STAT_DETRAIN);
 }
 
+/* mlp_mj_boost: one aging step of `set`, which does not tick `way` (the line the access touched,
+   if way >= 0: its fill or hit (re)starts its countdown). Every round(gamma / MLP_COUNTDOWN_TICKS)
+   steps is a tick for a line with that gamma, as REPL_MLP's mlp_countdown_tick counts fills. A line
+   whose countdown reaches 0 is unprotected; with mlp_mj_boost_restore_etr it also gets back the ETR
+   of its last fill or hit, as if touched now. */
+static void mj_boost_tick(Cache* cache, Mj_State* s, uns set, int way, uns8 proc_id) {
+  Counter step = ++s->age_steps[set];
+  for (uns w = 0; w < s->assoc; w++) {
+    Cache_Entry* entry = &cache->entries[set][w];
+    if ((int)w == way || !entry->valid || !entry->mlp_ticks_left)
+      continue;
+    Counter period = MAX2((Counter)1, (Counter)(entry->mlp_boost / MLP_COUNTDOWN_TICKS + 0.5));
+    if (step % period || --entry->mlp_ticks_left)
+      continue; /* not a tick for this line, or ticks left */
+    if (s->touch_etr)
+      s->etr[set * s->assoc + w] = s->touch_etr[set * s->assoc + w];
+    STAT_EVENT(proc_id, MLP_COUNTDOWN_EXPIRE);
+  }
+}
+
 /* llc_update_replacement_state: one access to `set`, a hit or fill of `way`, or a bypass
    (way < 0). */
-static Mj_Pred mj_update(Mj_State* s, uns set, int way, const Mj_Access* acc, Flag hit, uns8 proc_id) {
+static Mj_Pred mj_update(Cache* cache, Mj_State* s, uns set, int way, const Mj_Access* acc, Flag hit, uns8 proc_id) {
   if (acc->writeback) {
     if (!hit && way >= 0)
       s->etr[set * s->assoc + way] = -s->inf_etr;
@@ -356,6 +416,8 @@ static Mj_Pred mj_update(Mj_State* s, uns set, int way, const Mj_Access* acc, Fl
         (*etr)--;
     }
     s->etr_clock[set] = 0;
+    if (s->age_steps)
+      mj_boost_tick(cache, s, set, way, proc_id);
   }
   s->etr_clock[set]++;
 
@@ -363,26 +425,39 @@ static Mj_Pred mj_update(Mj_State* s, uns set, int way, const Mj_Access* acc, Fl
     return MJ_PRED_NONE;
 
   int* etr = &s->etr[set * s->assoc + way];
+  Mj_Pred pred;
   if (!s->rdp_valid[sig]) {
     *etr = s->sharers == 1 ? 0 : s->inf_etr;
-    return MJ_PRED_COLD;
-  }
-  if (s->rdp[sig] > s->max_rd) {
+    pred = MJ_PRED_COLD;
+  } else if (s->rdp[sig] > s->max_rd) {
     *etr = s->inf_etr;
-    return MJ_PRED_SCAN;
+    pred = MJ_PRED_SCAN;
+  } else {
+    *etr = s->rdp[sig] / MJ_GRANULARITY;
+    pred = MJ_PRED_RD;
   }
-  *etr = s->rdp[sig] / MJ_GRANULARITY;
-  return MJ_PRED_RD;
+  if (s->touch_etr)
+    s->touch_etr[set * s->assoc + way] = *etr;
+  return pred;
 }
 
 /* llc_find_victim's choice among a full set: the largest |ETR|, ties to an overdue line. That
-   |ETR| goes to max_etr. */
-static uns mj_victim(Mj_State* s, uns set, int* max_etr) {
-  uns victim = 0;
+   |ETR| goes to max_etr. With `boost` (mlp_mj_boost), the choice is only among the lines in the
+   lowest countdown tier (mj_tier): the unprotected lines if the set has any. */
+static uns mj_victim(Cache* cache, Mj_State* s, uns set, Flag boost, int* max_etr) {
+  uns8 tier = 0;
+  if (boost) {
+    tier = mj_tier(cache, set, 0);
+    for (uns w = 1; w < s->assoc && tier; w++)
+      tier = MIN2(tier, mj_tier(cache, set, w));
+  }
+  uns victim = s->assoc;
   *max_etr = 0;
   for (uns w = 0; w < s->assoc; w++) {
+    if (boost && mj_tier(cache, set, w) != tier)
+      continue;
     int etr = s->etr[set * s->assoc + w];
-    if (abs(etr) > *max_etr || (abs(etr) == *max_etr && etr < 0)) {
+    if (victim == s->assoc || abs(etr) > *max_etr || (abs(etr) == *max_etr && etr < 0)) {
       *max_etr = abs(etr);
       victim = w;
     }
@@ -480,6 +555,11 @@ void mockingjay_action_init(Cache* cache, const char* name, uns cache_size, uns 
                                   sizeof(Mj_Sample_Line) * MJ_SAMPLED_CACHE_WAYS);
   s->rdp = (int*)calloc((size_t)1 << s->sig_bits, sizeof(int));
   s->rdp_valid = (Flag*)calloc((size_t)1 << s->sig_bits, sizeof(Flag));
+  if (MLP_MJ_BOOST) {
+    s->age_steps = (Counter*)calloc(s->num_sets, sizeof(Counter));
+    if (MLP_MJ_BOOST_RESTORE_ETR)
+      s->touch_etr = (int*)calloc((size_t)s->num_sets * assoc, sizeof(int));
+  }
 
   /* Until mockingjay_configure says otherwise: one core, no stats */
   s->sharers = 1;
@@ -502,7 +582,13 @@ void mockingjay_update_insert(Cache* cache, uns8 proc_id, uns set, uns way, void
   ASSERT(proc_id, cache->entries[set][way].base == get_cache_line_addr(cache, acc->addr));
   g_mj_next_fill.valid = FALSE;
 
-  Mj_Pred pred = mj_update(s, set, way, acc, FALSE, proc_id);
+  Mj_Pred pred = mj_update(cache, s, set, way, acc, FALSE, proc_id);
+  /* mlp_mj_boost: a marked line's countdown starts at its fill (cache_insert_strategy has given it
+     the boost memory.c staged; a writeback's is 0). */
+  if (MLP_MJ_BOOST) {
+    Cache_Entry* entry = &cache->entries[set][way];
+    entry->mlp_ticks_left = entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+  }
   if (acc->writeback) {
     mj_stat(s, proc_id, MJ_STAT_WB_FILL);
     return;
@@ -524,10 +610,12 @@ Cache_Entry* mockingjay_update_evict(Cache* cache, uns8 proc_id, uns set, uns* w
 
   Mj_State* s = mj_state(cache);
   int max_etr;
-  *way = mj_victim(s, set, &max_etr);
+  *way = mj_victim(cache, s, set, MLP_MJ_BOOST, &max_etr);
   if (!if_external) {
     int etr = s->etr[set * s->assoc + *way];
     mj_stat(s, proc_id, etr > 0 ? MJ_STAT_EVICT_FUTURE : etr < 0 ? MJ_STAT_EVICT_PAST : MJ_STAT_EVICT_ZERO);
+    if (mj_tier(cache, set, *way))
+      STAT_EVENT(proc_id, MLP_COUNTDOWN_EVICT_PROTECTED);
   }
   return &cache->entries[set][*way];
 }
@@ -561,12 +649,23 @@ void mockingjay_hit(Cache* cache, Mem_Req* req) {
   if (way < 0)
     return; /* served from elsewhere (--l1_pref_cache_enable's prefetch cache) */
   Mj_State* s = mj_state(cache);
-  mj_update(s, set, way, &acc, TRUE, req->proc_id);
+  mj_update(cache, s, set, way, &acc, TRUE, req->proc_id);
   mj_stat(s, req->proc_id, MJ_STAT_HIT);
+  /* mlp_mj_boost: a hit restarts a marked line's countdown while it is still running (on every hit
+     without mlp_boost_countdown_no_revive), as REPL_MLP's does. */
+  Cache_Entry* entry = &cache->entries[set][way];
+  if (MLP_MJ_BOOST && entry->mlp_boost > 0.0 && (!MLP_BOOST_COUNTDOWN_NO_REVIVE || entry->mlp_ticks_left > 0))
+    entry->mlp_ticks_left = MLP_COUNTDOWN_TICKS;
 }
 
-Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty) {
-  if (cache->repl_policy != REPL_MOCKINGJAY || !MOCKINGJAY_BYPASS || dirty)
+Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty, Flag boosted) {
+  if (cache->repl_policy != REPL_MOCKINGJAY)
+    return FALSE;
+  g_mj_boost_check.cache = cache;
+  g_mj_boost_check.req = req;
+  g_mj_boost_check.all_protected = FALSE;
+  g_mj_boost_check.kept_marked = FALSE;
+  if (!MOCKINGJAY_BYPASS || dirty)
     return FALSE;
   Mj_Access acc;
   mj_req_access(cache, req, &acc);
@@ -581,9 +680,25 @@ Flag mockingjay_bypass_check(Cache* cache, Mem_Req* req, Flag dirty) {
   }
 
   Mj_State* s = mj_state(cache);
-  int max_etr;
-  mj_victim(s, set, &max_etr);
   uns64 sig = mj_signature(s, acc.pc, FALSE, acc.prefetch, acc.core);
+  int max_etr;
+  uns victim = mj_victim(cache, s, set, MLP_MJ_BOOST, &max_etr);
+  if (MLP_MJ_BOOST) {
+    /* A marked fill is kept: the boost would protect it once it is in. */
+    if (boosted) {
+      int plain_max_etr;
+      mj_victim(cache, s, set, FALSE, &plain_max_etr);
+      g_mj_boost_check.kept_marked =
+          s->rdp_valid[sig] && !(s->rdp[sig] <= s->max_rd && s->rdp[sig] / MJ_GRANULARITY <= plain_max_etr);
+      return FALSE;
+    }
+    /* An unmarked fill into a set with no unprotected line would be the victim itself. Otherwise
+       max_etr is over the unprotected lines, the ones it would compete with. */
+    if (mj_tier(cache, set, victim)) {
+      g_mj_boost_check.all_protected = TRUE;
+      return TRUE;
+    }
+  }
   return s->rdp_valid[sig] && !(s->rdp[sig] <= s->max_rd && s->rdp[sig] / MJ_GRANULARITY <= max_etr);
 }
 
@@ -594,12 +709,15 @@ void mockingjay_bypass_commit(Cache* cache, Mem_Req* req) {
   Addr tag, line_addr;
   uns set = ext_cache_index(cache, req->addr, &tag, &line_addr);
   Mj_State* s = mj_state(cache);
-  mj_update(s, set, -1, &acc, FALSE, req->proc_id);
+  mj_update(cache, s, set, -1, &acc, FALSE, req->proc_id);
   mj_stat(s, req->proc_id, MJ_STAT_BYPASS);
+  if (g_mj_boost_check.cache == cache && g_mj_boost_check.req == req && g_mj_boost_check.all_protected)
+    mj_stat(s, req->proc_id, MJ_STAT_BOOST_BYPASS);
+  g_mj_boost_check.cache = NULL;
 }
 
-Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty) {
-  if (!mockingjay_bypass_check(cache, req, dirty))
+Flag mockingjay_bypass(Cache* cache, Mem_Req* req, Flag dirty, Flag boosted) {
+  if (!mockingjay_bypass_check(cache, req, dirty, boosted))
     return FALSE;
   mockingjay_bypass_commit(cache, req);
   return TRUE;
@@ -611,4 +729,7 @@ void mockingjay_fill(Cache* cache, Mem_Req* req) {
   g_mj_next_fill.valid = TRUE;
   g_mj_next_fill.cache = cache;
   mj_req_access(cache, req, &g_mj_next_fill.acc);
+  if (g_mj_boost_check.cache == cache && g_mj_boost_check.req == req && g_mj_boost_check.kept_marked)
+    mj_stat(mj_state(cache), req->proc_id, MJ_STAT_BOOST_KEEP);
+  g_mj_boost_check.cache = NULL;
 }
