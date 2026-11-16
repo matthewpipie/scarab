@@ -12,6 +12,7 @@
 #include "bp/bp.h"
 #include "frontend/frontend_intf.h"
 #include "frontend/pt_memtrace/memtrace_fe.h"
+#include "frontend/pt_memtrace/packed_pin_inst.h"
 #include "frontend/pt_memtrace/pt_fe.h"
 #include "isa/isa.h"
 #include "pin/pin_lib/uop_generator.h"
@@ -41,7 +42,16 @@ static ctype_pin_inst next_onpath_pi[MAX_NUM_PROCS];
 static ctype_pin_inst next_offpath_pi[MAX_NUM_PROCS][MAX_NUM_BPS];
 static bool off_path_mode[MAX_NUM_PROCS][MAX_NUM_BPS] = {};
 static uint64_t off_path_addr[MAX_NUM_PROCS][MAX_NUM_BPS] = {};
-static std::unordered_map<uint64_t, ctype_pin_inst> pc_to_inst[MAX_NUM_PROCS];
+/* Stamped into replay-buffer oracle memory addresses when
+   POISON_REPLAY_BUFFER_ORACLE_VA is set. Deliberately non-canonical so any
+   consumer of a replayed address fails loudly rather than silently inheriting
+   on-path oracle state. */
+static const uint64_t REPLAY_BUFFER_POISON_VA = 0xCAFEBABEDEADBEAFULL;
+
+// Replay buffer: the last on-path instance of each PC, from which off-path insts are generated.
+// Entries are packed (~1 KB of mostly-constant bytes each otherwise, over a million PCs in a Google
+// sim): see replay_template() for what the template holds.
+static std::unordered_map<uint64_t, Packed_Pin_Inst> pc_to_inst[MAX_NUM_PROCS];
 
 // Direct-mapped, PC-indexed front cache for pc_to_inst: slot -> that PC's entry. pc_to_inst is never
 // erased and its nodes never move, so a slot whose pc matches holds exactly the entry find() would
@@ -52,9 +62,9 @@ static std::unordered_map<uint64_t, ctype_pin_inst> pc_to_inst[MAX_NUM_PROCS];
 // insertion, rewrites the PC's slot.
 struct Pc_Inst_Slot {
   uint64_t pc;
-  ctype_pin_inst *inst;  // nullptr: empty slot; &pc_inst_absent: pc is not in the map
+  Packed_Pin_Inst *inst;  // nullptr: empty slot; &pc_inst_absent: pc is not in the map
 };
-static ctype_pin_inst pc_inst_absent;
+static Packed_Pin_Inst pc_inst_absent;
 static constexpr unsigned PC_INST_CACHE_LOG2 = 16;  // entries per core (1 MB), allocated on first use
 static std::vector<Pc_Inst_Slot> pc_inst_cache[MAX_NUM_PROCS];
 
@@ -66,7 +76,7 @@ static inline Pc_Inst_Slot *pc_inst_slot(uns proc_id, uint64_t pc) {
 }
 
 // pc_to_inst[proc_id]'s entry for pc, or nullptr if it has none (what find() reports).
-static inline ctype_pin_inst *pc_inst_find(uns proc_id, uint64_t pc) {
+static inline Packed_Pin_Inst *pc_inst_find(uns proc_id, uint64_t pc) {
   Pc_Inst_Slot *slot = pc_inst_slot(proc_id, pc);
   if (slot->inst && slot->pc == pc)
     return slot->inst == &pc_inst_absent ? nullptr : slot->inst;
@@ -77,6 +87,58 @@ static inline ctype_pin_inst *pc_inst_find(uns proc_id, uint64_t pc) {
   }
   *slot = {pc, &it->second};
   return &it->second;
+}
+
+// Byte range of the oracle load/store addresses in a ctype_pin_inst (ld_vaddr then st_vaddr).
+static constexpr size_t REPLAY_VADDR_LO = offsetof(ctype_pin_inst, ld_vaddr);
+static constexpr size_t REPLAY_VADDR_HI = offsetof(ctype_pin_inst, st_vaddr) + sizeof(ctype_pin_inst::st_vaddr);
+static_assert(REPLAY_VADDR_HI - REPLAY_VADDR_LO == sizeof(uint64_t) * (MAX_LD_NUM + MAX_ST_NUM),
+              "ld_vaddr and st_vaddr must be adjacent");
+
+// The template pc_to_inst entries are packed against: all zero, except that with
+// POISON_REPLAY_BUFFER_ORACLE_VA every oracle load/store address holds the poison value, as every
+// stored entry's do (ext_trace_fetch_op poisons each one it stores). Built on first use, after the
+// params are parsed, and constant from then on.
+static const Packed_Pin_Inst::Template &replay_template() {
+  static Packed_Pin_Inst::Template tmpl;
+  static bool built = false;
+  if (!built) {
+    ctype_pin_inst image;
+    memset(&image, 0, sizeof image);
+    if (POISON_REPLAY_BUFFER_ORACLE_VA) {
+      for (uns i = 0; i < MAX_LD_NUM; i++)
+        image.ld_vaddr[i] = REPLAY_BUFFER_POISON_VA;
+      for (uns i = 0; i < MAX_ST_NUM; i++)
+        image.st_vaddr[i] = REPLAY_BUFFER_POISON_VA;
+    }
+    tmpl.set(image);
+    built = true;
+  }
+  return tmpl;
+}
+
+// Store next_pi as entry, poisoning its oracle addresses when POISON_REPLAY_BUFFER_ORACLE_VA (they are
+// only ever read back to replay off-path insts): the packed form of `*entry = next_pi` followed by
+// the poisoning loop.
+static inline void replay_store(Packed_Pin_Inst *entry, const ctype_pin_inst &next_pi) {
+  if (POISON_REPLAY_BUFFER_ORACLE_VA)
+    entry->pack(next_pi, replay_template(), REPLAY_VADDR_LO, REPLAY_VADDR_HI);
+  else
+    entry->pack(next_pi, replay_template());
+}
+
+#define REPLAY_FIELD(entry, member) \
+  ((entry)->field<decltype(ctype_pin_inst::member)>(offsetof(ctype_pin_inst, member), replay_template()))
+
+// ctype_pin_inst_same_mem_vaddr(inst, <entry unpacked>), without unpacking.
+static inline Flag replay_same_mem_vaddr(const ctype_pin_inst &inst, const Packed_Pin_Inst *entry) {
+  for (uns i = 0; i < MAX_LD_NUM; i++)
+    if (inst.ld_vaddr[i] != entry->field<uint64_t>(offsetof(ctype_pin_inst, ld_vaddr) + i * 8, replay_template()))
+      return FALSE;
+  for (uns i = 0; i < MAX_ST_NUM; i++)
+    if (inst.st_vaddr[i] != entry->field<uint64_t>(offsetof(ctype_pin_inst, st_vaddr) + i * 8, replay_template()))
+      return FALSE;
+  return TRUE;
 }
 
 // Hint that pc_inst_find(proc_id, pc) is coming. No other effect.
@@ -94,12 +156,6 @@ struct TraceBufState {
 static TraceBufState trace_buf_state[MAX_NUM_PROCS];
 
 const int CLINE = ~0x3F;
-
-/* Stamped into replay-buffer oracle memory addresses when
-   POISON_REPLAY_BUFFER_ORACLE_VA is set. Deliberately non-canonical so any
-   consumer of a replayed address fails loudly rather than silently inheriting
-   on-path oracle state. */
-static const uint64_t REPLAY_BUFFER_POISON_VA = 0xCAFEBABEDEADBEAFULL;
 
 extern uint64_t ins_id[MAX_NUM_PROCS];
 extern uint64_t ins_id_fetched[MAX_NUM_PROCS];
@@ -135,9 +191,9 @@ void buf_map_remove(uns proc_id) {
 }
 
 void off_path_generate_inst(uns proc_id, uint64_t *off_path_addr, ctype_pin_inst *inst) {
-  const ctype_pin_inst *entry = pc_inst_find(proc_id, *off_path_addr);
+  const Packed_Pin_Inst *entry = pc_inst_find(proc_id, *off_path_addr);
   if (entry) {
-    *inst = *entry;
+    entry->unpack(inst, replay_template());
     (*off_path_addr) += inst->size;
     DEBUG(proc_id, "Generate off-path inst:%lx inst_size:%i ", inst->instruction_addr, inst->size);
   } else {
@@ -313,52 +369,47 @@ void ext_trace_fetch_op(uns proc_id, uns bp_id, Op *op) {
         op->exit = TRUE;
       } else if (!next_onpath_pi[proc_id].is_trace_patch) {
         uint64_t addr = next_onpath_pi[proc_id].instruction_addr;
-        ctype_pin_inst *entry = pc_inst_find(proc_id, addr);
+        const ctype_pin_inst &next_pi = next_onpath_pi[proc_id];
+        // The replay entry is stored packed (see replay_store): `store` stands for the original
+        // `*entry = next_pi` (followed by poisoning), and entry fields are read in place.
+        Packed_Pin_Inst *entry = pc_inst_find(proc_id, addr);
+        Flag store = TRUE;
         if (!entry) {
-          entry = &pc_to_inst[proc_id].emplace(addr, next_onpath_pi[proc_id]).first->second;
+          entry = &pc_to_inst[proc_id].emplace(addr, Packed_Pin_Inst()).first->second;
           *pc_inst_slot(proc_id, addr) = {addr, entry};  // also clears a cached "absent"
-        } else if (next_onpath_pi[proc_id].encoding_is_new) {
+        } else if (next_pi.encoding_is_new) {
           STAT_EVENT(proc_id, INST_MAP_UPDATE_ENCODING);
-          *entry = next_onpath_pi[proc_id];
-        } else if (next_onpath_pi[proc_id].inst_binary_lsb != entry->inst_binary_lsb ||
-                   next_onpath_pi[proc_id].inst_binary_msb != entry->inst_binary_msb) {
+        } else if (next_pi.inst_binary_lsb != REPLAY_FIELD(entry, inst_binary_lsb) ||
+                   next_pi.inst_binary_msb != REPLAY_FIELD(entry, inst_binary_msb)) {
           DEBUG(proc_id, "Previously seen PC references new instruction addr:%lx inst_size:%i lsb:%lx msb:%lx\n ", addr,
-                next_onpath_pi[proc_id].size, next_onpath_pi[proc_id].inst_binary_lsb,
-                next_onpath_pi[proc_id].inst_binary_msb);
+                next_pi.size, next_pi.inst_binary_lsb, next_pi.inst_binary_msb);
           // Handle jitted code
           STAT_EVENT(proc_id, INST_MAP_UPDATE_JITTED);
-          *entry = next_onpath_pi[proc_id];
-        } else if (next_onpath_pi[proc_id].instruction_next_addr != entry->instruction_next_addr) {
-          ASSERT(proc_id, next_onpath_pi[proc_id].op_type == entry->op_type);
-          if (next_onpath_pi[proc_id].cf_type) {
-            ASSERT(proc_id, next_onpath_pi[proc_id].cf_type == entry->cf_type);
+        } else if (next_pi.instruction_next_addr != REPLAY_FIELD(entry, instruction_next_addr)) {
+          ASSERT(proc_id, next_pi.op_type == REPLAY_FIELD(entry, op_type));
+          if (next_pi.cf_type) {
+            ASSERT(proc_id, next_pi.cf_type == REPLAY_FIELD(entry, cf_type));
             // This can fail for java pt traces
-            // ASSERT(proc_id, next_onpath_pi[proc_id].cf_type == CF_CBR ||
-            //                 next_onpath_pi[proc_id].cf_type >= CF_IBR ||
-            //                 next_onpath_pi[proc_id].last_inst_from_trace);
+            // ASSERT(proc_id, next_pi.cf_type == CF_CBR ||
+            //                 next_pi.cf_type >= CF_IBR ||
+            //                 next_pi.last_inst_from_trace);
           }
-          STAT_EVENT(proc_id, INST_MAP_UPDATE_NPC_INV + next_onpath_pi[proc_id].op_type);
-          *entry = next_onpath_pi[proc_id];
-        } else if (!ctype_pin_inst_same_mem_vaddr(next_onpath_pi[proc_id], *entry)) {
-          ASSERT(proc_id, next_onpath_pi[proc_id].op_type == entry->op_type);
-          STAT_EVENT(proc_id, INST_MAP_UPDATE_MEM_INV + next_onpath_pi[proc_id].op_type);
-          *entry = next_onpath_pi[proc_id];
+          STAT_EVENT(proc_id, INST_MAP_UPDATE_NPC_INV + next_pi.op_type);
+        } else if (!replay_same_mem_vaddr(next_pi, entry)) {
+          ASSERT(proc_id, next_pi.op_type == REPLAY_FIELD(entry, op_type));
+          STAT_EVENT(proc_id, INST_MAP_UPDATE_MEM_INV + next_pi.op_type);
         } else {
+          store = FALSE;
           if (DEBUG_TRACE_READ && DEBUG_RANGE_COND(proc_id)) {
-            assert_ctype_pin_inst_same(proc_id, next_onpath_pi[proc_id], *entry);
+            ctype_pin_inst stored;
+            entry->unpack(&stored, replay_template());
+            assert_ctype_pin_inst_same(proc_id, next_pi, stored);
           }
         }
-        // Poison the oracle memory addresses of the replay-buffer entry for this
-        // PC; they are only ever read back to replay off-path instructions.
-        if (POISON_REPLAY_BUFFER_ORACLE_VA) {
-          // `entry` is this PC's entry (found or just emplaced; the map never erases), i.e. what
-          // pc_to_inst[proc_id][addr] would return, without a second lookup.
-          ctype_pin_inst &replay_entry = *entry;
-          for (uns i = 0; i < MAX_LD_NUM; i++)
-            replay_entry.ld_vaddr[i] = REPLAY_BUFFER_POISON_VA;
-          for (uns i = 0; i < MAX_ST_NUM; i++)
-            replay_entry.st_vaddr[i] = REPLAY_BUFFER_POISON_VA;
-        }
+        // An entry that is not rewritten already holds poisoned addresses (every store poisons them),
+        // so the original re-poisoning of it was a no-op.
+        if (store)
+          replay_store(entry, next_pi);
       }
       // Prefetch hint, no other effect: the trace reader already holds the next macro, whose
       // pc_to_inst lookup comes when this one ends.
