@@ -237,8 +237,9 @@ struct Cache_struct {
   void* predictor;
 
   Counter* mlp_set_fills; /* REPL_MLP: fills into each set so far, the clock for mlp_boost_in_fills */
-  Counter* mlp_age_steps; /* RRIP (or REPL_SHIPPP) with mlp_rrip_boost 3: aging rounds of each set so far,
-                             the countdown's clock; NULL on any other cache */
+  Counter* mlp_rrip_clock; /* RRIP (or REPL_SHIPPP) with mlp_rrip_boost 3: the countdown's clock, aging
+                              rounds of each set so far (fills with mlp_rrip_boost_fill_clock); NULL on any
+                              other cache */
   /* stats only: the line the last cache_insert replaced (valid FALSE if it took an invalid way) */
   Flag mlp_victim_valid;
   uns8 mlp_victim_mark;
@@ -297,16 +298,20 @@ void update_repl_resteer_policy(Cache*, Addr);
 void cache_set_next_fill_mlp_boost(float boost);
 
 /* mlp_rrip_boost 3: REPL_MLP's countdown on an RRIP policy (rrip_update_evict) or REPL_SHIPPP
-   (memory/shippp.c), clocked by the set's aging rounds (see memory.param.def). Whether `cache` runs
-   it. */
+   (memory/shippp.c), clocked by the set's aging rounds, or by its fills with mlp_rrip_boost_fill_clock
+   (see memory.param.def). Whether `cache` runs it. */
 Flag mlp_rrip_countdown_on(Cache* cache);
 /* A fill (`fill`) or a hit of `entry`, after the policy set its RRPV: a fill starts a boosted line's
    countdown, and a hit restarts it while it is still running (on every hit with
    mlp_boost_countdown_no_revive 0). No-op unless mlp_rrip_countdown_on. */
 void mlp_rrip_countdown_touch(Cache* cache, Cache_Entry* entry, Flag fill);
+/* After the fill into `way` of `set` and its touch: with mlp_rrip_boost_fill_clock, a step of the set's
+   clock, which can tick the countdowns of the set's other lines. No-op otherwise. */
+void mlp_rrip_countdown_fill(Cache* cache, uns8 proc_id, uns set, uns way);
 /* The victim search with the countdown, once every way of `set` is valid: the lowest way at
    `distant` among the lines of the lowest countdown tier (the unprotected lines, if the set has
-   any), aging the set until there is one. Each aging round can tick countdowns. Returns the way;
+   any), aging the set until there is one. Each aging round can tick countdowns (unless
+   mlp_rrip_boost_fill_clock). Returns the way;
    counts MLP_COUNTDOWN_EVICT_PROTECTED unless `if_external` (a peek). */
 uns mlp_rrip_countdown_victim(Cache* cache, uns8 proc_id, uns set, uns8 distant, Flag if_external);
 

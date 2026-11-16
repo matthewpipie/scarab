@@ -64,7 +64,7 @@ Use values of 0 or more. The unit depends on the mode:
 | Countdown (default) | Fills into the set | Rounded to a tick of p = max(1, round(γ/3)) fills. Any γ below 4.5 protects for 3 fills. |
 | Fill-counted (`mlp_boost_in_fills 1`) | Fills into the set | Exact. Fractions are compared as they are. |
 | Stack position | LRU stack positions | γ at or above the associativity (16 on `golden_small`'s L2) means a marked line is never evicted while its set holds an unmarked line. |
-| RRIP base | Ways (`mlp_rrip_boost 1`), aging steps (`mlp_rrip_boost 2`) or aging rounds (`mlp_rrip_boost 3`, also SHiP++) | Mode 2 truncates γ to an integer. Mode 3 is a countdown: a tick every max(1, round(γ/3)) aging rounds. |
+| RRIP base | Ways (`mlp_rrip_boost 1`), aging steps (`mlp_rrip_boost 2`) or aging rounds (`mlp_rrip_boost 3`, also SHiP++; fills with `mlp_rrip_boost_fill_clock`) | Mode 2 truncates γ to an integer. Mode 3 is a countdown: a tick every max(1, round(γ/3)) aging rounds, or fills. |
 | Mockingjay base (`mlp_mj_boost 1`) | Mockingjay aging steps (8 accesses to the set: hits, fills and bypasses, not writebacks) | As the countdown: a tick every max(1, round(γ/3)) aging steps. |
 
 ### Instruction marking
@@ -191,6 +191,7 @@ Values above 3 are not checked. They mark lines and count the marking stats, but
 - **Countdown.** A marked line gets a 2-bit countdown of 3 at its fill, whatever RRPV the policy inserts it at. Every max(1, round(γ/3)) aging rounds of its set decrement it, so it is protected for 2/3 γ to γ aging rounds after its last touch. A hit sets it back to 3 while it is still nonzero (with `mlp_boost_countdown_no_revive 0`, on every hit). SHiP++ restarts it on any hit but a writeback's, as its own hit rules do.
 - **Victim.** The policy's victim (the lowest way at RRPV 3, aging the set until there is one) among the lines whose countdown is 0. If every line is protected, among the lines with the lowest countdown, then 2, then 3 (with `mlp_boost_countdown_tiered 0`, among all lines). An aging round inside the search can itself tick a countdown to 0.
 - **RRPV.** A protected line's RRPV keeps aging, so when its countdown runs out it is usually at 3 and goes next. **`mlp_rrip_boost_restore_rrpv 1`** instead gives it back the RRPV of its last fill or hit, as if touched then, so it lives a normal RRIP life on top of its protection (close to mode 2).
+- **Fill clock.** **`mlp_rrip_boost_fill_clock 1`** clocks the countdown by the set's fills instead, as REPL_MLP's countdown is, so γ is in fills. Every fill into the set, a free way's included, is a step of the clock, and ticks the other lines of the set, not the one just filled. The policy still ages its RRPVs in its victim search as before; only the countdown stops counting those rounds.
 - **SHiP++.** Every set is boosted, the sampled sets included, so the SHCT learns reuse under the policy that runs. A marked fill the SHCT predicts dead is still protected; `MLC_SHIPPP_BOOST_DISTANT` counts those.
 
 Aging rounds are rarer than fills, and how much rarer depends on the policy: a set with a line already at RRPV 3 evicts it without aging. `MLP_RRIP_AGE_ROUND` counts the rounds, so rounds ÷ fills converts γ to fills. γ 0 is the plain policy. `MLP_COUNTDOWN_*` count the countdowns, as under REPL_MLP.
@@ -219,7 +220,7 @@ All of these are in `memory.stat.<core>.out`.
 | `MLP_FE_ABANDON_REREACH` | Abandoned lines a demand fetch reached again before the fill |
 | `MLP_COUNTDOWN_EXPIRE` | Countdowns that reached 0 (REPL_MLP, `mlp_mj_boost`, `mlp_rrip_boost 3`) |
 | `MLP_COUNTDOWN_EVICT_PROTECTED` | Victims evicted while still protected, which happens only when the whole set is protected |
-| `MLP_RRIP_AGE_ROUND` | `mlp_rrip_boost 3` only: aging rounds of the caches that run it, the countdown's clock |
+| `MLP_RRIP_AGE_ROUND` | `mlp_rrip_boost 3` only: aging rounds of the caches that run it, the countdown's clock unless `mlp_rrip_boost_fill_clock` |
 | `MLP_LD_BOUND_LOG2_*`, `MLP_LD_BOUNDREQ_LOG2_*`, `MLP_LD_HEAD_LOG2_*`, `MLP_LD_HEADNI_LOG2_*` | Under every policy, at each L2 fill a load waited on: the request's count for `mlp_data_bound` 0, 1, 2 and 3 in log2 buckets. `_0` is 0, `_k` is 2^(k−1) to 2^k − 1, and `_15` is 2^14 and up. |
 | `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request (the count `mlp_data_bound 2` uses), by the level that served it. Stats only. |
 | `REQ_COST_FE_{MLC,LLC,MEM}` | Cycles the backend got no ops while the on-path icache waited on a request, by the level that served it. Stats only. |

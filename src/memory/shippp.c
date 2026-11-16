@@ -88,8 +88,9 @@
  *  - A line REPL_MLP's marking marks, with a nonzero gamma (mlp_lin_{instr,data}_lambda) for its
  *    side, starts a 2-bit countdown of MLP_COUNTDOWN_TICKS at its fill, whatever RRPV the SHCT
  *    gives it, and restarts it on a hit (not a writeback's) while it is still running.
- *  - Every round(gamma / MLP_COUNTDOWN_TICKS) aging rounds of its set is a tick for the line, which
- *    decrements the countdown. The line is protected while it is nonzero.
+ *  - Every round(gamma / MLP_COUNTDOWN_TICKS) aging rounds of its set (fills, with
+ *    mlp_rrip_boost_fill_clock) is a tick for the line, which decrements the countdown. The line is
+ *    protected while it is nonzero.
  *  - The victim is the lowest way at RRPV 3 among the unprotected lines, aging the set until there
  *    is one; if every line is protected, among the lines with the lowest countdown
  *    (mlp_rrip_countdown_victim in libs/cache_lib.c).
