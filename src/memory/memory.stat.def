@@ -1126,6 +1126,28 @@ DEF_STAT(  MLC_CLIP_INSERT_DATA           , COUNT  , NO_RATIO  )
 // data hits in CLIP mode, which leave the line unpromoted
 DEF_STAT(  MLC_CLIP_HIT_DATA_NOT_PROMOTED , COUNT  , NO_RATIO  )
 
+// REPL_SHIPPP: SHiP++ at the MLC (memory/shippp.c)
+// served hits, one per request: promoted to RRPV 0; a demand's first hit on a prefetched line
+// (demoted to RRPV 3); a prefetch hit on a prefetched line (RRPV kept); writebacks (no change)
+DEF_STAT(  MLC_SHIPPP_HIT_PROMOTE         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_HIT_PF_DEMOTE       , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_HIT_PF_KEEP         , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_HIT_WB              , COUNT  , NO_RATIO  )
+// fills by inserted RRPV: 0 (counter at max), 2, 3 (counter at 0), and writebacks; PREF counts
+// the non-writeback fills that were prefetches by SHiP++'s rules
+DEF_STAT(  MLC_SHIPPP_INSERT_IMMEDIATE    , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_INSERT_FAR          , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_INSERT_DISTANT      , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_INSERT_WB           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_INSERT_PREF         , COUNT  , NO_RATIO  )
+// SHCT training by sampled-set lines (attempts, saturated counters included)
+DEF_STAT(  MLC_SHIPPP_TRAIN_INC           , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_TRAIN_DEC           , COUNT  , NO_RATIO  )
+// valid lines evicted by fills (a fill into a free way is not counted), by whether the victim
+// still had its is_prefetched bit set (a prefetched line no demand hit)
+DEF_STAT(  MLC_SHIPPP_EVICT               , COUNT  , NO_RATIO  )
+DEF_STAT(  MLC_SHIPPP_EVICT_PF            , COUNT  , NO_RATIO  )
+
 DEF_STAT(  MLC_HIT		   , DIST  , NO_RATIO  )
 DEF_STAT(  MLC_MISS		   , DIST  , NO_RATIO  ) // Consider a prefetch hit by demand before mlc access as a demand
 
