@@ -437,6 +437,7 @@ DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Fl
             there is one) among the lines whose countdown is 0. If every line is protected, among
             the lines with the lowest countdown (with mlp_boost_countdown_tiered 0: among all).
           - The RRPV keeps aging while the line is protected (see mlp_rrip_boost_restore_rrpv).
+          - mlp_rrip_boost_fill_clock makes the set's fills the clock instead, as REPL_MLP's.
         Also applies to REPL_SHIPPP, whose sampled sets are boosted too, so its SHCT learns reuse
         under the boost. mlp_boost_countdown and mlp_boost_in_fills are REPL_MLP's and do nothing.
    A boost of 0 is plain RRIP in every mode. REPL_SHIPPP refuses modes 1 and 2. See rrip_update_evict
@@ -447,6 +448,13 @@ DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
    line to MRU), so it then lives a normal RRIP life on top of its protection. Off: its RRPV aged
    underneath, so it rejoins the RRIP order where the plain policy would have it, usually distant. */
 DEF_PARAM(mlp_rrip_boost_restore_rrpv, MLP_RRIP_BOOST_RESTORE_RRPV, Flag, Flag, FALSE, )
+/* mlp_rrip_boost_fill_clock: with mlp_rrip_boost 3, clock the countdown by the set's fills, as
+   REPL_MLP's countdown is, instead of by its aging rounds. Every fill into the set (into a free way
+   too) is a step of its clock, and every round(gamma / 3) steps is a tick for each protected line in
+   the set but the one just filled. gamma is then in fills, the unit of REPL_MLP's mlp_lin_*_lambda.
+   The victim search still raises RRPVs, and MLP_RRIP_AGE_ROUND still counts its rounds, but a round
+   ticks nothing. */
+DEF_PARAM(mlp_rrip_boost_fill_clock, MLP_RRIP_BOOST_FILL_CLOCK, Flag, Flag, FALSE, )
 /* mlp_mj_boost: REPL_MLP's countdown on REPL_MOCKINGJAY (at the MLC or the L1), with Mockingjay's
    aging step (every 8 accesses to the set: hits, fills and bypasses, not writebacks) as the clock
    in place of a fill. Lines are marked as for REPL_MLP, and a marked line's gamma is

@@ -924,7 +924,8 @@ DEF_STAT(  MLP_FE_ABANDON_REREACH          , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EXPIRE            , COUNT  , NO_RATIO  )
 DEF_STAT(  MLP_COUNTDOWN_EVICT_PROTECTED   , COUNT  , NO_RATIO  )
 // mlp_rrip_boost 3: aging rounds (every RRPV of a set up by one) of the caches running it, the
-// countdown's clock. Divide by fills to convert gamma between aging rounds and fills.
+// countdown's clock unless mlp_rrip_boost_fill_clock. Divide by fills to convert gamma between aging
+// rounds and fills.
 DEF_STAT(  MLP_RRIP_AGE_ROUND              , COUNT  , NO_RATIO  )
 
 // mlp_oracle (memory.param.def), per side (I instruction, D data). A miss is as mlp_oracle defines
