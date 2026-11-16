@@ -401,7 +401,8 @@ DEF_PARAM(mlp_boost_countdown, MLP_BOOST_COUNTDOWN, Flag, Flag, TRUE, )
    (0 = unprotected still goes first), ties to the least recently used within a tier -- instead of
    grouping every nonzero countdown together and picking the least recently used regardless of how
    close to expiry it is. It changes the victim only when every line in the set is protected. No
-   effect unless the countdown is in use (mlp_boost_countdown on, mlp_boost_in_fills off). */
+   effect unless the countdown is in use (mlp_boost_countdown on, mlp_boost_in_fills off). The
+   countdowns of mlp_mj_boost and mlp_rrip_boost 3 follow it too. */
 DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, TRUE, )
 /* mlp_boost_countdown_no_revive (default on): only restart a marked line's countdown on a hit if it
    is still mid-countdown (mlp_ticks_left > 0); a line whose countdown already reached 0 stays at 0
@@ -409,10 +410,11 @@ DEF_PARAM(mlp_boost_countdown_tiered, MLP_BOOST_COUNTDOWN_TIERED, Flag, Flag, TR
    makes mlp_ticks_left == 0 mean "not protected" uniformly, so a lapsed marked line and a line that
    was never marked need no separate bit to tell apart. Its loss against reviving is won back with
    larger lambdas (96 / 24 instead of 64 / 16; docs/repl-mlp.md). No effect unless the countdown is
-   in use (mlp_boost_countdown on, mlp_boost_in_fills off). */
+   in use (mlp_boost_countdown on, mlp_boost_in_fills off). The countdowns of mlp_mj_boost and
+   mlp_rrip_boost 3 follow it too. */
 DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Flag, TRUE, )
 /* mlp_rrip_boost: REPL_MLP's fill boost on an RRIP policy (cache_repl_policy 16 SRRIP, 17 BRRIP,
-   18 DRRIP, 19 SHiP) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
+   18 DRRIP, 19 SHiP; and 26 SHiP++ in mode 3 only) in place of LRU. Lines are marked as for REPL_MLP (mlp_instr_mark and
    mlp_instr_starve on the instruction side), and a marked line's boost is mlp_lin_data_lambda /
    mlp_lin_instr_lambda, in this mode's unit (mlp_boost_in_fills and mlp_boost_countdown are
    REPL_MLP's, and do nothing here):
@@ -424,8 +426,27 @@ DEF_PARAM(mlp_boost_countdown_no_revive, MLP_BOOST_COUNTDOWN_NO_REVIVE, Flag, Fl
      2  gamma, in aging steps, lapsing: a marked line absorbs the first `boost` (whole) aging steps
         after its fill or any hit without its RRPV rising, as if inserted or promoted that many
         levels lower.
-   A boost of 0 is plain RRIP in every mode. See rrip_update_evict in libs/cache_lib.c. */
+     3  gamma, in aging rounds, as REPL_MLP's countdown: the set's aging rounds (every RRPV up by
+        one in the victim search) are the clock in place of a fill.
+          - A marked line's 2-bit countdown is set to 3 at its fill, and back to 3 on a hit while it
+            is still nonzero (on every hit with mlp_boost_countdown_no_revive 0).
+          - Every round(gamma / 3) aging rounds of its set is a tick for each line with that gamma,
+            which decrements its countdown. Protection lasts 2/3 gamma to gamma aging rounds after
+            the line's last touch.
+          - The victim is the policy's (the lowest way at the distant RRPV, aging the set until
+            there is one) among the lines whose countdown is 0. If every line is protected, among
+            the lines with the lowest countdown (with mlp_boost_countdown_tiered 0: among all).
+          - The RRPV keeps aging while the line is protected (see mlp_rrip_boost_restore_rrpv).
+        Also applies to REPL_SHIPPP, whose sampled sets are boosted too, so its SHCT learns reuse
+        under the boost. mlp_boost_countdown and mlp_boost_in_fills are REPL_MLP's and do nothing.
+   A boost of 0 is plain RRIP in every mode. REPL_SHIPPP refuses modes 1 and 2. See rrip_update_evict
+   and mlp_rrip_countdown_victim in libs/cache_lib.c. */
 DEF_PARAM(mlp_rrip_boost, MLP_RRIP_BOOST, uns, uns, 0, )
+/* mlp_rrip_boost_restore_rrpv: with mlp_rrip_boost 3, when a marked line's countdown reaches 0 give
+   it back the RRPV it got at its last fill or hit, as if touched then (as REPL_MLP moves an expired
+   line to MRU), so it then lives a normal RRIP life on top of its protection. Off: its RRPV aged
+   underneath, so it rejoins the RRIP order where the plain policy would have it, usually distant. */
+DEF_PARAM(mlp_rrip_boost_restore_rrpv, MLP_RRIP_BOOST_RESTORE_RRPV, Flag, Flag, FALSE, )
 /* mlp_mj_boost: REPL_MLP's countdown on REPL_MOCKINGJAY (at the MLC or the L1), with Mockingjay's
    aging step (every 8 accesses to the set: hits, fills and bypasses, not writebacks) as the clock
    in place of a fill. Lines are marked as for REPL_MLP, and a marked line's gamma is

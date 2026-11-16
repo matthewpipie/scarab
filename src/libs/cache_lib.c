@@ -119,6 +119,74 @@ static void mlp_countdown_tick(Cache* cache, uns8 proc_id, uns set, uns fill_way
   }
 }
 
+/* mlp_rrip_boost 3: REPL_MLP's countdown on an RRIP policy (rrip_update_evict) or REPL_SHIPPP
+   (shippp_update_evict), with the set's aging rounds -- the RRIP search's "raise every RRPV by one" --
+   as the clock in place of a fill. A boosted line gets a 2-bit countdown of MLP_COUNTDOWN_TICKS at its
+   fill, and back on a hit while it is still running; every round(gamma / MLP_COUNTDOWN_TICKS) aging
+   rounds of its set decrement it. The search evicts an unprotected line (countdown 0) while the set
+   has one; if not, the lowest countdown first (mlp_boost_countdown_tiered). The RRPV ages underneath,
+   or with mlp_rrip_boost_restore_rrpv goes back to its last-touch value at expiry. */
+Flag mlp_rrip_countdown_on(Cache* cache) {
+  return cache->mlp_age_steps != NULL;
+}
+
+void mlp_rrip_countdown_touch(Cache* cache, Cache_Entry* entry, Flag fill) {
+  if (!cache->mlp_age_steps)
+    return;
+  if (fill)
+    entry->mlp_ticks_left = entry->mlp_boost > 0.0 ? MLP_COUNTDOWN_TICKS : 0;
+  else if (entry->mlp_boost > 0.0 && (!MLP_BOOST_COUNTDOWN_NO_REVIVE || entry->mlp_ticks_left > 0))
+    entry->mlp_ticks_left = MLP_COUNTDOWN_TICKS;
+  entry->mlp_touch_rrpv = entry->reference_val;
+}
+
+/* The line's tier in mlp_rrip_countdown_victim: 0 when it is unprotected. Without
+   mlp_boost_countdown_tiered every protected line is in one tier. */
+static inline uns8 mlp_rrip_tier(Cache_Entry* entry) {
+  uns8 ticks = entry->mlp_ticks_left;
+  return ticks && !MLP_BOOST_COUNTDOWN_TIERED ? 1 : ticks;
+}
+
+/* One aging round of `set` (every way valid): each RRPV rises by one, up to `distant` (a protected
+   line can already sit there while the search looks past it), and the round is a tick for each
+   protected line whose period it completes. A line whose countdown reaches 0 is unprotected; with
+   mlp_rrip_boost_restore_rrpv it also gets back the RRPV of its last fill or hit, as if touched now. */
+static void mlp_rrip_countdown_age(Cache* cache, uns8 proc_id, uns set, uns8 distant) {
+  Counter step = ++cache->mlp_age_steps[set];
+  STAT_EVENT(proc_id, MLP_RRIP_AGE_ROUND);
+  for (uns ii = 0; ii < cache->assoc; ii++) {
+    Cache_Entry* entry = &cache->entries[set][ii];
+    if (entry->reference_val < distant)
+      entry->reference_val++;
+    if (!entry->mlp_ticks_left)
+      continue;
+    Counter period = MAX2((Counter)1, (Counter)(entry->mlp_boost / MLP_COUNTDOWN_TICKS + 0.5));
+    if (step % period || --entry->mlp_ticks_left)
+      continue; /* not a tick for this line, or ticks left */
+    if (MLP_RRIP_BOOST_RESTORE_RRPV)
+      entry->reference_val = entry->mlp_touch_rrpv;
+    STAT_EVENT(proc_id, MLP_COUNTDOWN_EXPIRE);
+  }
+}
+
+uns mlp_rrip_countdown_victim(Cache* cache, uns8 proc_id, uns set, uns8 distant, Flag if_external) {
+  ASSERT(proc_id, cache->mlp_age_steps);
+  for (;;) {
+    uns8 tier = mlp_rrip_tier(&cache->entries[set][0]);
+    for (uns ii = 1; ii < cache->assoc && tier; ii++)
+      tier = MIN2(tier, mlp_rrip_tier(&cache->entries[set][ii]));
+    for (uns ii = 0; ii < cache->assoc; ii++) {
+      Cache_Entry* entry = &cache->entries[set][ii];
+      if (entry->reference_val >= distant && mlp_rrip_tier(entry) == tier) {
+        if (tier && !if_external)
+          STAT_EVENT(proc_id, MLP_COUNTDOWN_EVICT_PROTECTED);
+        return ii;
+      }
+    }
+    mlp_rrip_countdown_age(cache, proc_id, set, distant);
+  }
+}
+
 /* From memory/icarus.c tell cache_insert() (which knows nothing of a line's criticality)
 that the next fill should be marked critical, set when a line is determined to be critical
 by icarus_fill, and reset to 0 after each fill.  */
@@ -225,6 +293,10 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     cache->repl_ctrs = (uns*)calloc(num_sets, sizeof(uns));
 
   cache->mlp_set_fills = repl_policy == REPL_MLP ? (Counter*)calloc(num_sets, sizeof(Counter)) : NULL;
+  cache->mlp_age_steps =
+      MLP_RRIP_BOOST == MLP_RRIP_BOOST_COUNTDOWN && (repl_is_rrip(repl_policy) || repl_policy == REPL_SHIPPP)
+          ? (Counter*)calloc(num_sets, sizeof(Counter))
+          : NULL;
   cache->mlp_victim_valid = FALSE;
   cache->mlp_victim_mark = MLP_MARK_NONE;
   cache->mlp_victim_used = FALSE;
@@ -243,6 +315,7 @@ void init_cache_impl(Cache* cache, const char* name, uns cache_size, uns assoc, 
     for (jj = 0; jj < assoc; jj++) {
       cache->entries[ii][jj].valid = FALSE;
       cache->entries[ii][jj].mlp_ticks_left = 0;
+      cache->entries[ii][jj].mlp_touch_rrpv = 0;
       cache->entries[ii][jj].mlp_boost = 0.0;
       cache->entries[ii][jj].mlp_rrip_credit = 0;
       cache->entries[ii][jj].mlp_mark = MLP_MARK_NONE;
@@ -1541,6 +1614,7 @@ void* cache_insert_strategy(Cache* cache, uns8 proc_id, Addr addr, Addr* line_ad
   new_line->emissary_p = FALSE;
   repl_policy_func_table[policy].update_insert(cache, proc_id, set, repl_index, NULL);
   new_line->mlp_rrip_credit = MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA ? (uns)new_line->mlp_boost : 0;
+  mlp_rrip_countdown_touch(cache, new_line, TRUE); /* mlp_rrip_boost 3: start a boosted line's countdown */
 
   return new_line->data;
 }
@@ -1572,6 +1646,10 @@ void* cache_access_strategy(Cache* cache, Addr addr, Addr* line_addr, Flag* tag_
         /* mlp_rrip_boost 2: a hit renews a marked line's credit along with its RRPV */
         if (MLP_RRIP_BOOST == MLP_RRIP_BOOST_GAMMA)
           line->mlp_rrip_credit = (uns)line->mlp_boost;
+        /* mlp_rrip_boost 3: a hit restarts a running countdown. REPL_SHIPPP's hits are shippp_hit's,
+           once per request (its update_hit does nothing). */
+        if (cache->repl_policy != REPL_SHIPPP)
+          mlp_rrip_countdown_touch(cache, line, FALSE);
       }
 
       *tag_aliasing = line->tag_full != tag_full;
@@ -1852,7 +1930,8 @@ static Cache_Entry* rrip_evict_lin(Cache* cache, uns set, uns* way) {
    mlp_rrip_boost 2: a line with mlp_rrip_credit left is not yet distant, and an aging step spends a
    credit instead of raising its RRPV, as if the line had been inserted or promoted that many levels
    lower. Its protection lapses once the credits are spent, unless a hit renews them. With no credits
-   (every other mode) this is the plain search. mlp_rrip_boost 1 picks the victim in rrip_evict_lin. */
+   (every other mode) this is the plain search. mlp_rrip_boost 1 picks the victim in rrip_evict_lin,
+   and mlp_rrip_boost 3 (REPL_MLP's countdown) in mlp_rrip_countdown_victim. */
 Cache_Entry* rrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, void* arg, Flag if_external) {
   int ii;
   Flag found = FALSE;
@@ -1871,6 +1950,11 @@ Cache_Entry* rrip_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, vo
 
   if (MLP_RRIP_BOOST == MLP_RRIP_BOOST_LAMBDA) {
     rrip_evict_lin(cache, set, way);
+    cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
+    return &cache->entries[set][*way];
+  }
+  if (cache->mlp_age_steps) {
+    *way = mlp_rrip_countdown_victim(cache, proc_id, set, RRIP_DISTANT_VAL, if_external);
     cache_debug_print_set(cache, set, *way, CACHE_EVENT_EVICT);
     return &cache->entries[set][*way];
   }
@@ -2466,7 +2550,7 @@ Cache_Entry* icarus_update_evict(Cache* cache, uns8 proc_id, uns set, uns* way, 
 static inline Flag mlp_protected(Cache* cache, uns set, Cache_Entry* entry) {
   if (entry->mlp_boost <= 0.0)
     return FALSE;
-  if (cache->repl_policy == REPL_MOCKINGJAY) /* mlp_mj_boost: always a countdown */
+  if (cache->repl_policy == REPL_MOCKINGJAY || cache->mlp_age_steps) /* mlp_mj_boost, mlp_rrip_boost 3 */
     return entry->mlp_ticks_left > 0;
   if (mlp_countdown_on())
     return entry->mlp_ticks_left > 0;

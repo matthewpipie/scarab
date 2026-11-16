@@ -22,7 +22,7 @@ At 64 / 16 the countdown with `no_revive` loses about a quarter of a point to re
 
 ## How it works
 
-1. **Marking.** Each fill into the L2 is classified once, when it is filled, whatever the L2's policy (only REPL_MLP, RRIP with `mlp_rrip_boost`, or Mockingjay with `mlp_mj_boost` acts on the mark; under LRU it feeds the stats and [`mlp_oracle`](#bounds-mlp_oracle)). The LLC marks its fills only when it runs one of those itself.
+1. **Marking.** Each fill into the L2 is classified once, when it is filled, whatever the L2's policy (only REPL_MLP, RRIP or SHiP++ with `mlp_rrip_boost`, or Mockingjay with `mlp_mj_boost` acts on the mark; under LRU it feeds the stats and [`mlp_oracle`](#bounds-mlp_oracle)). The LLC marks its fills only when it runs one of those itself.
    - A fill that a load waited on is a data fill. The [data rule](#data-marking) decides whether it is marked.
    - Otherwise, a fill that a demand fetch reached is an instruction fill. The [instruction rule](#instruction-marking) decides whether it is marked.
    - Nothing else is ever marked. That includes data prefetches no load waited on, instruction prefetches no demand fetch reached, store-only requests and writebacks.
@@ -45,7 +45,7 @@ Under the default flags:
 
 | Flag | Default | Values |
 |---|---|---|
-| `mlc_cache_repl_policy` | `0` (LRU) | `9` runs REPL_MLP at the L2 (MLC). `16` to `19` (SRRIP, BRRIP, DRRIP, SHiP) take the boost only with [`mlp_rrip_boost`](#rrip-as-the-base), and `22` (Mockingjay) only with [`mlp_mj_boost`](#mockingjay-as-the-base). |
+| `mlc_cache_repl_policy` | `0` (LRU) | `9` runs REPL_MLP at the L2 (MLC). `16` to `19` (SRRIP, BRRIP, DRRIP, SHiP) take the boost only with [`mlp_rrip_boost`](#rrip-as-the-base), `26` (SHiP++) only with `mlp_rrip_boost 3`, and `22` (Mockingjay) only with [`mlp_mj_boost`](#mockingjay-as-the-base). |
 | `l1_cache_repl_policy` | `0` (LRU) | The same values at the last-level cache, which Scarab calls L1. |
 
 Each cache running REPL_MLP marks its own fills. Every result on this page has REPL_MLP at the L2 only.
@@ -64,7 +64,7 @@ Use values of 0 or more. The unit depends on the mode:
 | Countdown (default) | Fills into the set | Rounded to a tick of p = max(1, round(γ/3)) fills. Any γ below 4.5 protects for 3 fills. |
 | Fill-counted (`mlp_boost_in_fills 1`) | Fills into the set | Exact. Fractions are compared as they are. |
 | Stack position | LRU stack positions | γ at or above the associativity (16 on `golden_small`'s L2) means a marked line is never evicted while its set holds an unmarked line. |
-| RRIP base | Ways (`mlp_rrip_boost 1`) or aging steps (`mlp_rrip_boost 2`) | Mode 2 truncates γ to an integer. |
+| RRIP base | Ways (`mlp_rrip_boost 1`), aging steps (`mlp_rrip_boost 2`) or aging rounds (`mlp_rrip_boost 3`, also SHiP++) | Mode 2 truncates γ to an integer. Mode 3 is a countdown: a tick every max(1, round(γ/3)) aging rounds. |
 | Mockingjay base (`mlp_mj_boost 1`) | Mockingjay aging steps (8 accesses to the set: hits, fills and bypasses, not writebacks) | As the countdown: a tick every max(1, round(γ/3)) aging steps. |
 
 ### Instruction marking
@@ -175,15 +175,25 @@ In stack position mode, a marked line is evicted ahead of an unmarked line only 
 
 ### RRIP as the base
 
-**`mlp_rrip_boost`** (default `0`) applies REPL_MLP's marking and γ to SRRIP, BRRIP, DRRIP or SHiP (replacement policies 16 to 19) instead of LRU. The replacement mode flags above do nothing here.
+**`mlp_rrip_boost`** (default `0`) applies REPL_MLP's marking and γ to SRRIP, BRRIP, DRRIP or SHiP (replacement policies 16 to 19) instead of LRU, and in mode 3 to SHiP++ (26) too. The replacement mode flags above do nothing here.
 
 | Value | Meaning |
 |---|---|
 | `0` | Off. The RRIP policies neither mark nor boost. |
 | `1` | γ in ways, permanent. The victim is the line with the smallest place in the RRIP eviction order + γ, so marked lines can hold about γ ways of a set however stale they are. The set ages until an unmarked line reaches the distant RRPV. |
 | `2` | γ in aging steps, lapsing. A marked line absorbs its first γ aging steps after a fill or hit without its RRPV rising, as if it had been inserted or promoted γ levels lower. |
+| `3` | γ in aging rounds, as REPL_MLP's countdown (below). The only mode SHiP++ takes. |
 
-Values above 2 are not checked. They mark lines and count the marking stats, but evict like plain RRIP.
+Values above 3 are not checked. They mark lines and count the marking stats, but evict like plain RRIP. SHiP++ refuses modes 1 and 2.
+
+**Mode 3, the countdown.** An aging round is one step of the RRIP victim search's "raise every RRPV in the set by one", which runs when no candidate is at the distant RRPV (3). Those rounds are the clock, instead of fills, and γ is the whole protection in aging rounds.
+
+- **Countdown.** A marked line gets a 2-bit countdown of 3 at its fill, whatever RRPV the policy inserts it at. Every max(1, round(γ/3)) aging rounds of its set decrement it, so it is protected for 2/3 γ to γ aging rounds after its last touch. A hit sets it back to 3 while it is still nonzero (with `mlp_boost_countdown_no_revive 0`, on every hit). SHiP++ restarts it on any hit but a writeback's, as its own hit rules do.
+- **Victim.** The policy's victim (the lowest way at RRPV 3, aging the set until there is one) among the lines whose countdown is 0. If every line is protected, among the lines with the lowest countdown, then 2, then 3 (with `mlp_boost_countdown_tiered 0`, among all lines). An aging round inside the search can itself tick a countdown to 0.
+- **RRPV.** A protected line's RRPV keeps aging, so when its countdown runs out it is usually at 3 and goes next. **`mlp_rrip_boost_restore_rrpv 1`** instead gives it back the RRPV of its last fill or hit, as if touched then, so it lives a normal RRIP life on top of its protection (close to mode 2).
+- **SHiP++.** Every set is boosted, the sampled sets included, so the SHCT learns reuse under the policy that runs. A marked fill the SHCT predicts dead is still protected; `MLC_SHIPPP_BOOST_DISTANT` counts those.
+
+Aging rounds are rarer than fills, and how much rarer depends on the policy: a set with a line already at RRPV 3 evicts it without aging. `MLP_RRIP_AGE_ROUND` counts the rounds, so rounds ÷ fills converts γ to fills. γ 0 is the plain policy. `MLP_COUNTDOWN_*` count the countdowns, as under REPL_MLP.
 
 ### Mockingjay as the base
 
@@ -207,8 +217,9 @@ All of these are in `memory.stat.<core>.out`.
 | `MLP_MARKED_MERGE` | Marked fills that more than one memory op, or more than one request type, merged into |
 | `MLP_FE_ABANDON` | Resteers away from a line fetch was stuck on, under every policy |
 | `MLP_FE_ABANDON_REREACH` | Abandoned lines a demand fetch reached again before the fill |
-| `MLP_COUNTDOWN_EXPIRE` | Countdowns that reached 0 |
+| `MLP_COUNTDOWN_EXPIRE` | Countdowns that reached 0 (REPL_MLP, `mlp_mj_boost`, `mlp_rrip_boost 3`) |
 | `MLP_COUNTDOWN_EVICT_PROTECTED` | Victims evicted while still protected, which happens only when the whole set is protected |
+| `MLP_RRIP_AGE_ROUND` | `mlp_rrip_boost 3` only: aging rounds of the caches that run it, the countdown's clock |
 | `MLP_LD_BOUND_LOG2_*`, `MLP_LD_BOUNDREQ_LOG2_*`, `MLP_LD_HEAD_LOG2_*`, `MLP_LD_HEADNI_LOG2_*` | Under every policy, at each L2 fill a load waited on: the request's count for `mlp_data_bound` 0, 1, 2 and 3 in log2 buckets. `_0` is 0, `_k` is 2^(k−1) to 2^k − 1, and `_15` is 2^14 and up. |
 | `REQ_COST_ROB_{MLC,LLC,MEM}` | Cycles nothing retired because the ROB head was a load waiting on a request (the count `mlp_data_bound 2` uses), by the level that served it. Stats only. |
 | `REQ_COST_FE_{MLC,LLC,MEM}` | Cycles the backend got no ops while the on-path icache waited on a request, by the level that served it. Stats only. |
@@ -223,7 +234,7 @@ All of these are in `memory.stat.<core>.out`.
 | `MLP_RDNEXT_{DMARK,IMARK,MARK}_{LOOKUPS,FILLS}_LOG2_*` | The gap from one demand lookup of a marked line to the next (data, instruction, either), in L2 demand lookups on the core and in fills to the set |
 | `MLP_LINES_*`, `MLP_OCC_*` | Distinct lines over the measured region, and a census of the L2 every 4096 cycles: valid, marked, and boosted lines still protected |
 
-The L2 marks every fill under any policy and whatever the λs. Marking just labels the line; only REPL_MLP (or RRIP with `mlp_rrip_boost`) boosts it. So `MLP_MARKED_*` and every stat split by mark count what the rules decide, under LRU too, and with `mlp_lin_data_lambda 0` `MLP_MARKED_LOAD` still counts data marks. Only boosted lines are ever protected, so `_LAPSED` and `MLP_OCC_INWINDOW` count only those. The LLC marks, and counts its fills in `MLP_MARKED_*`, only when it runs REPL_MLP itself.
+The L2 marks every fill under any policy and whatever the λs. Marking just labels the line; only REPL_MLP, RRIP or SHiP++ with `mlp_rrip_boost`, or Mockingjay with `mlp_mj_boost` boosts it. So `MLP_MARKED_*` and every stat split by mark count what the rules decide, under LRU too, and with `mlp_lin_data_lambda 0` `MLP_MARKED_LOAD` still counts data marks. Only boosted lines are ever protected, so `_LAPSED` and `MLP_OCC_INWINDOW` count only those. The LLC marks, and counts its fills in `MLP_MARKED_*`, only when it runs REPL_MLP itself.
 
 ## Results
 
