@@ -30,6 +30,7 @@
 #define __INST_INFO_H__
 
 #include "ctype_pin_inst.h"
+#include "static_inst_info.h"  // Static_Reg_Info
 #include "table_info.h"
 
 
@@ -62,8 +63,10 @@ struct Inst_Info_struct {
   uns uop_seq_num;         // static op num used to differentiate ops with same pc
   Table_Info table_info;   // static instruction information (by value)
 
-  Reg_Info srcs[MAX_SRCS];    // source register information
-  Reg_Info dests[MAX_DESTS];  // destination register information
+  // Interned per static uop, so only the static operand fields (no runtime value: that lives in the
+  // Trace_Uop / Op). A 32 B Reg_Info here made these arrays 1 KB of every ~1.2 KB Inst_Info.
+  Static_Reg_Info srcs[MAX_SRCS];    // source register information
+  Static_Reg_Info dests[MAX_DESTS];  // destination register information
 
   int latency;  // The normal latency of this instruction
 
