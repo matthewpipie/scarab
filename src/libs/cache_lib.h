@@ -330,9 +330,22 @@ uns8 cache_mlp_demand_hit(Cache* cache, Addr addr);
    with no boost (the cache does not boost, or the side's lambda is 0) was never protected, so it
    does not lapse either. Read it before the access renews the line. */
 Flag cache_mlp_lapsed(Cache* cache, Addr addr);
+/* Per-set histograms of the census (MLP_OCC_SET_* in memory.stat.def): for each kind of line, how
+   many sets hold k of them, k = 0 .. MLP_SET_HIST_MAX (a larger count lands in the last bucket). */
+#define MLP_SET_HIST_MAX 16
+typedef enum Mlp_Set_Hist_enum {
+  MLP_SET_VALID,
+  MLP_SET_MARK,
+  MLP_SET_DMARK,
+  MLP_SET_IMARK,
+  MLP_SET_PROT,
+  MLP_SET_HISTS
+} Mlp_Set_Hist;
 /* Add to each count the cache's valid lines, data- and instruction-marked lines, and marked lines
-   whose protection is still in effect (see MLP_OCC_INWINDOW in memory.stat.def). */
-void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow);
+   whose protection is still in effect (see MLP_OCC_INWINDOW in memory.stat.def), and to set_hist
+   each set, by its count of each (MLP_SET_MARK: marked lines of either kind). */
+void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow,
+                      Counter set_hist[MLP_SET_HISTS][MLP_SET_HIST_MAX + 1]);
 
 /* Stats only (cache_mix; CMIX_* in memory.stat.def): whether a line holds instructions or data,
    and whether it was brought in by a prefetch that no demand access has hit at this cache yet.

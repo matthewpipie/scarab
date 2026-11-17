@@ -2597,22 +2597,28 @@ Flag cache_mlp_lapsed(Cache* cache, Addr addr) {
   return entry && entry->mlp_boost > 0.0 && !mlp_protected(cache, set, entry);
 }
 
-void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow) {
+void cache_mlp_census(Cache* cache, Counter* valid, Counter* dmark, Counter* imark, Counter* inwindow,
+                      Counter set_hist[MLP_SET_HISTS][MLP_SET_HIST_MAX + 1]) {
   for (uns set = 0; set < cache->num_sets; set++) {
+    uns n[MLP_SET_HISTS] = {0};
     for (uns ii = 0; ii < cache->assoc; ii++) {
       Cache_Entry* entry = &cache->entries[set][ii];
       if (!entry->valid)
         continue;
-      (*valid)++;
+      n[MLP_SET_VALID]++;
       if (entry->mlp_mark == MLP_MARK_NONE)
         continue;
-      if (entry->mlp_mark == MLP_MARK_DATA)
-        (*dmark)++;
-      else
-        (*imark)++;
+      n[MLP_SET_MARK]++;
+      n[entry->mlp_mark == MLP_MARK_DATA ? MLP_SET_DMARK : MLP_SET_IMARK]++;
       if (mlp_protected(cache, set, entry))
-        (*inwindow)++;
+        n[MLP_SET_PROT]++;
     }
+    *valid += n[MLP_SET_VALID];
+    *dmark += n[MLP_SET_DMARK];
+    *imark += n[MLP_SET_IMARK];
+    *inwindow += n[MLP_SET_PROT];
+    for (uns h = 0; h < MLP_SET_HISTS; h++)
+      set_hist[h][MIN2(n[h], MLP_SET_HIST_MAX)]++;
   }
 }
 

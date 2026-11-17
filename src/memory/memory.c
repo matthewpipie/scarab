@@ -1023,12 +1023,19 @@ void update_on_chip_memory_stats() {
   if (MLC_PRESENT && ++mlp_census_tick % 4096 == 0) {
     for (uns proc_id = 0; proc_id < NUM_CORES; proc_id++) {
       Counter valid = 0, dmark = 0, imark = 0, inwindow = 0;
-      cache_mlp_census(&MLC(proc_id)->cache, &valid, &dmark, &imark, &inwindow);
+      Counter set_hist[MLP_SET_HISTS][MLP_SET_HIST_MAX + 1] = {{0}};
+      cache_mlp_census(&MLC(proc_id)->cache, &valid, &dmark, &imark, &inwindow, set_hist);
       STAT_EVENT(proc_id, MLP_OCC_SAMPLES);
       INC_STAT_EVENT(proc_id, MLP_OCC_VALID, valid);
       INC_STAT_EVENT(proc_id, MLP_OCC_DMARK, dmark);
       INC_STAT_EVENT(proc_id, MLP_OCC_IMARK, imark);
       INC_STAT_EVENT(proc_id, MLP_OCC_INWINDOW, inwindow);
+      static const uns set_hist_stat[MLP_SET_HISTS] = {MLP_OCC_SET_VALID_0, MLP_OCC_SET_MARK_0, MLP_OCC_SET_DMARK_0,
+                                                       MLP_OCC_SET_IMARK_0, MLP_OCC_SET_PROT_0};
+      for (uns h = 0; h < MLP_SET_HISTS; h++)
+        for (uns k = 0; k <= MLP_SET_HIST_MAX; k++)
+          if (set_hist[h][k])
+            INC_STAT_EVENT(proc_id, set_hist_stat[h] + k, set_hist[h][k]);
     }
   }
   STAT_EVENT(0, MIN2(MEM_REQ_DEMANDS__0 + mem_req_demand_entries / 4, MEM_REQ_DEMANDS_64));
