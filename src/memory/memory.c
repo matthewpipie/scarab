@@ -1304,6 +1304,7 @@ Flag mem_process_mlc_hit_access(Mem_Req* req, Addr* line_addr, MLC_Data* data, i
     /* If done_func is not complete we will keep accessing MLC until done_func returns TRUE */
 
     if (data) { /* not perfect mlc */
+      data->hit_since_fill = TRUE;
       mlp_count_mlc_lookup(req, TRUE);
       clip_note_mlc_lookup(req, TRUE);
       /* REPL_MOCKINGJAY, REPL_SHIPPP: once per request, not on every retry of the lookup */
@@ -3306,6 +3307,8 @@ static uns8 mlp_stage_fill_boost(Cache* cache, Mshr* file, Mem_Req* req) {
   if (mark != MLP_MARK_NONE) {
     Flag data = mark == MLP_MARK_DATA;
     STAT_EVENT(by->proc_id, data ? MLP_MARKED_LOAD : MLP_MARKED_FETCH);
+    STAT_EVENT(by->proc_id, data ? (by->off_path ? MLP_MARKED_LOAD_OFFPATH : MLP_MARKED_LOAD_ONPATH)
+                                  : (by->off_path ? MLP_MARKED_FETCH_OFFPATH : MLP_MARKED_FETCH_ONPATH));
     if (data ? by->op_count > 1 : popcount32(by->types) > 1)
       STAT_EVENT(by->proc_id, MLP_MARKED_MERGE);
     if (by != req)
@@ -3339,6 +3342,28 @@ static void mlp_count_mlc_lookup(Mem_Req* req, Flag hit) {
       kind = 3; /* a prefetch */
   }
   STAT_EVENT(req->proc_id, MLP_MLC_ACC_LOAD + kind);
+  if (kind == 0)
+    STAT_EVENT(req->proc_id, req->off_path ? ALL_LOAD_ACC_OFFPATH : ALL_LOAD_ACC_ONPATH);
+  else if (kind == 2)
+    STAT_EVENT(req->proc_id, req->off_path ? ALL_FETCH_ACC_OFFPATH : ALL_FETCH_ACC_ONPATH);
+
+  /* MLC hit rate (stats only): one lookup (hit or first miss) per request, so ACC is the
+     hit-rate denominator -- by the incoming request's off_path status, and by whether the
+     request itself is a prefetch (kind 3) or a demand load/store/ifetch (kind <= 2); a
+     writeback lookup (kind 4) is neither and is excluded from the prefetch/demand split. */
+  STAT_EVENT(req->proc_id, req->off_path ? MLC_LOOKUP_OFFPATH : MLC_LOOKUP_ONPATH);
+  if (hit)
+    STAT_EVENT(req->proc_id, req->off_path ? MLC_LOOKUP_HIT_OFFPATH : MLC_LOOKUP_HIT_ONPATH);
+  if (kind <= 2) {
+    STAT_EVENT(req->proc_id, MLC_LOOKUP_NONPREFETCH);
+    if (hit)
+      STAT_EVENT(req->proc_id, MLC_LOOKUP_HIT_NONPREFETCH);
+  } else if (kind == 3) {
+    STAT_EVENT(req->proc_id, MLC_LOOKUP_PREFETCH);
+    if (hit)
+      STAT_EVENT(req->proc_id, MLC_LOOKUP_HIT_PREFETCH);
+  }
+
   if (kind <= 2 || (kind == 3 && MLP_RD_IPRF_REUSE && mlp_req_side(req) == MLP_SIDE_INSTR))
     mlp_rd_access(req, hit);
   if (!hit)
@@ -3872,6 +3897,7 @@ Flag l1_fill_line(Mem_Req* req) {
   data->pref_loadPC = req->pref_loadPC;
   data->global_hist = req->global_hist;
   data->dcache_touch = FALSE;
+  data->hit_since_fill = FALSE;
   data->fetched_by_offpath = req->off_path;
   data->offpath_op_addr = req->oldest_op_addr;
   data->offpath_op_unique = req->oldest_op_unique_num;
@@ -4130,6 +4156,37 @@ Flag mlc_fill_line(Mem_Req* req) {
       else
         STAT_EVENT(repl_proc_id, CORE_PREF_MLC_DEMAND_LATENCY300);
     }
+
+    /* Residency stats only: lifetime is fill-to-eviction-from-the-set (this is a real
+       eviction, not an invalidation elsewhere), split by prefetch vs. demand and by the
+       victim's own fill-time off_path status. */
+    Counter lifetime = cycle_count - data->fetch_cycle;
+    if (data->prefetch) {
+      INC_STAT_EVENT(repl_proc_id, MLC_LIFETIME_PREFETCH, lifetime);
+      STAT_EVENT(repl_proc_id, MLC_LIFETIME_PREFETCH_COUNT);
+      STAT_EVENT(repl_proc_id, MLC_EVICT_PREFETCH);
+      if (data->hit_since_fill)
+        STAT_EVENT(repl_proc_id, MLC_EVICT_PREFETCH_HIT);
+    } else {
+      INC_STAT_EVENT(repl_proc_id, MLC_LIFETIME_DEMAND, lifetime);
+      STAT_EVENT(repl_proc_id, MLC_LIFETIME_DEMAND_COUNT);
+      STAT_EVENT(repl_proc_id, MLC_EVICT_DEMAND);
+      if (data->hit_since_fill)
+        STAT_EVENT(repl_proc_id, MLC_EVICT_DEMAND_HIT);
+    }
+    if (data->fetched_by_offpath) {
+      INC_STAT_EVENT(repl_proc_id, MLC_LIFETIME_OFFPATH, lifetime);
+      STAT_EVENT(repl_proc_id, MLC_LIFETIME_OFFPATH_COUNT);
+      STAT_EVENT(repl_proc_id, MLC_EVICT_OFFPATH);
+      if (data->hit_since_fill)
+        STAT_EVENT(repl_proc_id, MLC_EVICT_OFFPATH_HIT);
+    } else {
+      INC_STAT_EVENT(repl_proc_id, MLC_LIFETIME_ONPATH, lifetime);
+      STAT_EVENT(repl_proc_id, MLC_LIFETIME_ONPATH_COUNT);
+      STAT_EVENT(repl_proc_id, MLC_EVICT_ONPATH);
+      if (data->hit_since_fill)
+        STAT_EVENT(repl_proc_id, MLC_EVICT_ONPATH_HIT);
+    }
   }
 
   uns8 fill_mark = MLP_MARK_NONE;  // stats only (MLP_RD1_*): how the fill below was marked, and who waited on it
@@ -4159,6 +4216,20 @@ Flag mlc_fill_line(Mem_Req* req) {
     fill_mark = mark;
     fill_load = load;
     fill_ifetch = ifetch;
+  }
+
+  /* MLC MPKI breakdown (stats only): one genuine MLC miss resolving per call here -- a
+     writeback refill (MRT_WB/MRT_WB_NODIRTY) is not a miss and must not be counted (it has
+     no waiters, so fill_load/fill_ifetch are already FALSE for it, but TOTAL needs its own
+     guard). TOTAL also covers store-only and pure-prefetch misses that are neither a load
+     nor an ifetch. */
+  if (req->type != MRT_WB && req->type != MRT_WB_NODIRTY) {
+    Flag marked = fill_mark != MLP_MARK_NONE;
+    STAT_EVENT(req->proc_id, MLC_MISS_MPKI_TOTAL);
+    if (fill_load)
+      STAT_EVENT(req->proc_id, marked ? MLC_MISS_MPKI_MARKED_DATA : MLC_MISS_MPKI_UNMARKED_DATA);
+    if (fill_ifetch)
+      STAT_EVENT(req->proc_id, marked ? MLC_MISS_MPKI_MARKED_INSTR : MLC_MISS_MPKI_UNMARKED_INSTR);
   }
   lacs_fill(LACS_SLOT_MLC, &MLC(req->proc_id)->cache, req);
   icarus_fill(&MLC(req->proc_id)->cache, req);
@@ -4240,6 +4311,7 @@ Flag mlc_fill_line(Mem_Req* req) {
   data->pref_loadPC = req->pref_loadPC;
   data->global_hist = req->global_hist;
   data->dcache_touch = FALSE;
+  data->hit_since_fill = FALSE;
   data->fetched_by_offpath = req->off_path;
   data->offpath_op_addr = req->oldest_op_addr;
   data->offpath_op_unique = req->oldest_op_unique_num;

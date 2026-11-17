@@ -65,6 +65,7 @@ typedef struct L1_Data_struct {
   uns32 global_hist;                   /* used for prefetch hfilter */
   uns8 prefetcher_id;                  /* which Prefetcher sent this prefetch */
   Flag dcache_touch;                   /* does dcache touch? for measuring useless prefetch */
+  Flag hit_since_fill; /* MLC residency stats: has this line been hit at least once since it was filled */
   Flag fetched_by_offpath;             /* fetched by an off_path op? */
   Flag l0_modified_fetched_by_offpath; /* fetched by an off_path op? */
   Addr offpath_op_addr;                /* PC of the off path op that fetched this line */

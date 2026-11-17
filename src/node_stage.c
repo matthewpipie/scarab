@@ -318,6 +318,14 @@ void debug_print_node_table() {
 /**************************************************************************************/
 /* node_cycle: */
 
+/* Whether the ROB head is a load still waiting on its memory request -- same liveness test
+   node_retire uses for rob_stall_cycles/rob_stall_noissue_cycles (op->req is never cleared,
+   but until the load's done_cycle is set it is still the request the load is waiting on). */
+static Flag rob_head_outstanding_load() {
+  Op* head = node->node_head;
+  return head && head->uop->mem_type == MEM_LD && head->req && op_get_done_cycle(head) == MAX_CTR;
+}
+
 void update_node_stage(Stage_Data* src_sd) {
   DEBUG(node->proc_id, "Beginning '%s' stage\n", node->sd.name);
   STAT_EVENT(node->proc_id, NODE_CYCLE);
@@ -336,6 +344,13 @@ void update_node_stage(Stage_Data* src_sd) {
   node_retire();
   if (PC_PROFILE)
     pcprof_node_cycle();
+
+  /* is_node_table_full/fe_starved/node_head/sd.op_count are all settled for the cycle now */
+  Flag head_load_wait = rob_head_outstanding_load();
+  if (!is_node_table_full() && !node->fe_starved && !head_load_wait)
+    STAT_EVENT(node->proc_id, ROB_HEALTHY_CYCLE);
+  if (head_load_wait && node->sd.op_count == 0)
+    STAT_EVENT(node->proc_id, ROB_HEAD_LOAD_NO_ISSUE_CYCLE);
 
   // TODO: add PMUs to track issue queue and ready list stall
   memview_core_stall(node->proc_id, is_node_stage_stalled(), node->mem_blocked);
