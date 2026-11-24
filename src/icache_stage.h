@@ -106,6 +106,7 @@ typedef struct Icache_Stage_struct {
   uint64_t wait_for_miss_start; /* time when cache miss was observed */
   Flag icache_miss_fulfilled;
   Flag icache_stage_resteer_signaled;
+  uns force_hit_fetches_remaining; /* icache lookups left to force-hit after a resteer */
   Flag fetch_barrier_pending;
   uns64 fetch_barrier_inst_uid;
   Counter fetch_barrier_op_num;

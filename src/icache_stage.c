@@ -336,6 +336,11 @@ void recover_icache_stage() {
   // override the STALLED state and skip the barrier wait.
   ic->icache_stage_resteer_signaled = !ft_op_buffer_can_fetch_op(ic) && !ic->fetch_barrier_pending;
 
+  /* Force the next N icache lookups to hit, modeling an experiment where fetch after a
+     resteer is never stalled by the icache. */
+  if (ic->icache_stage_resteer_signaled)
+    ic->force_hit_fetches_remaining = ICACHE_FORCE_HIT_AFTER_RESTEER_N;
+
   /* PDIP: record the resteering branch; if fetch leaves what it was fetching, its miss is abandoned */
   if (PDIP_ENABLE)
     pdip_recover(ic->proc_id, !ft_op_buffer_can_fetch_op(ic));
@@ -426,6 +431,19 @@ Inst_Info** lookup_icache() {
     cache_cmix_demand(&ic->icache, ic->fetch_addr);
   if (PERFECT_ICACHE && !line)
     line = (Inst_Info**)INIT_CACHE_DATA_VALUE;
+
+  // force-hit the first N icache lookups after a resteer
+  if (ic->force_hit_fetches_remaining) {
+    if (!line) {
+      Addr repl_line_addr;
+      line = icache_insert_line(NULL, ic->fetch_addr, &ic->line_addr, &repl_line_addr);
+      if (line) {
+        cache_cmix_fill(&ic->icache, ic->fetch_addr, cmix_class(TRUE, FALSE));
+        STAT_EVENT(ic->proc_id, ICACHE_FORCE_HIT_AFTER_RESTEER);
+      }
+    }
+    ic->force_hit_fetches_remaining--;
+  }
 
   // ideal L2 Icache prefetcher
   if (IDEAL_L2_ICACHE_PREFETCHER && !line) {
